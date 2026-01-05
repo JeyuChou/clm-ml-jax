@@ -673,8 +673,8 @@ def soilstate_init_time_const(
     Note:
         This is a pure function with no side effects. All state is immutable.
     """
-    npatch = bounds.endp - bounds.begp
-    ncol = bounds.endc - bounds.begc
+    npatch = bounds.endp - bounds.begp + 1
+    ncol = bounds.endc - bounds.begc + 1
     nlevgrnd = config.nlevgrnd
     nlevsoi = config.nlevsoi
     
