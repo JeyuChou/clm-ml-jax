@@ -220,7 +220,7 @@ def clm_instInit(bounds: bounds_type) -> None:
     
     # Initialize surface albedo time constants
     try:
-        SurfaceAlbedoInitTimeConst(bounds)
+        SurfaceAlbedoInitTimeConst(bounds, _clm_instances.surfalb_inst)
     except (TypeError, AttributeError):
         pass  # Skip if initialization not available
     
