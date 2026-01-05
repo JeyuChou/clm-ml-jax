@@ -516,9 +516,10 @@ def get_pft_statistics(patch_instance: patch_type) -> Dict[str, Any]:
     # Get PFT codes for active patches
     pft_codes = []
     for patch_idx in active_patches:
-        # Use patch_idx directly as array index for sparse distributions
-        if patch_idx < len(patch_instance.itype):
-            pft_codes.append(int(patch_instance.itype[patch_idx]))
+        # Map from patch index space to local array index space using begp
+        array_idx = patch_idx - patch_instance.begp
+        if 0 <= array_idx < len(patch_instance.itype):
+            pft_codes.append(int(patch_instance.itype[array_idx]))
     
     pft_codes = jnp.array(pft_codes)
     
