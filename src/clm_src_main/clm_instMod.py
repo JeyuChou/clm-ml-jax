@@ -150,7 +150,15 @@ def clm_instInit(bounds: bounds_type) -> None:
     
     # Initialize soil state time constants
     try:
-        SoilStateInitTimeConst()
+        SoilStateInitTimeConst(
+            bounds,
+            getattr(_clm_instances, "soilstate_inst", None),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     except (TypeError, AttributeError):
         pass  # Skip if initialization not available
     
