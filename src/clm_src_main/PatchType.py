@@ -284,10 +284,10 @@ class patch_type:
         if patch_idx < self.begp or patch_idx > self.endp:
             raise ValueError(f"Patch index {patch_idx} out of range [{self.begp}, {self.endp}]")
         
-        # For sparse distributions, use the patch_idx directly as array index
-        array_idx = patch_idx
+        # Map patch index in [begp, endp] to local array index starting at 0
+        array_idx = patch_idx - self.begp
         
-        if array_idx >= len(self.column):
+        if array_idx < 0 or array_idx >= len(self.column):
             raise ValueError(f"Patch index {patch_idx} exceeds array bounds")
         
         pft = int(self.itype[array_idx])
