@@ -160,7 +160,7 @@ def init_allocate_water_state(
     begc = bounds.begc
     endc = bounds.endc
     
-    # Calculate array sizes
+    # Calculate array sizes (Fortran-style: bounds are inclusive)
     num_cols = endc - begc + 1
     num_patches = endp - begp + 1
     
@@ -210,7 +210,7 @@ def init_water_state_from_bounds(bounds: Bounds, nlevsno: int, nlevgrnd: int) ->
         This is a pure functional version that returns a new WaterState
         instead of modifying 'this' in place.
     """
-    return init_allocate_water_state(bounds, nlevsno, nlevgrnd)
+    return init_allocate_water_state(bounds, nlevsno, nlevgrnd, use_nan=False)
 
 
 # ============================================================================

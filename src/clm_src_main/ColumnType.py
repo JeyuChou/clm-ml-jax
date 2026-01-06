@@ -146,6 +146,7 @@ class column_type:
         Returns:
             Tuple of (fortran_col_idx, fortran_layer_idx)
         """
+        # Convert Python 0-based col_idx to Fortran index starting at begc
         fortran_col_idx = self.begc + col_idx
         
         if array_type in ['dz', 'z']:
