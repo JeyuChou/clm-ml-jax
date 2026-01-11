@@ -101,6 +101,7 @@ DENICE = 917.0
 # Private Functions
 # =============================================================================
 
+@jit
 def _calc_soil_resistance_sl14(
     soilstate: SoilStateType,
     waterstate: WaterStateType,
@@ -192,6 +193,7 @@ def _calc_soil_resistance_sl14(
 # Public Functions
 # =============================================================================
 
+@jit
 def calc_soilevap_resis(
     bounds: BoundsType,
     num_nolakec: int,
