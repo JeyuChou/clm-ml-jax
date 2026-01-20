@@ -22,7 +22,6 @@
 - [Testing](#testing)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
-- [Code Review Summary](#code-review-summary)
 - [Contributing](#contributing)
 - [License](#license)
 - [Acknowledgments](#acknowledgments)
@@ -31,11 +30,11 @@
 
 ## Overview
 
-**CLM-ML-JAX** is a sophisticated AI-powered code translation system designed to convert complex Fortran Earth system modeling code from the Community Land Model (CLM) to modern Python/JAX. The project uses a multi-agent architecture powered by Anthropic's Claude to automate the translation process while maintaining exact scientific accuracy.
+This project builds an LLM translation system designed to convert complex Fortran Earth system modeling code from the Community Land Model (CLM) to modern Python/JAX. The project uses a multi-agent architecture powered by Anthropic's Claude to automate the translation process while maintaining exact scientific accuracy.
 
 ### Key Goals
 
-- ✅ Convert 2,500+ lines of Fortran CLM source to JAX Python equivalents
+- ✅ Convert Fortran CLM source to JAX Python equivalents
 - ✅ Maintain exact scientific accuracy and physics formulations
 - ✅ Generate comprehensive test suites automatically
 - ✅ Create detailed documentation and translation notes
@@ -69,55 +68,15 @@
 - Fortran types → Python dataclasses
 - Parameter modules → Immutable configuration classes
 
-### 📊 Code Quality
-
-- **Type Safety**: Full type hints (PEP 484)
-- **Documentation**: Google-style docstrings for all functions
-- **Testing**: Pytest with fixtures, markers, and comprehensive coverage
-- **Formatting**: Black-compatible code formatting
-- **Validation**: Mypy type checking support
-
-### 🛠 Developer Experience
-
-- Rich console output with progress tracking
-- Detailed logging of all LLM interactions
-- Token usage and cost estimation
-- Retry logic for API resilience
-- Comprehensive error reporting
-
 ---
-
 ## Architecture
 
-### System Overview
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    CLM-ML-JAX System                        │
-└─────────────────────────────────────────────────────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        │                     │                     │
-   ┌────▼────┐         ┌──────▼──────┐      ┌──────▼──────┐
-   │ Fortran │         │   Static    │      │ Translation │
-   │ Source  │────────▶│  Analysis   │────▶ │   Agents    │
-   │  (CLM)  │         │   (JSON)    │      │  (Claude)   │
-   └─────────┘         └─────────────┘      └──────┬──────┘
-                                                    │
-                       ┌────────────────────────────┤
-                       │                            │
-                 ┌─────▼─────┐              ┌──────▼──────┐
-                 │   JAX     │              │    Test     │
-                 │  Python   │◀─────────────│    Agent    │
-                 │  Modules  │              └─────────────┘
-                 └─────┬─────┘
-                       │
-                       │ (if tests fail)
-                       ▼
-                 ┌─────────────┐
-                 │   Repair    │
-                 │    Agent    │
-                 └─────────────┘
+1. Fortran Source → Fortran Analyzer → JSON Analysis
+2. JSON Analysis → TranslatorAgent → JAX Python + Notes
+3. JAX Python → TestAgent → Pytest Files + Test Data
+4. Run Tests → [PASS ✓] Done
+            └─ [FAIL ✗] → RepairAgent → Fixed Code → Repeat
 ```
 
 ### Agent System
@@ -150,16 +109,6 @@ RepairAgent (repair_agent.py)
 ├── Iterative code fixing (max 5 iterations)
 ├── Test execution & validation
 └── Comprehensive RCA reports
-```
-
-### Translation Flow
-
-```
-1. Fortran Source → Fortran Analyzer → JSON Analysis
-2. JSON Analysis → TranslatorAgent → JAX Python + Notes
-3. JAX Python → TestAgent → Pytest Files + Test Data
-4. Run Tests → [PASS ✓] Done
-            └─ [FAIL ✗] → RepairAgent → Fixed Code → Repeat
 ```
 
 ---
