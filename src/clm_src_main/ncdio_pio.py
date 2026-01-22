@@ -20,8 +20,12 @@ import numpy as np
 # NetCDF handling libraries
 import warnings
 try:
+    # Suppress specific warnings during netCDF4/xarray import
+    # These libraries may generate deprecation warnings from their dependencies
+    # that are not relevant to CLM users
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", (RuntimeWarning, UserWarning, DeprecationWarning))
+        warnings.filterwarnings("ignore", category=RuntimeWarning, module="netCDF4")
+        warnings.filterwarnings("ignore", category=DeprecationWarning, module="numpy")
         import netCDF4 as nc4
         import xarray as xr
     NETCDF_AVAILABLE = True

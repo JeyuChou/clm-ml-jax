@@ -98,7 +98,7 @@ class SoilStateType:
     
     # Hydraulic properties (lines 213-267)
     watsat: Array    # Volumetric water at saturation (ncol, nlevgrnd) [m3/m3]
-    sucsat: Array    # Minimum soil suction (ncol, nlevgrnd) [mm]
+    sucsat: Array    # Matric potential at saturation (negative value) (ncol, nlevgrnd) [mm]
     hksat: Array     # Hydraulic conductivity at saturation (ncol, nlevgrnd) [mm/s]
     bsw: Array       # Clapp-Hornberger b parameter (ncol, nlevgrnd) [-]
     perc_frac: Array # Percolation fraction (ncol, nlevgrnd) [-]
@@ -455,6 +455,7 @@ def compute_soil_hydraulic_properties_for_layer(
     use_sand_clay = tex == 0
     
     # Sand/clay based (CLM5 method)
+    # Note: Fortran line 223 had positive sucsat, but we store as negative for consistency
     watsat_sc = 0.489 - 0.00126 * sand
     sucsat_sc = -10.0 * (10.0 ** (1.88 - 0.0131 * sand))
     hksat_sc = 0.0070556 * (10.0 ** (-0.884 + 0.0153 * sand))
@@ -474,6 +475,7 @@ def compute_soil_hydraulic_properties_for_layer(
     bsw_mineral = jnp.where(use_sand_clay, bsw_sc, bsw_tc)
     
     # Line 228-231: Adjust hydraulic properties for organic matter
+    # Note: Fortran line 237 had positive om_sucsat, but we store as negative for consistency
     om_watsat = jnp.maximum(0.93 - 0.1 * (z_j / zsapric), 0.83)
     om_sucsat = -jnp.minimum(10.3 - 0.2 * (z_j / zsapric), 10.1)
     om_hksat = jnp.maximum(0.28 - 0.2799 * (z_j / zsapric), hksat_mineral)
