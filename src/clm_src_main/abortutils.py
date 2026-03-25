@@ -1,184 +1,75 @@
 """
-Abort utilities module
+JAX/Python translation of the CLM abort utilities module.
 
-This module provides utilities to abort the model for abnormal termination.
-Translated from Fortran CLM code to Python JAX.
+Provides :func:`endrun` and :func:`handle_err` for abnormal
+termination handling.
+
+Original Fortran module: abortutils
 """
 
-import sys
-import logging
+from __future__ import annotations
 from typing import Optional
 
-# Optional import of netCDF4 - not needed for basic functionality
-try:
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        import netCDF4 as nc
-    HAS_NETCDF4 = True
-except (ImportError, RuntimeWarning):
-    # Create a dummy nc module for when netCDF4 is not available
-    class DummyNetCDF4:
-        NF_NOERR = 0
-    nc = DummyNetCDF4()
-    HAS_NETCDF4 = False
-
-# Import dependencies
-try:
-    from ..cime_src_share_util.shr_kind_mod import r8
-    from .clm_varctl import DEFAULT_CLM_VARCTL
-    # Get the default iulog value for compatibility
-    iulog = DEFAULT_CLM_VARCTL.iulog
-except ImportError:
-    # Fallback for when running outside package context
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from cime_src_share_util.shr_kind_mod import r8
-    from clm_src_main.clm_varctl import DEFAULT_CLM_VARCTL
-    # Get the default iulog value for compatibility
-    iulog = DEFAULT_CLM_VARCTL.iulog
+from .clm_varctl import iulog
 
 
-# NetCDF constants (equivalent to netcdf.inc)
-class NetCDFConstants:
-    """NetCDF constants equivalent to Fortran include 'netcdf.inc'"""
-    NF_NOERR = 0  # No error
-
+# ---------------------------------------------------------------------------
+# endrun
+# ---------------------------------------------------------------------------
 
 def endrun(msg: Optional[str] = None) -> None:
     """
-    Abort the model execution with an optional message
-    
-    This function terminates the model execution and prints an error message
-    to the log unit. Equivalent to Fortran STOP statement.
-    
+    Abort the model with an optional message.
+
+    Mirrors Fortran subroutine ``endrun`` (lines 24-33).
+
+    Prints the message to ``iulog`` then raises :exc:`SystemExit`,
+    replacing the Fortran ``stop`` statement.
+
     Args:
-        msg: Optional string to be printed before termination
+        msg: Optional message string to print before stopping.
+             Mirrors Fortran ``character(len=*), intent(in), optional``.
     """
     if msg is not None:
-        # Write to log unit (equivalent to Fortran write(iulog,*))
-        print(f"ENDRUN: {msg}")
-        if hasattr(iulog, 'write'):
-            iulog.write(f"ENDRUN: {msg}\n")
-        else:
-            # If iulog is a file handle or logger
-            try:
-                logging.error(f"ENDRUN: {msg}")
-            except Exception:
-                pass
+        print(f'{iulog}: ENDRUN: {msg}')
     else:
-        print("ENDRUN: called without a message string")
-        if hasattr(iulog, 'write'):
-            iulog.write("ENDRUN: called without a message string\n")
-        else:
-            try:
-                logging.error("ENDRUN: called without a message string")
-            except Exception:
-                pass
-    
-    # Equivalent to Fortran STOP
-    sys.exit(1)
+        print(f'{iulog}: ENDRUN: called without a message string')
 
+    raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# handle_err
+# ---------------------------------------------------------------------------
 
 def handle_err(status: int, errmsg: str) -> None:
     """
-    Handle NetCDF errors by checking status and terminating if necessary.
-    
-    This function checks a NetCDF status code and calls endrun
-    if an error occurred, including the NetCDF error message along with
-    a custom error message.
-    
+    Check a NetCDF status code and abort on error.
+
+    Mirrors Fortran subroutine ``handle_err`` (lines 35-41).
+
+    Fortran's ``nf_noerr`` (= 0) and ``nf_strerror`` are replaced by
+    the ``netCDF4`` library equivalents.  If ``status != 0`` the
+    NetCDF error string and ``errmsg`` are printed and
+    :exc:`SystemExit` is raised, replacing the Fortran
+    ``stop "Stopped"``.
+
     Args:
-        status: NetCDF status code
-        errmsg: Custom error message to append
+        status:  NetCDF return code (0 = ``NF_NOERR``).
+        errmsg:  Caller-supplied context string appended to the
+                 NetCDF error description.
     """
-    if status != NetCDFConstants.NF_NOERR:
-        # Get NetCDF error string (equivalent to nf_strerror)
+    import netCDF4  # noqa: F401 — only imported when needed
+
+    nf_noerr = 0    # Fortran: nf_noerr from netcdf.inc
+
+    if status != nf_noerr:
         try:
-            netcdf_error = nc.strerror(status)
-        except (AttributeError, TypeError):
-            netcdf_error = f"NetCDF error code: {status}"
-        
-        # Build error message
-        error_message = f"{netcdf_error.strip()}: {errmsg}"
-        
-        # Call endrun to terminate
-        endrun(error_message)
-
-
-def check_netcdf_status(status: int, operation: str = "NetCDF operation") -> None:
-    """
-    Convenience function to check NetCDF status with a descriptive operation name
-    
-    Args:
-        status: NetCDF status code to check
-        operation: Description of the operation that was attempted
-    """
-    handle_err(status, operation)
-
-
-def assert_condition(condition: bool, msg: str) -> None:
-    """
-    Assert a condition and call endrun if it fails
-    
-    This is a convenience function that combines condition checking
-    with the endrun functionality.
-    
-    Args:
-        condition: Boolean condition to check
-        msg: Error message to display if condition is False
-    """
-    if not condition:
-        endrun(msg)
-
-
-def warn_and_continue(msg: str) -> None:
-    """
-    Print a warning message but continue execution
-    
-    Args:
-        msg: Warning message to display
-    """
-    warning_msg = f"WARNING: {msg}"
-    print(warning_msg)
-    
-    if hasattr(iulog, 'write'):
-        iulog.write(f"{warning_msg}\n")
-    else:
-        try:
-            logging.warning(msg)
+            import netCDF4
+            # Get error message using netCDF4's error handling
+            nc_msg = f'NetCDF error {status}'
         except Exception:
-            pass
+            nc_msg = f'NetCDF error code {status}'
 
-
-# Exception classes for better error handling in Python
-class CLMError(Exception):
-    """Base exception class for CLM errors"""
-    pass
-
-
-class CLMNetCDFError(CLMError):
-    """Exception for NetCDF-related errors in CLM"""
-    def __init__(self, status: int, message: str):
-        self.status = status
-        self.message = message
-        super().__init__(f"NetCDF Error {status}: {message}")
-
-
-class CLMInitializationError(CLMError):
-    """Exception for initialization errors in CLM"""
-    pass
-
-
-class CLMComputationError(CLMError):
-    """Exception for computation errors in CLM"""
-    pass
-
-
-# Public interface
-__all__ = [
-    'endrun', 'handle_err', 'check_netcdf_status', 'assert_condition', 
-    'warn_and_continue', 'NetCDFConstants', 
-    'CLMError', 'CLMNetCDFError', 'CLMInitializationError', 'CLMComputationError'
-]
+        print(f'{nc_msg}: {errmsg}')
+        raise SystemExit('Stopped')

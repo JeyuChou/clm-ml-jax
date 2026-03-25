@@ -1,160 +1,160 @@
 """
-Atmosphere to land variables type
+JAX translation of atm2lndType Fortran module.
 
-This module defines the atm2lnd_type class for handling atmospheric forcing
-data that gets passed to the land model. Translated from Fortran CLM code to Python JAX.
+Atmosphere-to-land forcing variables for the CLM land surface model.
+Provides data structures and initialization routines for atmospheric
+forcing quantities at the grid cell and column level.
+
+Original Fortran module: atm2lndType
+Fortran lines 1-80
 """
 
-import jax
+from typing import NamedTuple
+
 import jax.numpy as jnp
-from typing import Optional
-from dataclasses import dataclass, field
+from jax import Array
 
-# Import dependencies
-try:
-    from ..cime_src_share_util.shr_kind_mod import r8
-    from .clm_varpar import numrad
-    from .decompMod import BoundsType
-except ImportError:
-    # Fallback for when running outside package context
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from cime_src_share_util.shr_kind_mod import r8
-    from clm_src_main.clm_varpar import numrad
-    from clm_src_main.decompMod import BoundsType
-
-# Alias for backward compatibility
-bounds_type = BoundsType
+from clm_src_main.clm_varpar import numrad          # noqa: F401
+from clm_src_main.decompMod import bounds_type      # noqa: F401
 
 
-@dataclass
-class atm2lnd_type:
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+class atm2lnd_type(NamedTuple):
     """
-    Atmosphere to land variables type
-    
-    This class contains atmospheric forcing variables that are passed to the land model.
-    Some variables are defined on the gridcell level (not downscaled) while others
-    are downscaled to the column level.
+    Atmosphere-to-land forcing variables mirroring Fortran
+    ``atm2lnd_type`` (lines 19-36).
+
+    All arrays are immutable JAX arrays. Fortran offsets ``begg:endg``
+    and ``begc:endc`` become contiguous arrays of length
+    ``endg - begg + 1`` and ``endc - begc + 1`` respectively, with
+    ``begg`` and ``begc`` stored in ``bounds_type`` for downstream
+    index arithmetic.
+
+    Attributes:
+        forc_u_grc: Atmospheric wind speed in east direction (m/s).
+            Shape ``(endg - begg + 1,)``.
+            Fortran: ``forc_u_grc(begg:endg)``.
+        forc_v_grc: Atmospheric wind speed in north direction (m/s).
+            Shape ``(endg - begg + 1,)``.
+            Fortran: ``forc_v_grc(begg:endg)``.
+        forc_pco2_grc: Atmospheric CO2 partial pressure (Pa).
+            Shape ``(endg - begg + 1,)``.
+            Fortran: ``forc_pco2_grc(begg:endg)``.
+        forc_po2_grc: Atmospheric O2 partial pressure (Pa).
+            Shape ``(endg - begg + 1,)``.
+            Fortran: ``forc_po2_grc(begg:endg)``.
+        forc_solad_downscaled_col: Atmospheric direct beam radiation
+            downscaled to column, per waveband (W/m2).
+            Shape ``(endc - begc + 1, numrad)``.
+            Fortran: ``forc_solad_downscaled_col(begc:endc, numrad)``.
+        forc_solai_grc: Atmospheric diffuse radiation per waveband
+            (W/m2). Shape ``(endg - begg + 1, numrad)``.
+            Fortran: ``forc_solai_grc(begg:endg, numrad)``.
+        forc_t_downscaled_col: Atmospheric temperature downscaled to
+            column (K). Shape ``(endc - begc + 1,)``.
+            Fortran: ``forc_t_downscaled_col(begc:endc)``.
+        forc_pbot_downscaled_col: Atmospheric pressure downscaled to
+            column (Pa). Shape ``(endc - begc + 1,)``.
+            Fortran: ``forc_pbot_downscaled_col(begc:endc)``.
+        forc_lwrad_downscaled_col: Atmospheric longwave radiation
+            downscaled to column (W/m2). Shape ``(endc - begc + 1,)``.
+            Fortran: ``forc_lwrad_downscaled_col(begc:endc)``.
     """
-    
-    # atm -> land: not downscaled (gridcell level)
-    forc_u_grc: Optional[jnp.ndarray] = None                # Atmospheric wind speed in east direction (m/s)
-    forc_v_grc: Optional[jnp.ndarray] = None                # Atmospheric wind speed in north direction (m/s)  
-    forc_pco2_grc: Optional[jnp.ndarray] = None             # Atmospheric CO2 partial pressure (Pa)
-    forc_po2_grc: Optional[jnp.ndarray] = None              # Atmospheric O2 partial pressure (Pa)
-    forc_solad_grc: Optional[jnp.ndarray] = None            # Atmospheric direct beam radiation (W/m2)
-    forc_solai_grc: Optional[jnp.ndarray] = None            # Atmospheric diffuse radiation (W/m2)
-    
-    # atm -> land: downscaled to column
-    forc_t_downscaled_col: Optional[jnp.ndarray] = None     # Atmospheric temperature (K)
-    forc_q_downscaled_col: Optional[jnp.ndarray] = None     # Atmospheric specific humidity (kg/kg)
-    forc_pbot_downscaled_col: Optional[jnp.ndarray] = None  # Atmospheric pressure (Pa)
-    forc_lwrad_downscaled_col: Optional[jnp.ndarray] = None # Atmospheric longwave radiation (W/m2)
-    forc_rain_downscaled_col: Optional[jnp.ndarray] = None  # Rainfall rate (mm/s)
-    forc_snow_downscaled_col: Optional[jnp.ndarray] = None  # Snowfall rate (mm/s)
-    
-    def Init(self, bounds: bounds_type) -> None:
-        """
-        Initialize the atm2lnd_type instance
-        
-        Args:
-            bounds: CLM bounds structure containing grid indices
-        """
-        self.InitAllocate(bounds)
-    
-    def InitAllocate(self, bounds: bounds_type) -> None:
-        """
-        Initialize module data structure by allocating arrays
-        
-        Args:
-            bounds: CLM bounds structure containing grid indices
-        """
-        # Initial value for all arrays
-        ival = 0.0
-        
-        # Extract bounds for readability
-        begg = bounds.begg
-        endg = bounds.endg
-        begc = bounds.begc  
-        endc = bounds.endc
-        
-        # Calculate array sizes
-        grid_size = endg - begg + 1
-        col_size = endc - begc + 1
-        
-        # Allocate and initialize gridcell-level arrays
-        self.forc_u_grc = jnp.full((grid_size,), ival, dtype=r8)
-        self.forc_v_grc = jnp.full((grid_size,), ival, dtype=r8)
-        self.forc_pco2_grc = jnp.full((grid_size,), ival, dtype=r8)
-        self.forc_po2_grc = jnp.full((grid_size,), ival, dtype=r8)
-        self.forc_solad_grc = jnp.full((grid_size, numrad), ival, dtype=r8)
-        self.forc_solai_grc = jnp.full((grid_size, numrad), ival, dtype=r8)
-        
-        # Allocate and initialize column-level arrays
-        self.forc_t_downscaled_col = jnp.full((col_size,), ival, dtype=r8)
-        self.forc_q_downscaled_col = jnp.full((col_size,), ival, dtype=r8)
-        self.forc_pbot_downscaled_col = jnp.full((col_size,), ival, dtype=r8)
-        self.forc_lwrad_downscaled_col = jnp.full((col_size,), ival, dtype=r8)
-        self.forc_rain_downscaled_col = jnp.full((col_size,), ival, dtype=r8)
-        self.forc_snow_downscaled_col = jnp.full((col_size,), ival, dtype=r8)
+    forc_u_grc:                Array   # (n_grc,)
+    forc_v_grc:                Array   # (n_grc,)
+    forc_pco2_grc:             Array   # (n_grc,)
+    forc_po2_grc:              Array   # (n_grc,)
+    forc_solad_downscaled_col: Array   # (n_col, numrad)
+    forc_solai_grc:            Array   # (n_grc, numrad)
+    forc_t_downscaled_col:     Array   # (n_col,)
+    forc_pbot_downscaled_col:  Array   # (n_col,)
+    forc_lwrad_downscaled_col: Array   # (n_col,)
 
 
-# Factory function to create and initialize atm2lnd_type instance
-def create_atm2lnd_instance(bounds: bounds_type) -> atm2lnd_type:
+# ---------------------------------------------------------------------------
+# Initialization helpers (mirror Init / InitAllocate)
+# ---------------------------------------------------------------------------
+
+def InitAllocate(bounds: bounds_type) -> atm2lnd_type:
     """
-    Factory function to create and initialize an atm2lnd_type instance
-    
+    Allocate and initialize an ``atm2lnd_type`` instance.
+
+    Mirrors Fortran subroutine ``InitAllocate`` (lines 57-74).
+    All arrays are filled with ``ival = 0.0`` matching the Fortran
+    initialisation ``this%field(:) = ival``.
+
     Args:
-        bounds: CLM bounds structure containing grid indices
-        
+        bounds: Decomposition bounds supplying ``begg``, ``endg``,
+            ``begc``, and ``endc`` for this MPI task.
+
     Returns:
-        Initialized atm2lnd_type instance
+        A fully initialised :class:`atm2lnd_type` with every element
+        set to ``0.0``.
     """
-    instance = atm2lnd_type()
-    instance.Init(bounds)
-    return instance
+    ival = jnp.float64(0.0)                          # Fortran line 59: ival = 0.0_r8
+
+    begg = bounds.begg;  endg = bounds.endg          # Fortran lines 62-63
+    begc = bounds.begc;  endc = bounds.endc          # Fortran lines 62-63
+
+    n_grc = endg - begg + 1
+    n_col = endc - begc + 1
+
+    # Fortran: allocate(this%forc_u_grc(begg:endg)); ... = ival
+    forc_u_grc    = jnp.full((n_grc,),          ival, dtype=jnp.float64)
+
+    # Fortran: allocate(this%forc_v_grc(begg:endg)); ... = ival
+    forc_v_grc    = jnp.full((n_grc,),          ival, dtype=jnp.float64)
+
+    # Fortran: allocate(this%forc_pco2_grc(begg:endg)); ... = ival
+    forc_pco2_grc = jnp.full((n_grc,),          ival, dtype=jnp.float64)
+
+    # Fortran: allocate(this%forc_po2_grc(begg:endg)); ... = ival
+    forc_po2_grc  = jnp.full((n_grc,),          ival, dtype=jnp.float64)
+
+    # Fortran: allocate(this%forc_solad_downscaled_col(begc:endc,numrad)); ... = ival
+    # Size numrad+1 so that 1-based ivis=1, inir=2 indices are valid (slot 0 unused)
+    forc_solad_downscaled_col = jnp.full((n_col, numrad + 1), ival, dtype=jnp.float64)
+
+    # Fortran: allocate(this%forc_solai_grc(begg:endg,numrad)); ... = ival
+    # Size numrad+1 so that 1-based ivis=1, inir=2 indices are valid (slot 0 unused)
+    forc_solai_grc            = jnp.full((n_grc, numrad + 1), ival, dtype=jnp.float64)
+
+    # Fortran: allocate(this%forc_t_downscaled_col(begc:endc)); ... = ival
+    forc_t_downscaled_col     = jnp.full((n_col,),         ival, dtype=jnp.float64)
+
+    # Fortran: allocate(this%forc_pbot_downscaled_col(begc:endc)); ... = ival
+    forc_pbot_downscaled_col  = jnp.full((n_col,),         ival, dtype=jnp.float64)
+
+    # Fortran: allocate(this%forc_lwrad_downscaled_col(begc:endc)); ... = ival
+    forc_lwrad_downscaled_col = jnp.full((n_col,),         ival, dtype=jnp.float64)
+
+    return atm2lnd_type(
+        forc_u_grc                = forc_u_grc,
+        forc_v_grc                = forc_v_grc,
+        forc_pco2_grc             = forc_pco2_grc,
+        forc_po2_grc              = forc_po2_grc,
+        forc_solad_downscaled_col = forc_solad_downscaled_col,
+        forc_solai_grc            = forc_solai_grc,
+        forc_t_downscaled_col     = forc_t_downscaled_col,
+        forc_pbot_downscaled_col  = forc_pbot_downscaled_col,
+        forc_lwrad_downscaled_col = forc_lwrad_downscaled_col,
+    )
 
 
-# Initialization function for creating atm2lnd arrays
-def init_atm2lnd_arrays(bounds_dict: dict) -> dict:
+def Init(bounds: bounds_type) -> atm2lnd_type:
     """
-    Function to initialize atm2lnd arrays
-    
-    Note: This function is not JIT-compiled because it needs to compute
-    array shapes from the bounds_dict values, which must be concrete values.
-    The resulting arrays can be used in JIT-compiled functions.
-    
+    Initialize an ``atm2lnd_type`` instance.
+
+    Mirrors Fortran subroutine ``Init`` (lines 50-55), which is the
+    public entry point that delegates to ``InitAllocate``.
+
     Args:
-        bounds_dict: Dictionary containing bounds information
-        
+        bounds: Decomposition bounds for the local MPI task.
+
     Returns:
-        Dictionary of initialized arrays
+        A fully initialised :class:`atm2lnd_type`.
     """
-    ival = 0.0
-    begg = bounds_dict['begg']
-    endg = bounds_dict['endg'] 
-    begc = bounds_dict['begc']
-    endc = bounds_dict['endc']
-    
-    grid_size = endg - begg + 1
-    col_size = endc - begc + 1
-    
-    return {
-        'forc_u_grc': jnp.full((grid_size,), ival, dtype=r8),
-        'forc_v_grc': jnp.full((grid_size,), ival, dtype=r8),
-        'forc_pco2_grc': jnp.full((grid_size,), ival, dtype=r8),
-        'forc_po2_grc': jnp.full((grid_size,), ival, dtype=r8),
-        'forc_solad_grc': jnp.full((grid_size, numrad), ival, dtype=r8),
-        'forc_solai_grc': jnp.full((grid_size, numrad), ival, dtype=r8),
-        'forc_t_downscaled_col': jnp.full((col_size,), ival, dtype=r8),
-        'forc_q_downscaled_col': jnp.full((col_size,), ival, dtype=r8),
-        'forc_pbot_downscaled_col': jnp.full((col_size,), ival, dtype=r8),
-        'forc_lwrad_downscaled_col': jnp.full((col_size,), ival, dtype=r8),
-        'forc_rain_downscaled_col': jnp.full((col_size,), ival, dtype=r8),
-        'forc_snow_downscaled_col': jnp.full((col_size,), ival, dtype=r8),
-    }
-
-
-# Public interface
-__all__ = ['atm2lnd_type', 'create_atm2lnd_instance', 'init_atm2lnd_arrays']
+    return InitAllocate(bounds)

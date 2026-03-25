@@ -12,19 +12,12 @@ import numpy as np
 from typing import Final
 
 # Import dependencies
-try:
-    from ..cime_src_share_util.shr_kind_mod import r8
-except ImportError:
-    # Fallback for when running outside package context
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from cime_src_share_util.shr_kind_mod import r8
+from clm_share.shr_kind_mod import r8
 
 
 # Mathematical constants used in CLM
 rpi: Final[float] = 3.141592654  # pi
-
+pi: Final[float] = rpi  # Alias for pi to match Fortran variable name
 
 # Physical constants used in CLM
 class PhysicalConstants:

@@ -1,227 +1,87 @@
 """
-Leaf Heat Capacity Module.
+JAX translation of MLLeafHeatCapacityMod Fortran module.
 
-Translated from CTSM's MLLeafHeatCapacityMod.F90
+Calculate leaf heat capacity for each canopy layer.
 
-This module provides functions for calculating leaf heat capacity in the
-multilayer canopy model. Leaf heat capacity determines how much energy is
-required to change leaf temperature and affects the thermal inertia of
-the canopy.
-
-Key physics:
-    - Heat capacity depends on leaf water content and dry matter
-    - Affects leaf temperature response to radiative forcing
-    - Important for diurnal temperature cycles
-
-Key equations (lines 64-69):
-    lma = 1 / slatop * 0.001                    [kg C / m2]
-    dry_weight = lma / fcarbon                  [kg DM / m2]
-    fresh_weight = dry_weight / (1 - fwater)    [kg FM / m2]
-    leaf_water = fwater * fresh_weight          [kg H2O / m2]
-    cpleaf = cpbio * dry_weight + cpliq * leaf_water  [J/K/m2 leaf]
-
-Where:
-    - slatop: Specific leaf area at canopy top [m2/gC]
-    - fcarbon: Carbon fraction of dry biomass (0.5)
-    - fwater: Water fraction of fresh biomass (0.7)
-    - cpbio: Heat capacity of dry biomass [J/kg/K]
-    - cpliq: Heat capacity of liquid water [J/kg/K]
-
-Reference:
-    MLLeafHeatCapacityMod.F90, lines 1-83
+Original Fortran module: MLLeafHeatCapacityMod
+Fortran lines 1-75
 """
 
-from typing import NamedTuple
-import jax
-import jax.numpy as jnp
+from __future__ import annotations
+
+from typing import Sequence
+
+from clm_src_main.clm_varcon import cpliq                    # noqa: F401
+from clm_src_main.PatchType import patch                     # noqa: F401
+from clm_src_main.pftconMod import pftcon                    # noqa: F401
+from multilayer_canopy.MLclm_varcon import cpbio, fcarbon, fwater  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type    # noqa: F401
 
 
-# =============================================================================
-# Type Definitions
-# =============================================================================
-
-
-class LeafHeatCapacityInput(NamedTuple):
-    """Input data for leaf heat capacity calculation.
-    
-    Attributes:
-        slatop: Specific leaf area at top of canopy [m2/gC] [n_patches]
-        ncan: Number of aboveground layers [n_patches]
-        dpai: Canopy layer plant area index [m2/m2] [n_patches, n_levels]
-        cpbio: Heat capacity of dry biomass [J/kg/K] (scalar)
-        cpliq: Heat capacity of liquid water [J/kg/K] (scalar)
-        fcarbon: Carbon fraction of dry biomass (0.5) (scalar)
-        fwater: Water fraction of fresh biomass (0.7) (scalar)
+def LeafHeatCapacity(
+    num_filter: int,
+    filter_patch: Sequence[int],
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
     """
-    slatop: jnp.ndarray  # [n_patches]
-    ncan: jnp.ndarray  # [n_patches]
-    dpai: jnp.ndarray  # [n_patches, n_levels]
-    cpbio: float
-    cpliq: float
-    fcarbon: float
-    fwater: float
+    Calculate leaf heat capacity for each canopy layer.
 
+    Mirrors Fortran subroutine ``LeafHeatCapacity`` (lines 22-75).
 
-class LeafHeatCapacityParams(NamedTuple):
-    """Parameters for leaf heat capacity calculations.
-    
-    These are typically constants from CLM physics modules.
-    
-    Attributes:
-        cpbio: Heat capacity of dry biomass [J/kg/K]
-               Typical value: 1470.0 (from MLclm_varcon)
-        cpliq: Heat capacity of liquid water [J/kg/K]
-               Typical value: 4188.0 (from clm_varcon)
-        fcarbon: Carbon fraction of dry biomass [-]
-                 Typical value: 0.5 (from MLclm_varcon)
-        fwater: Water fraction of fresh biomass [-]
-                Typical value: 0.7 (from MLclm_varcon)
-    """
-    cpbio: float = 1470.0
-    cpliq: float = 4188.0
-    fcarbon: float = 0.5
-    fwater: float = 0.7
+    Reference: Bonan et al. (2018) *Geosci. Model Dev.*, 11, 1467-1496,
+    doi:10.5194/gmd-11-1467-2018, eq. (A29).
 
+    The derivation converts specific leaf area (m2/gC) to leaf mass
+    per area and then accounts for the water fraction of fresh biomass
+    (Fortran lines 55-65):
 
-# =============================================================================
-# Main Functions
-# =============================================================================
+    .. code-block:: none
 
+        lma          = 1/slatop * 0.001          [kg C / m2 leaf]
+        dry_weight   = lma / fcarbon             [kg DM / m2 leaf]
+        fresh_weight = dry_weight / (1 - fwater) [kg FM / m2 leaf]
+        leaf_water   = fwater * fresh_weight     [kg H2O / m2 leaf]
+        cpleaf       = cpbio * dry_weight + cpliq * leaf_water  [J/K/m2 leaf]
 
-def leaf_heat_capacity(inputs: LeafHeatCapacityInput) -> jnp.ndarray:
-    """Calculate leaf heat capacity for multilayer canopy.
-    
-    Converts specific leaf area to leaf mass per area, then calculates heat
-    capacity accounting for both dry biomass and water content. The calculation
-    follows these steps (lines 47-54):
-    
-    1. Convert specific leaf area (m2/gC) to leaf carbon mass (kg C/m2)
-    2. Convert carbon mass to dry weight (assume carbon is 50% of dry biomass)
-    3. Convert dry weight to fresh weight (assume 70% of fresh biomass is water)
-    4. Calculate leaf water content
-    5. Calculate total heat capacity from dry biomass and water
-    
-    The heat capacity is only calculated for layers with plant area index > 0.
-    
+    Layers with ``dpai == 0`` receive ``cpleaf = 0``.
+
     Args:
-        inputs: LeafHeatCapacityInput containing all required fields
-        
+        num_filter: Number of patches in the filter.
+        filter_patch: Patch index filter (1-based values).
+        mlcanopy_inst: Canopy container; ``cpleaf_profile`` is updated.
+
     Returns:
-        Leaf heat capacity [J/m2 leaf/K] [n_patches, n_levels]
-        
-    Reference:
-        MLLeafHeatCapacityMod.F90, lines 22-81
-        
-    Note:
-        - Returns 0 for layers where dpai <= 0 (line 63)
-        - All calculations are vectorized for JIT compilation
-        - Preserves exact physics from Fortran implementation
+        Updated :class:`mlcanopy_type`.
     """
-    # Extract inputs
-    slatop = inputs.slatop
-    dpai = inputs.dpai
-    cpbio = inputs.cpbio
-    cpliq = inputs.cpliq
-    fcarbon = inputs.fcarbon
-    fwater = inputs.fwater
-    
-    # Broadcast slatop to match dpai shape for vectorized calculation
-    # slatop: [n_patches] -> [n_patches, 1]
-    slatop_expanded = slatop[:, jnp.newaxis]
-    
-    # Line 64: Convert specific leaf area to leaf carbon mass per area
-    # slatop is in m2/gC, convert to kg C/m2
-    # lma = 1 / slatop * 0.001
-    lma = 1.0 / slatop_expanded * 0.001
-    
-    # Line 65: Convert carbon mass to dry weight
-    # Assume carbon is 50% of dry biomass (fcarbon = 0.5)
-    # kg C/m2 -> kg DM/m2
-    dry_weight = lma / fcarbon
-    
-    # Line 66: Convert dry weight to fresh weight
-    # Assume 70% of fresh biomass is water (fwater = 0.7)
-    # kg DM/m2 -> kg FM/m2
-    fresh_weight = dry_weight / (1.0 - fwater)
-    
-    # Line 67: Calculate leaf water content
-    # kg H2O/m2 leaf
-    leaf_water = fwater * fresh_weight
-    
-    # Line 68: Calculate heat capacity
-    # Heat capacity = (dry biomass heat capacity * dry weight) + 
-    #                 (water heat capacity * water content)
-    # J/K/m2 leaf
-    cpleaf_calc = cpbio * dry_weight + cpliq * leaf_water
-    
-    # Line 63: Only calculate where dpai > 0, otherwise set to 0
-    # Lines 69-70: if (dpai(p,iv) > 0._r8) then ... else cpleaf(p,iv) = 0._r8
-    cpleaf = jnp.where(dpai > 0.0, cpleaf_calc, 0.0)
-    
-    return cpleaf
+    slatop = pftcon.slatop
+    ncan   = mlcanopy_inst.ncan_canopy
+    dpai   = mlcanopy_inst.dpai_profile
+    cpleaf = mlcanopy_inst.cpleaf_profile
 
+    for fp in range(1, num_filter + 1):            # Fortran: do fp = 1, num_filter
+        p   = int(filter_patch[fp - 1])
+        pft = int(patch.itype[p])
 
-def leaf_heat_capacity_simple(
-    slatop: jnp.ndarray,
-    dpai: jnp.ndarray,
-    params: LeafHeatCapacityParams = LeafHeatCapacityParams(),
-) -> jnp.ndarray:
-    """Simplified interface for leaf heat capacity calculation.
-    
-    This is a convenience function that wraps the main calculation with
-    default parameters. Useful when parameters are constant across the
-    simulation.
-    
-    Args:
-        slatop: Specific leaf area at top of canopy [m2/gC] [n_patches]
-        dpai: Canopy layer plant area index [m2/m2] [n_patches, n_levels]
-        params: Physical parameters (uses defaults if not provided)
-        
-    Returns:
-        Leaf heat capacity [J/m2 leaf/K] [n_patches, n_levels]
-        
-    Example:
-        >>> slatop = jnp.array([0.01, 0.015])  # m2/gC
-        >>> dpai = jnp.array([[1.0, 0.5, 0.0], [1.2, 0.8, 0.3]])
-        >>> cpleaf = leaf_heat_capacity_simple(slatop, dpai)
-    """
-    # Create input structure
-    n_patches = slatop.shape[0]
-    ncan = jnp.full(n_patches, dpai.shape[1], dtype=jnp.int32)
-    
-    inputs = LeafHeatCapacityInput(
-        slatop=slatop,
-        ncan=ncan,
-        dpai=dpai,
-        cpbio=params.cpbio,
-        cpliq=params.cpliq,
-        fcarbon=params.fcarbon,
-        fwater=params.fwater,
-    )
-    
-    return leaf_heat_capacity(inputs)
+        for ic in range(1, int(ncan[p]) + 1):      # Fortran: do ic = 1, ncan(p)
 
+            if float(dpai[p, ic]) > 0.0:           # Fortran lines 56-64
 
-# =============================================================================
-# JIT-compiled versions
-# =============================================================================
+                # Leaf carbon mass per area: m2/gC → kg C/m2 — Fortran line 57
+                lma = 1.0 / float(slatop[pft]) * 0.001
 
+                # Leaf dry mass per area: kg C/m2 → kg DM/m2 — Fortran line 58
+                dry_weight = lma / fcarbon
 
-# Pre-compile the main function for performance
-leaf_heat_capacity_jit = jax.jit(leaf_heat_capacity)
-leaf_heat_capacity_simple_jit = jax.jit(leaf_heat_capacity_simple)
+                # Leaf fresh mass per area: kg DM/m2 → kg FM/m2 — Fortran line 59
+                fresh_weight = dry_weight / (1.0 - fwater)
 
+                # Leaf water content: kg H2O/m2 leaf — Fortran line 60
+                leaf_water = fwater * fresh_weight
 
-# =============================================================================
-# Public API
-# =============================================================================
+                # Heat capacity: J/K/m2 leaf — Fortran line 61
+                cpleaf = cpleaf.at[p, ic].set(cpbio * dry_weight + cpliq * leaf_water)
 
+            else:
+                cpleaf = cpleaf.at[p, ic].set(0.0)  # Fortran line 63
 
-__all__ = [
-    'LeafHeatCapacityInput',
-    'LeafHeatCapacityParams',
-    'leaf_heat_capacity',
-    'leaf_heat_capacity_simple',
-    'leaf_heat_capacity_jit',
-    'leaf_heat_capacity_simple_jit',
-]
+    return mlcanopy_inst._replace(cpleaf_profile = cpleaf)

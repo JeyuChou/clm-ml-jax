@@ -1,438 +1,394 @@
 """
-Tower Data Module - Flux Tower Site Parameters.
+JAX translation of TowerDataMod Fortran module.
 
-Translated from CTSM's TowerDataMod.F90 (lines 1-100)
+Parameters for flux tower sites used in offline CLM simulations.
+Provides site identifiers, geographic coordinates, vegetation and
+soil properties, canopy structure parameters, and meteorological
+forcing time steps for 15 AmeriFlux and CHATS tower sites.
 
-This module contains parameters for flux tower sites used in offline simulations.
-Each tower site has associated metadata including location, vegetation type,
-soil properties, and measurement characteristics.
-
-The data is stored as immutable arrays that can be indexed by tower site number.
-Tower sites are used for single-point offline simulations to validate model
-physics against eddy covariance flux measurements.
-
-Key tower parameters:
-    - Location: Latitude/longitude coordinates
-    - Vegetation: CLM PFT (Plant Functional Type) index
-    - Soil: Texture class, sand/clay percentages, organic matter, color
-    - Structure: Tower height, canopy height, bedrock depth
-    - Forcing: Time step of meteorological forcing data
-
-Usage:
-    >>> tower_data = create_tower_data()
-    >>> lat = tower_data.tower_lat[0]  # Get US-Ha1 latitude
-    >>> pft = get_tower_parameter(tower_data, 3, 'tower_pft')  # Get US-UMB PFT
+Original Fortran module: TowerDataMod
+Fortran lines 1-130
 """
 
-from typing import NamedTuple, Dict, List
 import jax.numpy as jnp
+from jax import Array
 
 
-# =============================================================================
-# Constants and Parameters
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Mutable scalar: current tower site index — Fortran line 14
+# Set by controlMod.control() after matching tower_name to tower_id.
+# ---------------------------------------------------------------------------
 
-# Number of tower sites (line 16)
-NTOWER: int = 15
+tower_num: int = 0    # Tower site index (1-based into arrays below; 0 = unset)
 
-# Tower site name mapping (lines 36-38)
-# Encoded as integers for JAX compatibility
-# Index mapping:
-#   0: US-Ha1 (Harvard Forest, MA - deciduous broadleaf)
-#   1: US-Ho1 (Howland Forest, ME - evergreen needleleaf)
-#   2: US-MMS (Morgan Monroe State Forest, IN - deciduous broadleaf)
-#   3: US-UMB (UMBS, MI - deciduous broadleaf)
-#   4: US-Dk3 (Duke Forest, NC - evergreen needleleaf)
-#   5: US-Me2 (Metolius, OR - evergreen needleleaf)
-#   6: US-Var (Vaira Ranch, CA - grassland)
-#   7: US-IB1 (Fermi Lab, IL - grassland)
-#   8: US-Ne3 (Mead, NE - cropland)
-#   9: US-ARM (ARM SGP, OK - cropland)
-#  10: US-Bo1 (Bondville, IL - cropland)
-#  11: US-Dk1 (Duke Forest, NC - grassland)
-#  12: US-Dk2 (Duke Forest, NC - deciduous broadleaf)
-#  13: CHATS7 (CHATS, CA - grassland)
-#  14: UMBSmw (UMBS, MI - deciduous broadleaf)
-TOWER_ID_NAMES: List[str] = [
-    'US-Ha1', 'US-Ho1', 'US-MMS', 'US-UMB', 'US-Dk3', 'US-Me2',
-    'US-Var', 'US-IB1', 'US-Ne3', 'US-ARM', 'US-Bo1', 'US-Dk1',
-    'US-Dk2', 'CHATS7', 'UMBSmw'
+
+# ---------------------------------------------------------------------------
+# Dimension constant — Fortran line 16
+# ---------------------------------------------------------------------------
+
+ntower: int = 15    # Number of tower sites
+
+
+# ---------------------------------------------------------------------------
+# Tower site identifiers — Fortran lines 33-35
+# Index convention: 1-based (index 0 unused), matching Fortran array(ntower).
+# All arrays have length ntower + 1; index 0 is a placeholder.
+# ---------------------------------------------------------------------------
+
+# Tower site names — Fortran: character(len=6) :: tower_id(ntower)
+tower_id: list[str] = [
+    '',          # index 0: unused
+    'US-Ha1',    #  1
+    'US-Ho1',    #  2
+    'US-MMS',    #  3
+    'US-UMB',    #  4
+    'US-Dk3',    #  5
+    'US-Me2',    #  6
+    'US-Var',    #  7
+    'US-IB1',    #  8
+    'US-Ne3',    #  9
+    'US-ARM',    # 10
+    'US-Bo1',    # 11
+    'US-Dk1',    # 12
+    'US-Dk2',    # 13
+    'CHATS7',    # 14
+    'UMBSmw',    # 15
 ]
 
-# Soil texture class mapping (lines 50-56)
-# Index mapping:
-#   0: loam
-#   1: sandy loam
-#   2: clay
-#   3: sand
-#   4: silty loam
-#   5: silty clay loam
-#   6: clay loam
-TOWER_TEX_NAMES: List[str] = [
-    'loam', 'sandy loam', 'clay', 'sand', 'silty loam',
-    'silty clay loam', 'clay loam'
+# ---------------------------------------------------------------------------
+# Geographic coordinates — Fortran lines 37-44
+# ---------------------------------------------------------------------------
+
+# Latitude of tower (degrees) — Fortran: real(r8) :: tower_lat(ntower)
+tower_lat: Array = jnp.array([
+     0.00,    # index 0: unused
+    42.54,    #  1  US-Ha1
+    45.20,    #  2  US-Ho1
+    39.32,    #  3  US-MMS
+    45.56,    #  4  US-UMB
+    35.98,    #  5  US-Dk3
+    44.45,    #  6  US-Me2
+    38.41,    #  7  US-Var
+    41.86,    #  8  US-IB1
+    41.18,    #  9  US-Ne3
+    36.61,    # 10  US-ARM
+    40.01,    # 11  US-Bo1
+    35.97,    # 12  US-Dk1
+    35.97,    # 13  US-Dk2
+    38.49,    # 14  CHATS7
+    45.56,    # 15  UMBSmw
+], dtype=jnp.float64)
+
+# Longitude of tower (degrees) — Fortran: real(r8) :: tower_lon(ntower)
+tower_lon: Array = jnp.array([
+       0.00,    # index 0: unused
+     -72.17,    #  1  US-Ha1
+     -68.74,    #  2  US-Ho1
+     -86.41,    #  3  US-MMS
+     -84.71,    #  4  US-UMB
+     -79.09,    #  5  US-Dk3
+    -121.56,    #  6  US-Me2
+    -120.95,    #  7  US-Var
+     -88.22,    #  8  US-IB1
+     -96.44,    #  9  US-Ne3
+     -97.49,    # 10  US-ARM
+     -88.29,    # 11  US-Bo1
+     -79.09,    # 12  US-Dk1
+     -79.10,    # 13  US-Dk2
+    -121.84,    # 14  CHATS7
+     -84.71,    # 15  UMBSmw
+], dtype=jnp.float64)
+
+# ---------------------------------------------------------------------------
+# Vegetation — Fortran lines 46-48
+# ---------------------------------------------------------------------------
+
+# CLM PFT for tower site — Fortran: integer :: tower_pft(ntower)
+tower_pft: Array = jnp.array([
+     0,    # index 0: unused
+     7,    #  1  US-Ha1  broadleaf_deciduous_temperate_tree
+     2,    #  2  US-Ho1  needleleaf_evergreen_boreal_tree
+     7,    #  3  US-MMS  broadleaf_deciduous_temperate_tree
+     7,    #  4  US-UMB  broadleaf_deciduous_temperate_tree
+     1,    #  5  US-Dk3  needleleaf_evergreen_temperate_tree
+     2,    #  6  US-Me2  needleleaf_evergreen_boreal_tree
+    13,    #  7  US-Var  c3_non-arctic_grass
+    15,    #  8  US-IB1  c3_crop
+    15,    #  9  US-Ne3  c3_crop
+    15,    # 10  US-ARM  c3_crop
+    15,    # 11  US-Bo1  c3_crop
+    13,    # 12  US-Dk1  c3_non-arctic_grass
+     7,    # 13  US-Dk2  broadleaf_deciduous_temperate_tree
+     7,    # 14  CHATS7  broadleaf_deciduous_temperate_tree
+     7,    # 15  UMBSmw  broadleaf_deciduous_temperate_tree
+], dtype=jnp.int32)
+
+# ---------------------------------------------------------------------------
+# Soil properties — Fortran lines 50-77
+# ---------------------------------------------------------------------------
+
+# Soil texture class name — Fortran: character(len=15) :: tower_tex(ntower)
+# Used when tower_sand/tower_clay are both < 0.
+tower_tex: list[str] = [
+    '',                    # index 0: unused
+    'loam',                #  1  US-Ha1
+    'sandy loam',          #  2  US-Ho1
+    'clay',                #  3  US-MMS
+    'sand',                #  4  US-UMB
+    'sandy loam',          #  5  US-Dk3
+    'sandy loam',          #  6  US-Me2
+    'silty loam',          #  7  US-Var
+    'silty clay loam',     #  8  US-IB1
+    'clay loam',           #  9  US-Ne3
+    'clay',                # 10  US-ARM
+    'silty loam',          # 11  US-Bo1
+    'sandy loam',          # 12  US-Dk1
+    'sandy loam',          # 13  US-Dk2
+    'silty clay loam',     # 14  CHATS7
+    'sand',                # 15  UMBSmw
 ]
 
-# Missing value indicator for tower height (line 83)
-MISSING_TOWER_HEIGHT: float = -999.0
+# Percent sand (used when >= 0; -999 triggers texture class lookup)
+# Fortran: real(r8) :: tower_sand(ntower)
+tower_sand: Array = jnp.array([
+      0.0,     # index 0: unused
+   -999.0,     #  1  US-Ha1
+   -999.0,     #  2  US-Ho1
+   -999.0,     #  3  US-MMS
+   -999.0,     #  4  US-UMB
+   -999.0,     #  5  US-Dk3
+   -999.0,     #  6  US-Me2
+   -999.0,     #  7  US-Var
+   -999.0,     #  8  US-IB1
+   -999.0,     #  9  US-Ne3
+   -999.0,     # 10  US-ARM
+   -999.0,     # 11  US-Bo1
+   -999.0,     # 12  US-Dk1
+   -999.0,     # 13  US-Dk2
+     10.0,     # 14  CHATS7
+   -999.0,     # 15  UMBSmw
+], dtype=jnp.float64)
 
+# Percent clay (used when >= 0; -999 triggers texture class lookup)
+# Fortran: real(r8) :: tower_clay(ntower)
+tower_clay: Array = jnp.array([
+      0.0,     # index 0: unused
+   -999.0,     #  1  US-Ha1
+   -999.0,     #  2  US-Ho1
+   -999.0,     #  3  US-MMS
+   -999.0,     #  4  US-UMB
+   -999.0,     #  5  US-Dk3
+   -999.0,     #  6  US-Me2
+   -999.0,     #  7  US-Var
+   -999.0,     #  8  US-IB1
+   -999.0,     #  9  US-Ne3
+   -999.0,     # 10  US-ARM
+   -999.0,     # 11  US-Bo1
+   -999.0,     # 12  US-Dk1
+   -999.0,     # 13  US-Dk2
+     35.0,     # 14  CHATS7
+   -999.0,     # 15  UMBSmw
+], dtype=jnp.float64)
 
-# =============================================================================
-# Type Definitions
-# =============================================================================
+# Soil organic matter (kg/m3) — Fortran lines 67-70
+# Fortran: real(r8) :: tower_organic(ntower)
+tower_organic: Array = jnp.array([
+     0.0,    # index 0: unused
+     0.0,    #  1  US-Ha1
+     0.0,    #  2  US-Ho1
+     0.0,    #  3  US-MMS
+     0.0,    #  4  US-UMB
+     0.0,    #  5  US-Dk3
+     0.0,    #  6  US-Me2
+     0.0,    #  7  US-Var
+     0.0,    #  8  US-IB1
+     0.0,    #  9  US-Ne3
+     0.0,    # 10  US-ARM
+     0.0,    # 11  US-Bo1
+     0.0,    # 12  US-Dk1
+     0.0,    # 13  US-Dk2
+    50.0,    # 14  CHATS7
+     0.0,    # 15  UMBSmw
+], dtype=jnp.float64)
 
-class TowerData(NamedTuple):
-    """Immutable container for flux tower site parameters.
-    
-    All arrays have shape [ntower] where ntower=15.
-    
-    Attributes:
-        tower_id: Tower site names (encoded as integers for JAX compatibility)
-                  [dimensionless] [ntower]
-        tower_lat: Latitude of tower [degrees North] [ntower]
-        tower_lon: Longitude of tower [degrees East] [ntower]
-        tower_pft: CLM PFT (Plant Functional Type) index [dimensionless] [ntower]
-        tower_tex: Soil texture class (encoded as integers) [dimensionless] [ntower]
-        tower_sand: Percent sand (negative if not specified) [%] [ntower]
-        tower_clay: Percent clay (negative if not specified) [%] [ntower]
-        tower_organic: Soil organic matter content [kg/m3] [ntower]
-        tower_isoicol: CLM soil color class [dimensionless] [ntower]
-        tower_zbed: Depth to bedrock [m] [ntower]
-        tower_ht: Flux tower measurement height [m] [ntower]
-        tower_canht: Canopy height [m] [ntower]
-        tower_time: Time step of forcing data [minutes] [ntower]
-        
-    Note:
-        Negative values in tower_sand and tower_clay indicate that the
-        tower_tex texture class should be used instead of explicit percentages.
-    """
-    tower_id: jnp.ndarray  # Shape: [15], dtype: int32
-    tower_lat: jnp.ndarray  # Shape: [15], dtype: float64
-    tower_lon: jnp.ndarray  # Shape: [15], dtype: float64
-    tower_pft: jnp.ndarray  # Shape: [15], dtype: int32
-    tower_tex: jnp.ndarray  # Shape: [15], dtype: int32
-    tower_sand: jnp.ndarray  # Shape: [15], dtype: float64
-    tower_clay: jnp.ndarray  # Shape: [15], dtype: float64
-    tower_organic: jnp.ndarray  # Shape: [15], dtype: float64
-    tower_isoicol: jnp.ndarray  # Shape: [15], dtype: int32
-    tower_zbed: jnp.ndarray  # Shape: [15], dtype: float64
-    tower_ht: jnp.ndarray  # Shape: [15], dtype: float64
-    tower_canht: jnp.ndarray  # Shape: [15], dtype: float64
-    tower_time: jnp.ndarray  # Shape: [15], dtype: int32
+# CLM soil color class — Fortran lines 72-74
+# Fortran: integer :: tower_isoicol(ntower)
+tower_isoicol: Array = jnp.array([
+     0,    # index 0: unused
+    18,    #  1  US-Ha1
+    16,    #  2  US-Ho1
+    15,    #  3  US-MMS
+    17,    #  4  US-UMB
+    15,    #  5  US-Dk3
+    20,    #  6  US-Me2
+    17,    #  7  US-Var
+    15,    #  8  US-IB1
+    13,    #  9  US-Ne3
+    13,    # 10  US-ARM
+    15,    # 11  US-Bo1
+    15,    # 12  US-Dk1
+    15,    # 13  US-Dk2
+    15,    # 14  CHATS7
+    17,    # 15  UMBSmw
+], dtype=jnp.int32)
 
+# Depth to bedrock (m) — Fortran lines 76-79
+# Fortran: real(r8) :: tower_zbed(ntower)
+tower_zbed: Array = jnp.array([
+     0.0,    # index 0: unused
+    50.0,    #  1  US-Ha1
+    50.0,    #  2  US-Ho1
+    50.0,    #  3  US-MMS
+    50.0,    #  4  US-UMB
+    50.0,    #  5  US-Dk3
+    50.0,    #  6  US-Me2
+    50.0,    #  7  US-Var
+    50.0,    #  8  US-IB1
+    50.0,    #  9  US-Ne3
+    50.0,    # 10  US-ARM
+    50.0,    # 11  US-Bo1
+    50.0,    # 12  US-Dk1
+    50.0,    # 13  US-Dk2
+     2.0,    # 14  CHATS7
+    50.0,    # 15  UMBSmw
+], dtype=jnp.float64)
 
-# =============================================================================
-# Data Initialization Functions
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Canopy and measurement structure — Fortran lines 81-100
+# ---------------------------------------------------------------------------
 
-def create_tower_data() -> TowerData:
-    """Create immutable tower data structure with all site parameters.
-    
-    Initializes the complete set of flux tower site parameters from the
-    original CTSM TowerDataMod.F90 data statements. All values are hardcoded
-    to match the Fortran source exactly.
-    
-    Returns:
-        TowerData: Immutable NamedTuple containing all tower site parameters
-                   for 15 flux tower sites
-        
-    Note:
-        Data values are from TowerDataMod.F90 lines 36-98.
-        Negative sand/clay values (-1.0) indicate texture class should be
-        used instead of explicit percentages.
-        
-    Reference:
-        TowerDataMod.F90 lines 1-100
-    """
-    # Tower site IDs (lines 36-38) - encoded as indices
-    tower_id = jnp.array(
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
-        dtype=jnp.int32
-    )
-    
-    # Latitude (lines 40-43) [degrees North]
-    tower_lat = jnp.array([
-        42.54,  # US-Ha1: Harvard Forest, MA
-        45.20,  # US-Ho1: Howland Forest, ME
-        39.32,  # US-MMS: Morgan Monroe, IN
-        45.56,  # US-UMB: UMBS, MI
-        35.98,  # US-Dk3: Duke Forest, NC
-        44.45,  # US-Me2: Metolius, OR
-        38.41,  # US-Var: Vaira Ranch, CA
-        41.86,  # US-IB1: Fermi Lab, IL
-        41.18,  # US-Ne3: Mead, NE
-        36.61,  # US-ARM: ARM SGP, OK
-        40.01,  # US-Bo1: Bondville, IL
-        35.97,  # US-Dk1: Duke Forest, NC
-        35.97,  # US-Dk2: Duke Forest, NC
-        38.49,  # CHATS7: CHATS, CA
-        45.56   # UMBSmw: UMBS, MI
-    ], dtype=jnp.float64)
-    
-    # Longitude (lines 45-47) [degrees East]
-    tower_lon = jnp.array([
-        -72.17,   # US-Ha1
-        -68.74,   # US-Ho1
-        -86.41,   # US-MMS
-        -84.71,   # US-UMB
-        -79.09,   # US-Dk3
-        -121.56,  # US-Me2
-        -120.95,  # US-Var
-        -88.22,   # US-IB1
-        -96.44,   # US-Ne3
-        -97.49,   # US-ARM
-        -88.29,   # US-Bo1
-        -79.09,   # US-Dk1
-        -79.10,   # US-Dk2
-        -121.84,  # CHATS7
-        -84.71    # UMBSmw
-    ], dtype=jnp.float64)
-    
-    # CLM PFT (Plant Functional Type) index (line 51)
-    # PFT mapping:
-    #   1: Evergreen needleleaf
-    #   2: Evergreen broadleaf
-    #   7: Deciduous broadleaf
-    #  13: C3 grass
-    #  15: Crop
-    tower_pft = jnp.array(
-        [7, 2, 7, 7, 1, 2, 13, 15, 15, 15, 15, 13, 7, 7, 7],
-        dtype=jnp.int32
-    )
-    
-    # Soil texture class (lines 57-60) - encoded as indices
-    # 0: loam, 1: sandy loam, 2: clay, 3: sand, 4: silty loam,
-    # 5: silty clay loam, 6: clay loam
-    tower_tex = jnp.array(
-        [0, 1, 2, 3, 1, 1, 4, 5, 6, 2, 4, 1, 1, 5, 3],
-        dtype=jnp.int32
-    )
-    
-    # Percent sand (lines 62-64) [%]
-    # Negative values indicate texture class should be used
-    tower_sand = jnp.array([
-        -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
-        -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
-        -1.0, 10.0, -1.0  # Only CHATS7 has explicit sand percentage
-    ], dtype=jnp.float64)
-    
-    # Percent clay (lines 66-68) [%]
-    # Negative values indicate texture class should be used
-    tower_clay = jnp.array([
-        -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
-        -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
-        -1.0, 35.0, -1.0  # Only CHATS7 has explicit clay percentage
-    ], dtype=jnp.float64)
-    
-    # Soil organic matter (lines 70-73) [kg/m3]
-    tower_organic = jnp.array([
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 50.0, 0.0  # Only CHATS7 has organic matter specified
-    ], dtype=jnp.float64)
-    
-    # CLM soil color class (line 77) [dimensionless]
-    # Range: 1-20, where lower numbers are lighter colors
-    tower_isoicol = jnp.array(
-        [18, 16, 15, 17, 15, 20, 17, 15, 13, 13, 15, 15, 15, 1, 17],
-        dtype=jnp.int32
-    )
-    
-    # Depth to bedrock (lines 79-81) [m]
-    tower_zbed = jnp.array([
-        50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0,
-        50.0, 50.0, 50.0, 50.0, 50.0, 50.0,
-        2.0,   # CHATS7 has shallow bedrock
-        50.0
-    ], dtype=jnp.float64)
-    
-    # Flux tower measurement height (lines 83-86) [m]
-    # -999.0 indicates missing value
-    tower_ht = jnp.array([
-        30.0,   # US-Ha1
-        29.0,   # US-Ho1
-        48.0,   # US-MMS
-        46.0,   # US-UMB
-        22.0,   # US-Dk3
-        32.0,   # US-Me2
-        2.5,    # US-Var
-        4.0,    # US-IB1
-        6.0,    # US-Ne3
-        -999.0, # US-ARM (missing)
-        6.0,    # US-Bo1
-        5.0,    # US-Dk1
-        42.0,   # US-Dk2
-        23.0,   # CHATS7
-        46.0    # UMBSmw
-    ], dtype=jnp.float64)
-    
-    # Canopy height (lines 88-91) [m]
-    tower_canht = jnp.array([
-        23.0,  # US-Ha1: tall forest
-        20.0,  # US-Ho1: tall forest
-        27.0,  # US-MMS: tall forest
-        21.0,  # US-UMB: tall forest
-        17.0,  # US-Dk3: forest
-        14.0,  # US-Me2: forest
-        0.6,   # US-Var: grassland
-        0.9,   # US-IB1: grassland
-        0.9,   # US-Ne3: crop
-        0.5,   # US-ARM: crop
-        0.9,   # US-Bo1: crop
-        0.5,   # US-Dk1: grassland
-        25.0,  # US-Dk2: tall forest
-        10.0,  # CHATS7: grassland
-        21.0   # UMBSmw: tall forest
-    ], dtype=jnp.float64)
-    
-    # Time step of forcing data (line 95) [minutes]
-    tower_time = jnp.array(
-        [60, 30, 60, 60, 30, 30, 30, 30, 60, 30, 30, 30, 30, 30, 60],
-        dtype=jnp.int32
-    )
-    
-    return TowerData(
-        tower_id=tower_id,
-        tower_lat=tower_lat,
-        tower_lon=tower_lon,
-        tower_pft=tower_pft,
-        tower_tex=tower_tex,
-        tower_sand=tower_sand,
-        tower_clay=tower_clay,
-        tower_organic=tower_organic,
-        tower_isoicol=tower_isoicol,
-        tower_zbed=tower_zbed,
-        tower_ht=tower_ht,
-        tower_canht=tower_canht,
-        tower_time=tower_time,
-    )
+# Flux tower height (m); -999 triggers a default of 30 m — Fortran lines 81-85
+# Fortran: real(r8) :: tower_ht(ntower)
+tower_ht: Array = jnp.array([
+      0.0,    # index 0: unused
+     30.0,    #  1  US-Ha1
+     29.0,    #  2  US-Ho1
+     48.0,    #  3  US-MMS
+     46.0,    #  4  US-UMB
+     22.0,    #  5  US-Dk3
+     32.0,    #  6  US-Me2
+      2.5,    #  7  US-Var
+      4.0,    #  8  US-IB1
+      6.0,    #  9  US-Ne3
+   -999.0,    # 10  US-ARM  (triggers default 30 m)
+      6.0,    # 11  US-Bo1
+      5.0,    # 12  US-Dk1
+     42.0,    # 13  US-Dk2
+     23.0,    # 14  CHATS7
+     46.0,    # 15  UMBSmw
+], dtype=jnp.float64)
 
+# Canopy height (m) — Fortran lines 87-91
+# Fortran: real(r8) :: tower_canht(ntower)
+tower_canht: Array = jnp.array([
+     0.0,    # index 0: unused
+    23.0,    #  1  US-Ha1
+    20.0,    #  2  US-Ho1
+    27.0,    #  3  US-MMS
+    21.0,    #  4  US-UMB
+    17.0,    #  5  US-Dk3
+    14.0,    #  6  US-Me2
+     0.6,    #  7  US-Var
+     0.9,    #  8  US-IB1
+     0.9,    #  9  US-Ne3
+     0.5,    # 10  US-ARM
+     0.9,    # 11  US-Bo1
+     0.5,    # 12  US-Dk1
+    25.0,    # 13  US-Dk2
+    10.0,    # 14  CHATS7
+    21.0,    # 15  UMBSmw
+], dtype=jnp.float64)
 
-# =============================================================================
-# Accessor Functions
-# =============================================================================
+# Fine root biomass (g biomass/m2); -999 = unavailable — Fortran lines 93-97
+# Fortran: real(r8) :: tower_root(ntower)
+tower_root: Array = jnp.array([
+      0.0,    # index 0: unused
+    500.0,    #  1  US-Ha1
+    500.0,    #  2  US-Ho1
+    500.0,    #  3  US-MMS
+    500.0,    #  4  US-UMB
+    500.0,    #  5  US-Dk3
+    500.0,    #  6  US-Me2
+   -999.0,    #  7  US-Var
+   -999.0,    #  8  US-IB1
+   -999.0,    #  9  US-Ne3
+   -999.0,    # 10  US-ARM
+   -999.0,    # 11  US-Bo1
+    500.0,    # 12  US-Dk1
+    500.0,    # 13  US-Dk2
+    500.0,    # 14  CHATS7
+    500.0,    # 15  UMBSmw
+], dtype=jnp.float64)
 
-def get_tower_parameter(
-    tower_data: TowerData,
-    tower_num: int,
-    parameter: str
-) -> jnp.ndarray:
-    """Get a specific parameter for a given tower site.
-    
-    Convenience function for accessing individual tower parameters by name.
-    For vectorized operations over multiple towers, access the arrays
-    directly from the TowerData structure.
-    
-    Args:
-        tower_data: TowerData structure containing all tower parameters
-        tower_num: Tower site index [0 to 14]
-        parameter: Name of parameter to retrieve (e.g., 'tower_lat', 'tower_pft')
-        
-    Returns:
-        Parameter value for the specified tower site (scalar or array element)
-        
-    Raises:
-        AttributeError: If parameter name is not valid
-        IndexError: If tower_num is out of range [0, 14]
-        
-    Example:
-        >>> tower_data = create_tower_data()
-        >>> lat = get_tower_parameter(tower_data, 0, 'tower_lat')
-        >>> print(f"US-Ha1 latitude: {lat}")
-        US-Ha1 latitude: 42.54
-        
-    Note:
-        This is a convenience function for accessing individual tower parameters.
-        For vectorized operations, access the arrays directly from tower_data.
-        
-    Reference:
-        TowerDataMod.F90 lines 1-100
-    """
-    if tower_num < 0 or tower_num >= NTOWER:
-        raise IndexError(f"tower_num must be in range [0, {NTOWER-1}], got {tower_num}")
-    param_array = getattr(tower_data, parameter)
-    return param_array[tower_num]
+# ---------------------------------------------------------------------------
+# Beta distribution parameters for leaf and stem area density profiles
+# Fortran lines 99-117
+# Shape (ntower+1, 2): index 0 unused; column 0 = param 1, column 1 = param 2.
+# -999 triggers PFT-specified values.
+# ---------------------------------------------------------------------------
 
+# Leaf area density beta distribution parameters — Fortran lines 99-107
+# Fortran: real(r8) :: tower_pbeta_lai(ntower,2)
+tower_pbeta_lai: Array = jnp.array([
+    [   0.0,    0.0],    # index 0: unused
+    [-999.0, -999.0],    #  1  US-Ha1
+    [-999.0, -999.0],    #  2  US-Ho1
+    [-999.0, -999.0],    #  3  US-MMS
+    [-999.0, -999.0],    #  4  US-UMB
+    [-999.0, -999.0],    #  5  US-Dk3
+    [  11.5,    3.5],    #  6  US-Me2
+    [-999.0, -999.0],    #  7  US-Var
+    [-999.0, -999.0],    #  8  US-IB1
+    [-999.0, -999.0],    #  9  US-Ne3
+    [-999.0, -999.0],    # 10  US-ARM
+    [-999.0, -999.0],    # 11  US-Bo1
+    [-999.0, -999.0],    # 12  US-Dk1
+    [-999.0, -999.0],    # 13  US-Dk2
+    [   2.6,    1.3],    # 14  CHATS7
+    [-999.0, -999.0],    # 15  UMBSmw
+], dtype=jnp.float64)
 
-def get_tower_name(tower_num: int) -> str:
-    """Get the name of a tower site from its index.
-    
-    Args:
-        tower_num: Tower site index [0 to 14]
-        
-    Returns:
-        Tower site name string
-        
-    Raises:
-        IndexError: If tower_num is out of range [0, 14]
-        
-    Example:
-        >>> name = get_tower_name(0)
-        >>> print(name)
-        US-Ha1
-    """
-    if tower_num < 0 or tower_num >= NTOWER:
-        raise IndexError(f"tower_num must be in range [0, {NTOWER-1}], got {tower_num}")
-    return TOWER_ID_NAMES[tower_num]
+# Stem area density beta distribution parameters — Fortran lines 109-117
+# Fortran: real(r8) :: tower_pbeta_sai(ntower,2)
+tower_pbeta_sai: Array = jnp.array([
+    [   0.0,    0.0],    # index 0: unused
+    [-999.0, -999.0],    #  1  US-Ha1
+    [-999.0, -999.0],    #  2  US-Ho1
+    [-999.0, -999.0],    #  3  US-MMS
+    [-999.0, -999.0],    #  4  US-UMB
+    [-999.0, -999.0],    #  5  US-Dk3
+    [  11.5,    3.5],    #  6  US-Me2
+    [-999.0, -999.0],    #  7  US-Var
+    [-999.0, -999.0],    #  8  US-IB1
+    [-999.0, -999.0],    #  9  US-Ne3
+    [-999.0, -999.0],    # 10  US-ARM
+    [-999.0, -999.0],    # 11  US-Bo1
+    [-999.0, -999.0],    # 12  US-Dk1
+    [-999.0, -999.0],    # 13  US-Dk2
+    [   1.8,    1.3],    # 14  CHATS7
+    [-999.0, -999.0],    # 15  UMBSmw
+], dtype=jnp.float64)
 
+# ---------------------------------------------------------------------------
+# Time step of forcing data — Fortran lines 119-121
+# ---------------------------------------------------------------------------
 
-def get_texture_name(texture_num: int) -> str:
-    """Get the name of a soil texture class from its index.
-    
-    Args:
-        texture_num: Texture class index [0 to 6]
-        
-    Returns:
-        Texture class name string
-        
-    Raises:
-        IndexError: If texture_num is out of range [0, 6]
-        
-    Example:
-        >>> texture = get_texture_name(0)
-        >>> print(texture)
-        loam
-    """
-    if texture_num < 0 or texture_num >= len(TOWER_TEX_NAMES):
-        raise IndexError(f"texture_num must be in range [0, {len(TOWER_TEX_NAMES)-1}], got {texture_num}")
-    return TOWER_TEX_NAMES[texture_num]
-
-
-def get_tower_metadata(tower_data: TowerData, tower_num: int) -> Dict[str, any]:
-    """Get all metadata for a tower site as a dictionary.
-    
-    Convenience function that returns all tower parameters in a
-    human-readable dictionary format with proper units.
-    
-    Args:
-        tower_data: TowerData structure containing all tower parameters
-        tower_num: Tower site index [0 to 14]
-        
-    Returns:
-        Dictionary containing all tower parameters with descriptive keys
-        
-    Example:
-        >>> tower_data = create_tower_data()
-        >>> metadata = get_tower_metadata(tower_data, 0)
-        >>> print(metadata['name'])
-        US-Ha1
-        >>> print(f"{metadata['latitude']:.2f}°N, {metadata['longitude']:.2f}°E")
-        42.54°N, -72.17°E
-    """
-    if tower_num < 0 or tower_num >= NTOWER:
-        raise IndexError(f"tower_num must be in range [0, {NTOWER-1}], got {tower_num}")
-    return {
-        'name': get_tower_name(tower_num),
-        'latitude': float(tower_data.tower_lat[tower_num]),
-        'longitude': float(tower_data.tower_lon[tower_num]),
-        'pft': int(tower_data.tower_pft[tower_num]),
-        'texture_class': get_texture_name(int(tower_data.tower_tex[tower_num])),
-        'sand_percent': float(tower_data.tower_sand[tower_num]),
-        'clay_percent': float(tower_data.tower_clay[tower_num]),
-        'organic_matter_kg_m3': float(tower_data.tower_organic[tower_num]),
-        'soil_color': int(tower_data.tower_isoicol[tower_num]),
-        'bedrock_depth_m': float(tower_data.tower_zbed[tower_num]),
-        'tower_height_m': float(tower_data.tower_ht[tower_num]),
-        'canopy_height_m': float(tower_data.tower_canht[tower_num]),
-        'forcing_timestep_min': int(tower_data.tower_time[tower_num]),
-    }
+# Forcing data time step (minutes) — Fortran: integer :: tower_time(ntower)
+tower_time: Array = jnp.array([
+     0,    # index 0: unused
+    60,    #  1  US-Ha1
+    30,    #  2  US-Ho1
+    60,    #  3  US-MMS
+    60,    #  4  US-UMB
+    30,    #  5  US-Dk3
+    30,    #  6  US-Me2
+    30,    #  7  US-Var
+    30,    #  8  US-IB1
+    60,    #  9  US-Ne3
+    30,    # 10  US-ARM
+    30,    # 11  US-Bo1
+    30,    # 12  US-Dk1
+    30,    # 13  US-Dk2
+    30,    # 14  CHATS7
+    60,    # 15  UMBSmw
+], dtype=jnp.int32)

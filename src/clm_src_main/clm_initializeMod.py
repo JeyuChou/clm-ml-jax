@@ -1,185 +1,102 @@
 """
-CLM initialization module
+JAX translation of clm_initializeMod Fortran module.
 
-This module performs land model initialization in two phases.
-Translated from Fortran CLM code to Python JAX.
+Performs land model initialization in two phases. Phase one initializes
+run control variables; phase two reads PFT parameters, builds the
+subgrid hierarchy, allocates filters, and initializes all derived-type
+instances and time-constant variables.
+
+Original Fortran module: clm_initializeMod
+Fortran lines 1-80
 """
 
-import jax
-import jax.numpy as jnp
-from typing import Any
-from pathlib import Path
-import os
-
-# Enable 64-bit floats in JAX (required for CLM precision)
-jax.config.update("jax_enable_x64", True)
-
-# Import dependencies
-try:
-    from ..cime_src_share_util.shr_kind_mod import r8
-    from .decompMod import BoundsType
-    from .clm_varpar import clm_varpar_init
-    from .pftconMod import pftcon
-    from .GridcellType import grc
-    from .ColumnType import col
-    from .PatchType import patch
-    from .initGridCellsMod import initGridCells
-    from .filterMod import allocFilters, filter
-    from .clm_instMod import clm_instInit
-    from ..multilayer_canopy.MLCanopyTurbulenceMod import LookupPsihatINI
-except ImportError:
-    # Fallback for when running outside package context
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from cime_src_share_util.shr_kind_mod import r8
-    from clm_src_main.decompMod import BoundsType
-    from clm_src_main.clm_varpar import clm_varpar_init
-    from clm_src_main.pftconMod import pftcon
-    from clm_src_main.GridcellType import grc
-    from clm_src_main.ColumnType import col
-    from clm_src_main.PatchType import patch
-    from clm_src_main.initGridCellsMod import initGridCells
-    from clm_src_main.filterMod import allocFilters, filter
-    from clm_src_main.clm_instMod import clm_instInit
-    from multilayer_canopy.MLCanopyTurbulenceMod import LookupPsihatINI
-
-# Alias for backward compatibility
-bounds_type = BoundsType
-
-# Default path for RSL lookup table file
-def _get_default_rsl_path() -> str:
-    """Get default path to RSL lookup table file."""
-    # Try to find the rsl_lookup_tables directory
-    module_dir = Path(__file__).parent.parent
-    
-    # Check common locations
-    possible_paths = [
-        module_dir.parent / "CLM-ml_v1" / "rsl_lookup_tables" / "psihat.nc",
-        module_dir.parent / "rsl_lookup_tables" / "psihat.nc",
-        Path.cwd() / "CLM-ml_v1" / "rsl_lookup_tables" / "psihat.nc",
-    ]
-    
-    for path in possible_paths:
-        if path.exists():
-            return str(path)
-    
-    # If file not found, return a placeholder path
-    # The initialize_rsl_tables function will handle missing files gracefully
-    return str(module_dir.parent / "CLM-ml_v1" / "rsl_lookup_tables" / "psihat.nc")
+from clm_src_main.decompMod import bounds_type                                      # noqa: F401
+from clm_src_main.clm_varpar import clm_varpar_init   
+from clm_src_main import pftconMod # noqa: F401
+from clm_src_main.pftconMod import pftcon                                           # noqa: F401
+from clm_src_main import GridcellType
+from clm_src_main.GridcellType import gridcell_type_Init                            # noqa: F401
+from clm_src_main import ColumnType
+from clm_src_main.ColumnType import init_column                                     # noqa: F401
+from clm_src_main.PatchType import patch                                            # noqa: F401
+from clm_src_main.initGridCellsMod import initGridCells                             # noqa: F401
+from clm_src_main.filterMod import allocFilters, filter                             # noqa: F401
+from clm_src_main.clm_instMod import clm_instInit                                   # noqa: F401
+from multilayer_canopy.MLpftconMod import MLpftcon, Init                                       # noqa: F401
+from multilayer_canopy.MLCanopyTurbulenceMod import LookupPsihatINI
+from multilayer_canopy import MLpftconMod                      # noqa: F401
 
 
-def initialize1(bounds: bounds_type) -> None:
+# ---------------------------------------------------------------------------
+# Public: phase one initialization
+# ---------------------------------------------------------------------------
+
+def initialize1() -> None:
     """
-    CLM initialization - first phase
-    
-    This function performs the first phase of CLM initialization including:
-    - Initializing run control variables
-    - Reading PFT parameters
-    - Initializing lookup tables
-    - Allocating memory for subgrid data structures
-    - Building subgrid hierarchy
-    - Allocating filters
-    
-    Args:
-        bounds: CLM bounds structure containing grid indices
+    CLM initialization — first phase.
+
+    Mirrors Fortran subroutine ``initialize1`` (lines 35-44).
+    Initializes run control variables by calling ``clm_varpar_init``.
+    This phase requires no decomposition bounds and must complete
+    before :func:`initialize2` is called.
     """
-    
-    # Initialize run control variables
+    # Initialize run control variables — Fortran line 42
     clm_varpar_init()
-    
-    # Read list of PFTs and their parameter values
-    pftcon.Init()
-    
-    # Initialize the look-up tables needed to calculate the CLMml
-    # roughness sublayer psihat functions
-    rsl_path = _get_default_rsl_path()
-    LookupPsihatINI(rsl_path)
-    
-    # Allocate memory for subgrid data structures
-    grc.Init(bounds.begg, bounds.endg)
-    col.Init(bounds.begc, bounds.endc)
-    patch.Init(bounds.begp, bounds.endp)
-    
-    # Build subgrid hierarchy of landunit, column, and patch
-    initGridCells()
-    
-    # Allocate filters
-    allocFilters(filter, bounds.begp, bounds.endp, bounds.begc, bounds.endc)
 
+
+# ---------------------------------------------------------------------------
+# Public: phase two initialization
+# ---------------------------------------------------------------------------
 
 def initialize2(bounds: bounds_type) -> None:
     """
-    CLM initialization - second phase
-    
-    This function performs the second phase of CLM initialization including:
-    - Initializing instances of all derived types
-    - Initializing time constant variables
-    
+    CLM initialization — second phase.
+
+    Mirrors Fortran subroutine ``initialize2`` (lines 46-76).
+
+    Executes the following initialization sequence:
+
+    1. Read CLM PFT parameter list and values (``pftcon.Init``).
+    2. Read CLMml PFT parameter list and values
+       (``MLpftcon.Init``).
+    3. Initialize look-up tables for the CLMml roughness sublayer
+       psihat functions (``LookupPsihatINI``).
+    4. Allocate memory for subgrid data structures
+       (``grc.Init``, ``col.Init``, ``patch.Init``).
+    5. Build the subgrid hierarchy of landunit, column, and patch
+       (``initGridCells``).
+    6. Allocate column and patch filters (``allocFilters``).
+    7. Initialize all derived-type instances and time-constant
+       variables (``clm_instInit``).
+
     Args:
-        bounds: CLM bounds structure containing grid indices
+        bounds: Decomposition bounds for the local MPI task, supplying
+            ``begg``, ``endg``, ``begc``, ``endc``, ``begp``, and
+            ``endp``.
     """
+    # Read list of PFTs and their parameter values — Fortran lines 54-55
+    pftconMod.pftcon   = pftconMod.Init()
+    MLpftconMod.MLpftcon = MLpftconMod.Init()
+
+    # Initialize CLMml roughness sublayer psihat look-up tables — Fortran line 59
+    LookupPsihatINI()      # CLMml
+
+    # Allocate memory for subgrid data structures — Fortran lines 61-63
+    GridcellType.grc = gridcell_type_Init(bounds.begg, bounds.endg)
+    ColumnType.col     = init_column(bounds.begc, bounds.endc)
     
-    # Initialize instances of all derived types as well as
-    # time constant variables
+    patch.Init(bounds.begp, bounds.endp)
+
+    # Build subgrid hierarchy of landunit, column, and patch — Fortran line 65
+    initGridCells()
+
+    # Allocate filters — Fortran line 67
+    # Note: allocFilters returns a new filter instance (functional style)
+    # but we're updating the global filter module variable
+    from clm_src_main.filterMod import filter as filter_module
+    global filter
+    filter = allocFilters(bounds.begp, bounds.endp, bounds.begc, bounds.endc)
+
+    # Initialize instances of all derived types and time-constant variables
+    # Fortran lines 70-72
     clm_instInit(bounds)
-
-
-# Note: JIT compilation is not compatible with these initialization functions
-# because they modify global state. The _jit versions are provided as aliases
-# for API compatibility but do NOT actually use JIT compilation.
-initialize1_jit = initialize1
-initialize2_jit = initialize2
-
-
-def full_initialize(bounds: bounds_type) -> None:
-    """
-    Complete CLM initialization - both phases
-    
-    Convenience function that runs both initialization phases in sequence.
-    
-    Args:
-        bounds: CLM bounds structure containing grid indices
-    """
-    initialize1(bounds)
-    initialize2(bounds)
-
-
-# JIT version is an alias (JIT not compatible with side effects)
-full_initialize_jit = full_initialize
-
-
-def validate_initialization(bounds: bounds_type) -> bool:
-    """
-    Validate that initialization was successful
-    
-    This function performs basic validation checks to ensure that
-    the initialization completed successfully.
-    
-    Args:
-        bounds: CLM bounds structure containing grid indices
-        
-    Returns:
-        True if initialization appears successful, False otherwise
-    """
-    try:
-        # Check that bounds are valid
-        if bounds.begg > bounds.endg or bounds.begc > bounds.endc or bounds.begp > bounds.endp:
-            return False
-            
-        # Check that basic structures are initialized
-        # Note: In a full implementation, you would check that grc, col, patch
-        # and other structures have been properly initialized
-        
-        return True
-        
-    except Exception:
-        return False
-
-
-# Public interface
-__all__ = [
-    'initialize1', 'initialize2', 'full_initialize',
-    'initialize1_jit', 'initialize2_jit', 'full_initialize_jit',
-    'validate_initialization'
-]

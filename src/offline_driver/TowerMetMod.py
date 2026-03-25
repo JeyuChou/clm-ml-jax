@@ -1,854 +1,545 @@
 """
-Tower Meteorology Module.
+JAX translation of TowerMetMod Fortran module.
 
-Translated from CTSM's TowerMetMod.F90
+Read tower meteorology forcing for offline CLM simulations. Provides
+routines to load atmospheric variables from tower netCDF files for the
+current and next CLM time steps, derive missing quantities (specific
+humidity, longwave radiation), partition solar radiation into direct
+and diffuse components per waveband, and populate the CLM and CLMml
+forcing containers.
 
-This module provides functionality for reading and processing tower meteorology 
-forcing data for site-level simulations. Tower met data typically comes from 
-eddy covariance flux tower sites and provides high-frequency atmospheric forcing.
-
-Key functionality:
-    - Read tower meteorological forcing from NetCDF files
-    - Process atmospheric forcing variables for land surface model
-    - Handle time interpolation and unit conversions
-    - Partition solar radiation into direct/diffuse and visible/NIR bands
-    - Convert relative humidity to specific humidity
-    - Calculate longwave radiation from temperature and humidity when missing
-
-Key equations:
-    Solar radiation partitioning:
-        rvis = a0 + fsds_vis*(a1 + fsds_vis*(a2 + fsds_vis*a3))
-        rnir = b0 + fsds_nir*(b1 + fsds_nir*(b2 + fsds_nir*b3))
-        
-    Specific humidity from relative humidity:
-        q = (mmh2o/mmdry) * e / (P - (1 - mmh2o/mmdry) * e)
-        where e = (RH/100) * esat
-        
-    Longwave radiation from emissivity:
-        LW = emiss * sigma * T^4
-        where emiss = 0.7 + 5.95e-5 * 0.01 * eair * exp(1500/T)
-
-Reference: TowerMetMod.F90, lines 1-327
+Original Fortran module: TowerMetMod
+Fortran lines 1-290
 """
 
-from typing import NamedTuple, Protocol, Tuple
-import jax
+from typing import Dict, Tuple
+import atexit
+
 import jax.numpy as jnp
+from jax import Array
+
+import netCDF4 as nc                                                   # noqa: F401
+
+from clm_src_main.abortutils import endrun, handle_err                              # noqa: F401
+from clm_src_main.PatchType import patch                                            # noqa: F401
+from clm_src_main import GridcellType                                               # noqa: F401
+from clm_src_main.atm2lndType import atm2lnd_type                                   # noqa: F401
+from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type                 # noqa: F401
+from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type                       # noqa: F401
+from clm_src_main.clm_varcon import sb                                              # noqa: F401
+from clm_src_main.clm_varpar import ivis, inir                                      # noqa: F401
+from multilayer_canopy.MLclm_varcon import mmh2o, mmdry                                  # noqa: F401
+from multilayer_canopy.MLWaterVaporMod import SatVap                                     # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type                           # noqa: F401
+from offline_driver.TowerDataMod import tower_ht, tower_lat, tower_lon                # noqa: F401
 
 
-# =============================================================================
-# Type Definitions
-# =============================================================================
+# ---------------------------------------------------------------------------
+# NetCDF dataset cache
+# ---------------------------------------------------------------------------
+
+_NC_DATASET_CACHE: Dict[str, nc.Dataset] = {}
 
 
-class TowerMetState(NamedTuple):
-    """State container for tower meteorology data.
-    
-    Attributes:
-        forc_t: Air temperature [K] [n_patches]
-        forc_q: Specific humidity [kg/kg] [n_patches]
-        forc_pbot: Atmospheric pressure [Pa] [n_patches]
-        forc_u: Wind speed (u component) [m/s] [n_patches]
-        forc_v: Wind speed (v component) [m/s] [n_patches]
-        forc_lwrad: Downward longwave radiation [W/m2] [n_patches]
-        forc_rain: Rain rate [mm/s] [n_patches]
-        forc_snow: Snow rate [mm/s] [n_patches]
-        forc_solad: Direct beam solar radiation [W/m2] [n_patches, n_bands]
-        forc_solai: Diffuse solar radiation [W/m2] [n_patches, n_bands]
-        forc_hgt_u: Observational height of wind [m] [n_patches]
-        forc_hgt_t: Observational height of temperature [m] [n_patches]
-        forc_hgt_q: Observational height of humidity [m] [n_patches]
-        forc_pco2: CO2 partial pressure [Pa] [n_patches]
-        forc_po2: O2 partial pressure [Pa] [n_patches]
+def _get_cached_dataset(ncfilename: str) -> nc.Dataset:
+    """Return an open netCDF dataset handle, opening it once per file path."""
+    ds = _NC_DATASET_CACHE.get(ncfilename)
+    if ds is None:
+        ds = nc.Dataset(ncfilename, 'r')
+        _NC_DATASET_CACHE[ncfilename] = ds
+    return ds
+
+
+def close_cached_datasets() -> None:
+    """Close and clear all cached netCDF datasets for this module."""
+    for ds in _NC_DATASET_CACHE.values():
+        try:
+            ds.close()
+        except Exception:
+            pass
+    _NC_DATASET_CACHE.clear()
+
+
+atexit.register(close_cached_datasets)
+
+
+# ---------------------------------------------------------------------------
+# Private: atmospheric CO2 concentration
+# ---------------------------------------------------------------------------
+
+def TowerMetCO2() -> float:
     """
-    forc_t: jnp.ndarray
-    forc_q: jnp.ndarray
-    forc_pbot: jnp.ndarray
-    forc_u: jnp.ndarray
-    forc_v: jnp.ndarray
-    forc_lwrad: jnp.ndarray
-    forc_rain: jnp.ndarray
-    forc_snow: jnp.ndarray
-    forc_solad: jnp.ndarray
-    forc_solai: jnp.ndarray
-    forc_hgt_u: jnp.ndarray
-    forc_hgt_t: jnp.ndarray
-    forc_hgt_q: jnp.ndarray
-    forc_pco2: jnp.ndarray
-    forc_po2: jnp.ndarray
+    Return the atmospheric CO2 concentration (ppm).
 
+    Mirrors Fortran function ``TowerMetCO2`` (lines 35-48).
+    The commented-out alternative value of 367 ppm is preserved.
 
-class TowerMetRawData(NamedTuple):
-    """Raw tower meteorology data read from NetCDF file.
-    
-    Attributes:
-        zbot: Reference height [m]
-        tbot: Air temperature at reference height [K]
-        rhbot: Relative humidity at reference height [%]
-        qbot: Specific humidity at reference height [kg/kg]
-        ubot: Wind speed at reference height [m/s]
-        fsdsbot: Solar radiation [W/m2]
-        fldsbot: Longwave radiation [W/m2]
-        pbot: Air pressure at reference height [Pa]
-        prect: Precipitation [mm/s]
+    Returns:
+        Atmospheric CO2 concentration in ppm (umol/mol).
     """
-    zbot: float
-    tbot: float
-    rhbot: float
-    qbot: float
-    ubot: float
-    fsdsbot: float
-    fldsbot: float
-    pbot: float
-    prect: float
+#   return 367.0    # Fortran line 44 (commented out)
+    return 383.0    # Fortran line 45
 
 
-class SolarRadiationParams(NamedTuple):
-    """Parameters for solar radiation partitioning.
-    
-    These empirical coefficients partition total solar radiation into
-    direct beam and diffuse components for visible and near-infrared bands.
-    
-    Attributes:
-        a0, a1, a2, a3: Visible band direct beam fraction coefficients
-        b0, b1, b2, b3: Near-infrared band direct beam fraction coefficients
-    """
-    a0: float = 0.17639  # Visible band coefficient 0
-    a1: float = 0.00380  # Visible band coefficient 1
-    a2: float = -9.0039e-6  # Visible band coefficient 2
-    a3: float = 8.1351e-9  # Visible band coefficient 3
-    b0: float = 0.29548  # Near-infrared band coefficient 0
-    b1: float = 0.00504  # Near-infrared band coefficient 1
-    b2: float = -1.4957e-5  # Near-infrared band coefficient 2
-    b3: float = 1.4881e-8  # Near-infrared band coefficient 3
+# ---------------------------------------------------------------------------
+# Private: solar radiation partitioning
+# ---------------------------------------------------------------------------
 
-
-class PhysicalConstants(NamedTuple):
-    """Physical constants for tower meteorology calculations.
-    
-    Attributes:
-        mmh2o: Molecular weight of water [kg/kmol]
-        mmdry: Molecular weight of dry air [kg/kmol]
-        sb: Stefan-Boltzmann constant [W/m2/K4]
-        co2_ppm: Default CO2 concentration [ppm]
-        o2_frac: O2 mole fraction [mol/mol]
-        default_pressure: Default surface pressure [Pa]
-        default_height: Default forcing height [m]
-        missing_value: Missing value indicator
-    """
-    mmh2o: float = 18.016  # kg/kmol
-    mmdry: float = 28.966  # kg/kmol
-    sb: float = 5.67e-8  # W/m2/K4
-    co2_ppm: float = 367.0  # ppm
-    o2_frac: float = 0.209  # mol/mol
-    default_pressure: float = 101325.0  # Pa (sea level)
-    default_height: float = 30.0  # m
-    missing_value: float = -999.0
-
-
-class GridcellForcing(NamedTuple):
-    """Atmospheric forcing at gridcell level.
-    
-    Attributes:
-        forc_u: Eastward wind speed [m/s] [n_gridcells]
-        forc_v: Northward wind speed [m/s] [n_gridcells]
-        forc_solad: Direct beam radiation [W/m2] [n_gridcells, 2] (vis, nir)
-        forc_solai: Diffuse radiation [W/m2] [n_gridcells, 2] (vis, nir)
-        forc_pco2: CO2 partial pressure [Pa] [n_gridcells]
-        forc_po2: O2 partial pressure [Pa] [n_gridcells]
-    """
-    forc_u: jnp.ndarray
-    forc_v: jnp.ndarray
-    forc_solad: jnp.ndarray
-    forc_solai: jnp.ndarray
-    forc_pco2: jnp.ndarray
-    forc_po2: jnp.ndarray
-
-
-class ColumnForcing(NamedTuple):
-    """Atmospheric forcing at column level (downscaled).
-    
-    Attributes:
-        forc_t: Air temperature [K] [n_columns]
-        forc_q: Specific humidity [kg/kg] [n_columns]
-        forc_pbot: Atmospheric pressure [Pa] [n_columns]
-        forc_lwrad: Longwave radiation [W/m2] [n_columns]
-        forc_rain: Rainfall rate [mm/s] [n_columns]
-        forc_snow: Snowfall rate [mm/s] [n_columns]
-    """
-    forc_t: jnp.ndarray
-    forc_q: jnp.ndarray
-    forc_pbot: jnp.ndarray
-    forc_lwrad: jnp.ndarray
-    forc_rain: jnp.ndarray
-    forc_snow: jnp.ndarray
-
-
-class TowerMetInputs(NamedTuple):
-    """Input parameters for TowerMet processing.
-    
-    Attributes:
-        raw_data: Raw meteorology data from file
-        tower_ht: Tower height [m]
-        tower_lat: Tower latitude [degrees]
-        tower_lon: Tower longitude [degrees]
-        n_gridcells: Number of gridcells
-        n_columns: Number of columns
-        n_patches: Number of patches
-        col_to_gridcell: Column to gridcell mapping [n_columns]
-        col_to_tower: Column to tower index mapping [n_columns]
-    """
-    raw_data: TowerMetRawData
-    tower_ht: float
-    tower_lat: float
-    tower_lon: float
-    n_gridcells: int
-    n_columns: int
-    n_patches: int
-    col_to_gridcell: jnp.ndarray
-    col_to_tower: jnp.ndarray
-
-
-# =============================================================================
-# Solar Radiation Partitioning
-# =============================================================================
-
-
-def partition_solar_radiation(
+def TowerMetSolarRad(
     fsds: float,
-    params: SolarRadiationParams,
-    ivis: int = 0,
-    inir: int = 1,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Partition total solar radiation into direct beam and diffuse components.
-    
-    Splits total solar radiation equally between visible and near-infrared bands,
-    then calculates direct beam fraction using empirical polynomial fits.
-    
-    From TowerMetMod.F90 lines 115-130.
-    
-    Physics:
-        For each band (visible, NIR):
-            1. Split total radiation: fsds_band = 0.5 * fsds
-            2. Calculate direct beam fraction using polynomial:
-               r = c0 + fsds_band*(c1 + fsds_band*(c2 + fsds_band*c3))
-            3. Clamp fraction to [0.01, 0.99] for numerical stability
-            4. Partition: direct = fsds_band * r, diffuse = fsds_band * (1-r)
-    
-    Args:
-        fsds: Total downward shortwave radiation [W/m2] [scalar]
-        params: Solar radiation partitioning parameters
-        ivis: Index for visible band (default 0)
-        inir: Index for near-infrared band (default 1)
-        
-    Returns:
-        forc_solad: Direct beam radiation [W/m2] [2] (vis, nir)
-        forc_solai: Diffuse radiation [W/m2] [2] (vis, nir)
-        
-    Note:
-        Direct beam fractions are clamped to [0.01, 0.99] to avoid
-        numerical issues in downstream calculations.
+) -> Tuple[float, float, float, float]:
     """
-    # Ensure non-negative solar radiation (line 115)
-    fsds = jnp.maximum(fsds, 0.0)
-    
-    # Split equally to visible and near-infrared (lines 117, 122)
+    Partition total solar radiation into direct and diffuse components
+    for visible and near-infrared wavebands.
+
+    Mirrors Fortran subroutine ``TowerMetSolarRad`` (lines 50-100).
+
+    Total solar radiation is split 50/50 between the visible and
+    near-infrared wavebands (Fortran lines 82-83). Within each waveband
+    the direct beam fraction is computed from a third-order polynomial
+    in the waveband irradiance and clamped to ``[0.01, 0.99]``:
+
+    .. code-block:: none
+
+        fsds_vis = 0.5 * fsds
+        rvis = a0 + fsds_vis*(a1 + fsds_vis*(a2 + fsds_vis*a3))
+        rvis = clamp(rvis, 0.01, 0.99)
+
+        fsds_nir = 0.5 * fsds
+        rnir = b0 + fsds_nir*(b1 + fsds_nir*(b2 + fsds_nir*b3))
+        rnir = clamp(rnir, 0.01, 0.99)
+
+    Args:
+        fsds: Total incident solar radiation (W/m2).
+
+    Returns:
+        Tuple of ``(forc_solad_vis, forc_solai_vis, forc_solad_nir,
+        forc_solai_nir)`` in W/m2.
+    """
+    # Polynomial coefficients — Fortran lines 68-76
+    a0 =  0.17639;    a1 =  0.00380;    a2 = -9.0039e-6;  a3 =  8.1351e-9
+    b0 =  0.29548;    b1 =  0.00504;    b2 = -1.4957e-5;  b3 =  1.4881e-8
+
+    # Visible waveband — Fortran lines 82-86
     fsds_vis = 0.5 * fsds
+    rvis = a0 + fsds_vis * (a1 + fsds_vis * (a2 + fsds_vis * a3))
+    rvis = float(jnp.maximum(0.01, jnp.minimum(0.99, rvis)))
+
+    # Near-infrared waveband — Fortran lines 88-90
     fsds_nir = 0.5 * fsds
-    
-    # Calculate visible band direct beam fraction (lines 118-119)
-    rvis = (params.a0 + fsds_vis * (params.a1 + 
-            fsds_vis * (params.a2 + fsds_vis * params.a3)))
-    rvis = jnp.clip(rvis, 0.01, 0.99)
-    
-    # Calculate near-infrared band direct beam fraction (lines 123-124)
-    rnir = (params.b0 + fsds_nir * (params.b1 + 
-            fsds_nir * (params.b2 + fsds_nir * params.b3)))
-    rnir = jnp.clip(rnir, 0.01, 0.99)
-    
-    # Allocate to direct beam and diffuse (lines 126-129)
-    forc_solad = jnp.array([
-        fsds_vis * rvis,  # visible direct beam
-        fsds_nir * rnir,  # near-infrared direct beam
-    ])
-    
-    forc_solai = jnp.array([
-        fsds_vis * (1.0 - rvis),  # visible diffuse
-        fsds_nir * (1.0 - rnir),  # near-infrared diffuse
-    ])
-    
-    return forc_solad, forc_solai
+    rnir = b0 + fsds_nir * (b1 + fsds_nir * (b2 + fsds_nir * b3))
+    rnir = float(jnp.maximum(0.01, jnp.minimum(0.99, rnir)))
+
+    # Direct beam and diffuse per waveband — Fortran lines 92-95
+    forc_solad_vis = fsds_vis * rvis
+    forc_solai_vis = fsds_vis * (1.0 - rvis)
+    forc_solad_nir = fsds_nir * rnir
+    forc_solai_nir = fsds_nir * (1.0 - rnir)
+
+    return forc_solad_vis, forc_solai_vis, forc_solad_nir, forc_solai_nir
 
 
-# =============================================================================
-# Humidity Conversions
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Private: atmospheric emissivity
+# ---------------------------------------------------------------------------
 
-
-def relative_humidity_to_specific_humidity(
-    rh: float,
-    temperature: jnp.ndarray,
-    pressure: jnp.ndarray,
-    esat: jnp.ndarray,
-    constants: PhysicalConstants,
-) -> jnp.ndarray:
-    """Convert relative humidity to specific humidity.
-    
-    From TowerMetMod.F90 lines 169-172.
-    
-    Physics:
-        1. Calculate vapor pressure from RH: e = (RH/100) * esat
-        2. Convert to specific humidity using molecular weights:
-           q = (mmh2o/mmdry) * e / (P - (1 - mmh2o/mmdry) * e)
-    
-    Args:
-        rh: Relative humidity [%] [scalar]
-        temperature: Air temperature [K] [n_columns]
-        pressure: Atmospheric pressure [Pa] [n_columns]
-        esat: Saturation vapor pressure [Pa] [n_columns]
-        constants: Physical constants
-        
-    Returns:
-        Specific humidity [kg/kg] [n_columns]
+def TowerMetEmiss(eair: float, tair: float) -> float:
     """
-    # Calculate vapor pressure from relative humidity (line 169)
-    eair = (rh / 100.0) * esat
-    
-    # Convert to specific humidity (lines 170-172)
-    q = (constants.mmh2o / constants.mmdry) * eair / (
-        pressure - (1.0 - constants.mmh2o / constants.mmdry) * eair
-    )
-    
-    return q
+    Compute atmospheric emissivity from vapor pressure and temperature.
 
+    Used when longwave radiation is missing from the tower forcing file.
+    Mirrors Fortran function ``TowerMetEmiss`` (lines 102-120).
 
-def specific_humidity_to_vapor_pressure(
-    q: jnp.ndarray,
-    pressure: jnp.ndarray,
-    constants: PhysicalConstants,
-) -> jnp.ndarray:
-    """Convert specific humidity to vapor pressure.
-    
-    From TowerMetMod.F90 lines 174-176.
-    
-    Physics:
-        Invert the specific humidity equation:
-        e = q * P / (mmh2o/mmdry + (1 - mmh2o/mmdry) * q)
-    
+    .. code-block:: none
+
+        emiss = 0.7 + 5.95e-5 * 0.01 * eair * exp(1500 / tair)
+
     Args:
-        q: Specific humidity [kg/kg] [n_columns]
-        pressure: Atmospheric pressure [Pa] [n_columns]
-        constants: Physical constants
-        
+        eair: Atmospheric vapor pressure (Pa).
+        tair: Atmospheric temperature (K).
+
     Returns:
-        Vapor pressure [Pa] [n_columns]
+        Dimensionless atmospheric emissivity.
     """
-    eair = q * pressure / (
-        constants.mmh2o / constants.mmdry + 
-        (1.0 - constants.mmh2o / constants.mmdry) * q
-    )
-    
-    return eair
+    return 0.7 + 5.95e-5 * 0.01 * eair * float(jnp.exp(1500.0 / tair))
 
 
-# =============================================================================
-# Longwave Radiation Calculation
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Public: read forcing for the current CLM time step
+# ---------------------------------------------------------------------------
 
-
-def calculate_longwave_radiation(
-    temperature: jnp.ndarray,
-    vapor_pressure: jnp.ndarray,
-    constants: PhysicalConstants,
-) -> jnp.ndarray:
-    """Calculate atmospheric longwave radiation from temperature and humidity.
-    
-    From TowerMetMod.F90 lines 182-184.
-    
-    Physics:
-        1. Calculate atmospheric emissivity:
-           emiss = 0.7 + 5.95e-5 * 0.01 * eair * exp(1500/T)
-        2. Apply Stefan-Boltzmann law:
-           LW = emiss * sigma * T^4
-    
-    Args:
-        temperature: Air temperature [K] [n_columns]
-        vapor_pressure: Vapor pressure [Pa] [n_columns]
-        constants: Physical constants
-        
-    Returns:
-        Downward longwave radiation [W/m2] [n_columns]
-    """
-    # Calculate atmospheric emissivity (line 182)
-    emiss = 0.7 + 5.95e-5 * 0.01 * vapor_pressure * jnp.exp(1500.0 / temperature)
-    
-    # Apply Stefan-Boltzmann law (line 184)
-    lwrad = emiss * constants.sb * temperature**4
-    
-    return lwrad
-
-
-# =============================================================================
-# Main Processing Functions
-# =============================================================================
-
-
-def assign_tower_met_to_gridcell(
-    raw_data: TowerMetRawData,
-    gridcell_forcing: GridcellForcing,
-    solar_params: SolarRadiationParams,
-    gridcell_index: int,
-) -> GridcellForcing:
-    """Assign tower meteorology to gridcell-level forcing variables.
-    
-    From TowerMetMod.F90 lines 103-130.
-    
-    Args:
-        raw_data: Tower meteorology data read from file
-        gridcell_forcing: Current gridcell forcing state
-        solar_params: Parameters for solar radiation partitioning
-        gridcell_index: Index of gridcell to update
-        
-    Returns:
-        Updated gridcell forcing with tower met data
-        
-    Note:
-        - Wind v-component is set to zero (line 111)
-        - Solar radiation is partitioned into direct/diffuse and vis/nir bands
-    """
-    # Update wind components (lines 110-111)
-    forc_u = gridcell_forcing.forc_u.at[gridcell_index].set(raw_data.ubot)
-    forc_v = gridcell_forcing.forc_v.at[gridcell_index].set(0.0)
-    
-    # Partition solar radiation (lines 113-129)
-    forc_solad_new, forc_solai_new = partition_solar_radiation(
-        raw_data.fsdsbot, solar_params
-    )
-    
-    # Update solar radiation arrays
-    forc_solad = gridcell_forcing.forc_solad.at[gridcell_index, :].set(forc_solad_new)
-    forc_solai = gridcell_forcing.forc_solai.at[gridcell_index, :].set(forc_solai_new)
-    
-    return GridcellForcing(
-        forc_u=forc_u,
-        forc_v=forc_v,
-        forc_solad=forc_solad,
-        forc_solai=forc_solai,
-        forc_pco2=gridcell_forcing.forc_pco2,
-        forc_po2=gridcell_forcing.forc_po2,
-    )
-
-
-def process_tower_met_forcing(
-    raw_data: TowerMetRawData,
-    tower_ht: float,
-    constants: PhysicalConstants,
-    n_columns: int,
-    n_patches: int,
-    sat_vap_func,  # Function to calculate saturation vapor pressure
-) -> Tuple[ColumnForcing, jnp.ndarray]:
-    """Process tower meteorology data and handle missing values.
-    
-    Fortran source: TowerMetMod.F90, lines 141-191
-    
-    This function:
-    1. Assigns tower data to CLM forcing variables (lines 141-149)
-    2. Sets forcing height with tower data or default (lines 151-159)
-    3. Handles missing atmospheric pressure (lines 161-165)
-    4. Converts relative humidity to specific humidity (lines 167-179)
-    5. Calculates longwave radiation if missing (lines 181-185)
-    
-    Args:
-        raw_data: Tower meteorology data read from file
-        tower_ht: Tower height [m]
-        constants: Physical constants
-        n_columns: Number of columns
-        n_patches: Number of patches
-        sat_vap_func: Function to calculate saturation vapor pressure
-        
-    Returns:
-        column_forcing: Column-level forcing variables
-        forc_hgt_u: Forcing height at patch level [m] [n_patches]
-        
-    Note:
-        Missing values are indicated by -999. Defaults:
-        - Pressure: 101325 Pa (sea level)
-        - Forcing height: 30 m
-        - Longwave: calculated from emissivity formula
-    """
-    # Lines 141-149: Assign column-level forcing variables
-    forc_t = jnp.full(n_columns, raw_data.tbot)
-    forc_q_initial = jnp.full(n_columns, raw_data.qbot)
-    forc_pbot_initial = jnp.full(n_columns, raw_data.pbot)
-    forc_lwrad_initial = jnp.full(n_columns, raw_data.fldsbot)
-    forc_rain = jnp.full(n_columns, raw_data.prect)
-    forc_snow = jnp.zeros(n_columns)  # Line 149: forc_snow(c) = 0._r8
-    
-    # Lines 151-159: Set forcing height at patch level
-    forc_hgt_u = jnp.full(n_patches, tower_ht)
-    
-    # Line 159: Set forcing height to 30 m if tower forcing data has no height
-    forc_hgt_u = jnp.where(
-        jnp.round(forc_hgt_u) == constants.missing_value,
-        constants.default_height,
-        forc_hgt_u
-    )
-    
-    # Lines 161-165: Set atmospheric pressure to surface value if missing
-    forc_pbot = jnp.where(
-        jnp.round(forc_pbot_initial) == constants.missing_value,
-        constants.default_pressure,
-        forc_pbot_initial
-    )
-    
-    # Lines 167-179: Relative humidity -> specific humidity conversion
-    # Call SatVap to get saturation vapor pressure
-    esat, _ = sat_vap_func(forc_t)
-    
-    forc_rh = raw_data.rhbot
-    
-    # Calculate specific humidity from relative humidity
-    has_rh = jnp.round(forc_rh) != constants.missing_value
-    has_q = jnp.round(forc_q_initial) != constants.missing_value
-    
-    # Calculate from RH if available
-    forc_q_from_rh = relative_humidity_to_specific_humidity(
-        forc_rh, forc_t, forc_pbot, esat, constants
-    )
-    
-    # Calculate vapor pressure from Q if RH not available
-    eair_from_q = specific_humidity_to_vapor_pressure(
-        forc_q_initial, forc_pbot, constants
-    )
-    
-    # Use RH if available, otherwise use Q
-    forc_q = jnp.where(has_rh, forc_q_from_rh, forc_q_initial)
-    
-    # Get vapor pressure for longwave calculation
-    eair_from_rh = (forc_rh / 100.0) * esat
-    eair = jnp.where(has_rh, eair_from_rh, eair_from_q)
-    
-    # Lines 181-185: Calculate atmospheric longwave radiation if missing
-    forc_lwrad_calculated = calculate_longwave_radiation(
-        forc_t, eair, constants
-    )
-    
-    forc_lwrad = jnp.where(
-        jnp.round(forc_lwrad_initial) == constants.missing_value,
-        forc_lwrad_calculated,
-        forc_lwrad_initial
-    )
-    
-    column_forcing = ColumnForcing(
-        forc_t=forc_t,
-        forc_q=forc_q,
-        forc_pbot=forc_pbot,
-        forc_lwrad=forc_lwrad,
-        forc_rain=forc_rain,
-        forc_snow=forc_snow,
-    )
-    
-    return column_forcing, forc_hgt_u
-
-
-def assign_co2_o2_coordinates(
-    forc_pbot: jnp.ndarray,
-    tower_lat: float,
-    tower_lon: float,
-    col_to_gridcell: jnp.ndarray,
-    n_gridcells: int,
-    constants: PhysicalConstants,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Complete tower meteorology assignments with CO2, O2, and coordinates.
-    
-    This function performs the final assignments in the TowerMet subroutine:
-    - Converts CO2 concentration (367 ppm) to partial pressure
-    - Converts O2 concentration (0.209 mol/mol) to partial pressure
-    - Assigns tower latitude and longitude to gridcells
-    
-    Fortran source: TowerMetMod.F90, lines 192-208
-    
-    Args:
-        forc_pbot: Atmospheric pressure [Pa] [n_columns]
-        tower_lat: Tower latitude [degrees]
-        tower_lon: Tower longitude [degrees]
-        col_to_gridcell: Column to gridcell mapping [n_columns]
-        n_gridcells: Number of gridcells
-        constants: Physical constants
-        
-    Returns:
-        forc_pco2: CO2 partial pressure [Pa] [n_gridcells]
-        forc_po2: O2 partial pressure [Pa] [n_gridcells]
-        latdeg: Latitude [degrees] [n_gridcells]
-        londeg: Longitude [degrees] [n_gridcells]
-        
-    Note:
-        - CO2 conversion: 367 umol/mol / 1e6 * P_atm = P_CO2
-        - O2 conversion: 0.209 mol/mol * P_atm = P_O2
-    """
-    # Initialize output arrays
-    forc_pco2 = jnp.zeros(n_gridcells)
-    forc_po2 = jnp.zeros(n_gridcells)
-    latdeg = jnp.zeros(n_gridcells)
-    londeg = jnp.zeros(n_gridcells)
-    
-    # Line 194-195: CO2: umol/mol -> Pa and O2: mol/mol -> Pa
-    pco2_values = (constants.co2_ppm / 1.0e6) * forc_pbot
-    po2_values = constants.o2_frac * forc_pbot
-    
-    # Line 202-203: Latitude and longitude (degrees)
-    lat_values = jnp.full_like(forc_pbot, tower_lat)
-    lon_values = jnp.full_like(forc_pbot, tower_lon)
-    
-    # Scatter values to gridcells
-    gridcell_indices = col_to_gridcell
-    forc_pco2 = forc_pco2.at[gridcell_indices].set(pco2_values)
-    forc_po2 = forc_po2.at[gridcell_indices].set(po2_values)
-    latdeg = latdeg.at[gridcell_indices].set(lat_values)
-    londeg = londeg.at[gridcell_indices].set(lon_values)
-    
-    return forc_pco2, forc_po2, latdeg, londeg
-
-
-# =============================================================================
-# Main Tower Met Processing
-# =============================================================================
-
-
-def process_tower_met(
-    inputs: TowerMetInputs,
-    solar_params: SolarRadiationParams,
-    constants: PhysicalConstants,
-    sat_vap_func,  # Function to calculate saturation vapor pressure
-) -> TowerMetState:
-    """Process tower meteorology data into CLM forcing variables.
-    
-    This is the main function that coordinates all tower met processing:
-    1. Partition solar radiation into direct/diffuse and vis/nir bands
-    2. Process atmospheric variables (T, q, P, LW, precip)
-    3. Handle missing values with appropriate defaults
-    4. Convert CO2 and O2 to partial pressures
-    5. Assign coordinates
-    
-    Fortran source: TowerMetMod.F90, lines 29-208 (TowerMet subroutine)
-    
-    Args:
-        inputs: Input parameters including raw data and grid dimensions
-        solar_params: Parameters for solar radiation partitioning
-        constants: Physical constants
-        sat_vap_func: Function to calculate saturation vapor pressure
-        
-    Returns:
-        TowerMetState containing all processed forcing variables
-        
-    Note:
-        This function is JIT-compatible and uses pure functional operations.
-        NetCDF I/O should be handled separately before calling this function.
-    """
-    # Initialize gridcell forcing arrays
-    gridcell_forcing = GridcellForcing(
-        forc_u=jnp.zeros(inputs.n_gridcells),
-        forc_v=jnp.zeros(inputs.n_gridcells),
-        forc_solad=jnp.zeros((inputs.n_gridcells, 2)),
-        forc_solai=jnp.zeros((inputs.n_gridcells, 2)),
-        forc_pco2=jnp.zeros(inputs.n_gridcells),
-        forc_po2=jnp.zeros(inputs.n_gridcells),
-    )
-    
-    # Process gridcell-level forcing (wind, solar radiation)
-    gridcell_forcing = assign_tower_met_to_gridcell(
-        inputs.raw_data,
-        gridcell_forcing,
-        solar_params,
-        gridcell_index=0,  # Single tower site
-    )
-    
-    # Process column-level forcing (T, q, P, LW, precip)
-    column_forcing, forc_hgt_u = process_tower_met_forcing(
-        inputs.raw_data,
-        inputs.tower_ht,
-        constants,
-        inputs.n_columns,
-        inputs.n_patches,
-        sat_vap_func,
-    )
-    
-    # Assign CO2, O2, and coordinates
-    forc_pco2, forc_po2, latdeg, londeg = assign_co2_o2_coordinates(
-        column_forcing.forc_pbot,
-        inputs.tower_lat,
-        inputs.tower_lon,
-        inputs.col_to_gridcell,
-        inputs.n_gridcells,
-        constants,
-    )
-    
-    # Update gridcell forcing with CO2 and O2
-    gridcell_forcing = GridcellForcing(
-        forc_u=gridcell_forcing.forc_u,
-        forc_v=gridcell_forcing.forc_v,
-        forc_solad=gridcell_forcing.forc_solad,
-        forc_solai=gridcell_forcing.forc_solai,
-        forc_pco2=forc_pco2,
-        forc_po2=forc_po2,
-    )
-    
-    # Assemble final state
-    # Note: In actual use, these would be broadcast/mapped to patches
-    return TowerMetState(
-        forc_t=column_forcing.forc_t,
-        forc_q=column_forcing.forc_q,
-        forc_pbot=column_forcing.forc_pbot,
-        forc_u=gridcell_forcing.forc_u,
-        forc_v=gridcell_forcing.forc_v,
-        forc_lwrad=column_forcing.forc_lwrad,
-        forc_rain=column_forcing.forc_rain,
-        forc_snow=column_forcing.forc_snow,
-        forc_solad=gridcell_forcing.forc_solad,
-        forc_solai=gridcell_forcing.forc_solai,
-        forc_hgt_u=forc_hgt_u,
-        forc_hgt_t=forc_hgt_u,  # Same as wind height
-        forc_hgt_q=forc_hgt_u,  # Same as wind height
-        forc_pco2=gridcell_forcing.forc_pco2,
-        forc_po2=gridcell_forcing.forc_po2,
-    )
-
-
-# =============================================================================
-# I/O Interface (Non-JIT)
-# =============================================================================
-
-
-def read_tower_met(
+def TowerMetCurr(
     ncfilename: str,
     strt: int,
-) -> TowerMetRawData:
-    """Read variables from tower site atmospheric forcing NetCDF files.
-    
-    This function reads atmospheric forcing data from a NetCDF file at a specific
-    time slice. Optional variables are set to -999.0 if not present in the file.
-    
-    The original Fortran code (lines 211-325) uses NetCDF library calls to:
-    1. Open the NetCDF file
-    2. Query for each variable by name
-    3. Read the data at the specified time slice (strt)
-    4. Handle missing optional variables by setting to -999.0
-    5. Close the file
-    
-    Fortran source: TowerMetMod.F90, lines 211-325
-    
+    it: int,
+    begp: int,
+    endp: int,
+    atm2lnd_inst: atm2lnd_type,
+    wateratm2lndbulk_inst: wateratm2lndbulk_type,
+    frictionvel_inst: frictionvel_type,
+) -> Tuple[atm2lnd_type, wateratm2lndbulk_type, frictionvel_type]:
+    """
+    Read atmospheric forcing variables for the current CLM time step.
+
+    Mirrors Fortran subroutine ``TowerMetCurr`` (lines 122-215).
+
+    For each patch ``p`` in ``[begp, endp]`` the following CLM forcing
+    fields are populated:
+
+    - Grid-cell level: ``forc_u_grc``, ``forc_v_grc`` (= 0),
+      ``forc_solai_grc``, ``forc_pco2_grc``, ``forc_po2_grc``.
+    - Column level: ``forc_t_downscaled_col``,
+      ``forc_q_downscaled_col`` (derived from RH or read directly),
+      ``forc_pbot_downscaled_col`` (defaulted to 101325 Pa if missing),
+      ``forc_lwrad_downscaled_col`` (computed from emissivity if
+      missing), ``forc_rain_downscaled_col``,
+      ``forc_snow_downscaled_col`` (= 0),
+      ``forc_solad_downscaled_col``.
+    - Patch level: ``forc_hgt_u_patch`` (overridden by ``tower_ht``;
+      defaulted to 30 m if missing).
+
+    Missing values are indicated by a rounded value of ``-999``
+    (``nint(x) == -999``). Specific humidity is derived from relative
+    humidity when available; longwave is derived from the Stefan-
+    Boltzmann law when missing.
+
+    CO2 and O2 partial pressures are set as:
+
+    .. code-block:: none
+
+        forc_pco2 = (CO2_ppm / 1e6) * forc_pbot
+        forc_po2  = 0.209 * forc_pbot
+
+    Tower latitude and longitude are written into ``grc.latdeg`` and
+    ``grc.londeg``.
+
     Args:
-        ncfilename: Path to NetCDF file containing tower meteorology data
-        strt: Time slice index to retrieve (0-based in Python)
-        
+        ncfilename: Path to the tower meteorology netCDF file.
+        strt: 1-based time slice index into the netCDF file.
+        it: Tower site index into ``TowerDataMod`` arrays.
+        begp: First patch index.
+        endp: Last patch index.
+        atm2lnd_inst: Atmosphere-to-land forcing container; most fields
+            are updated and returned in a new instance.
+        wateratm2lndbulk_inst: Bulk atm-to-land water forcing container;
+            ``forc_q``, ``forc_rain``, ``forc_snow`` updated.
+        frictionvel_inst: Friction velocity container; ``forc_hgt_u``
+            updated.
+
     Returns:
-        TowerMetRawData containing all meteorology variables
-        
-    Note:
-        This is an I/O function that should be called OUTSIDE of JIT-compiled code.
-        In practice, use netCDF4 or xarray to read the data:
-        
-        Example:
-            import xarray as xr
-            ds = xr.open_dataset(ncfilename)
-            raw_data = TowerMetRawData(
-                zbot=float(ds['ZBOT'].isel(time=strt).values),
-                tbot=float(ds['TBOT'].isel(time=strt).values),
-                rhbot=float(ds['RH'].isel(time=strt).values) if 'RH' in ds else -999.0,
-                qbot=float(ds['QBOT'].isel(time=strt).values) if 'QBOT' in ds else -999.0,
-                ubot=float(ds['WIND'].isel(time=strt).values),
-                fsdsbot=float(ds['FSDS'].isel(time=strt).values),
-                fldsbot=float(ds['FLDS'].isel(time=strt).values) if 'FLDS' in ds else -999.0,
-                pbot=float(ds['PSRF'].isel(time=strt).values) if 'PSRF' in ds else -999.0,
-                prect=float(ds['PRECTmms'].isel(time=strt).values),
+        Tuple of updated ``(atm2lnd_inst, wateratm2lndbulk_inst,
+        frictionvel_inst)``.
+    """
+    # Unpack output arrays (Fortran associate block, lines 160-173)
+    forc_u: Array     = atm2lnd_inst.forc_u_grc
+    forc_v: Array     = atm2lnd_inst.forc_v_grc
+    forc_solad: Array = atm2lnd_inst.forc_solad_downscaled_col
+    forc_solai: Array = atm2lnd_inst.forc_solai_grc
+    forc_pco2: Array  = atm2lnd_inst.forc_pco2_grc
+    forc_po2: Array   = atm2lnd_inst.forc_po2_grc
+    forc_t: Array     = atm2lnd_inst.forc_t_downscaled_col
+    forc_pbot: Array  = atm2lnd_inst.forc_pbot_downscaled_col
+    forc_lwrad: Array = atm2lnd_inst.forc_lwrad_downscaled_col
+    forc_q: Array     = wateratm2lndbulk_inst.forc_q_downscaled_col
+    forc_rain: Array  = wateratm2lndbulk_inst.forc_rain_downscaled_col
+    forc_snow: Array  = wateratm2lndbulk_inst.forc_snow_downscaled_col
+    forc_hgt_u: Array = frictionvel_inst.forc_hgt_u_patch
+
+    # Read raw tower meteorology — Fortran line 176
+    (zref, tref, rhref, qref, uref,
+     fsds_raw, flds, pref, prect) = readTowerMet(ncfilename, strt)
+
+    for p in range(begp, endp + 1):                   # Fortran: do p = begp, endp
+        c = int(patch.column[p])
+        g = int(patch.gridcell[p])
+        ci = c  # column arrays indexed directly by c in Fortran
+
+        # ----------------------------------------------------------------
+        # Grid-cell level — Fortran lines 182-192
+        # ----------------------------------------------------------------
+        forc_u = forc_u.at[g].set(uref)
+        forc_v = forc_v.at[g].set(0.0)
+
+        # Solar radiation: partition into direct/diffuse per waveband
+        # NOTE: forc_solad at column c; forc_solai at gridcell g
+        # Fortran lines 188-192
+        fsds = float(jnp.maximum(fsds_raw, 0.0))
+        solad_vis, solai_vis, solad_nir, solai_nir = TowerMetSolarRad(fsds)
+        forc_solad = forc_solad.at[ci, ivis].set(solad_vis)
+        forc_solad = forc_solad.at[ci, inir].set(solad_nir)
+        forc_solai = forc_solai.at[g, ivis].set(solai_vis)
+        forc_solai = forc_solai.at[g, inir].set(solai_nir)
+
+        # ----------------------------------------------------------------
+        # Column level — Fortran lines 195-203
+        # ----------------------------------------------------------------
+        forc_t     = forc_t.at[ci].set(tref)
+        forc_q     = forc_q.at[ci].set(qref)
+        forc_pbot  = forc_pbot.at[ci].set(pref)
+        forc_lwrad = forc_lwrad.at[ci].set(flds)
+        forc_rain  = forc_rain.at[ci].set(prect)
+        forc_snow  = forc_snow.at[ci].set(0.0)
+
+        # ----------------------------------------------------------------
+        # Patch level: forcing height — Fortran lines 205-211
+        # ----------------------------------------------------------------
+        forc_hgt_u = forc_hgt_u.at[p].set(zref)
+        forc_hgt_u = forc_hgt_u.at[p].set(float(tower_ht[it]))   # override with tower data
+
+        # Default to 30 m if missing — Fortran line 211
+        if round(float(forc_hgt_u[p])) == -999:
+            forc_hgt_u = forc_hgt_u.at[p].set(30.0)
+
+        # ----------------------------------------------------------------
+        # Fill missing values — Fortran lines 214-240
+        # ----------------------------------------------------------------
+
+        # Atmospheric pressure default — Fortran lines 215-216
+        if round(float(forc_pbot[ci])) == -999:
+            forc_pbot = forc_pbot.at[ci].set(101325.0)
+
+        # Specific humidity from RH or directly — Fortran lines 218-227
+        forc_rh = rhref
+        if round(forc_rh) != -999:
+            esat, _ = SatVap(float(forc_t[ci]))
+            eair = (forc_rh / 100.0) * esat
+            q_val = (mmh2o / mmdry * eair
+                     / (float(forc_pbot[ci]) - (1.0 - mmh2o / mmdry) * eair))
+            forc_q = forc_q.at[ci].set(q_val)
+        elif round(float(forc_q[ci])) != -999:
+            eair = (float(forc_q[ci]) * float(forc_pbot[ci])
+                    / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * float(forc_q[ci])))
+        else:
+            endrun(msg=' TowerMet error: rhref and qref not valid')
+            eair = 0.0   # Unreachable; satisfies type checker
+
+        # Longwave radiation from emissivity if missing — Fortran lines 229-233
+        if round(float(forc_lwrad[ci])) == -999:
+            emiss = TowerMetEmiss(eair, float(forc_t[ci]))
+            forc_lwrad = forc_lwrad.at[ci].set(
+                emiss * sb * float(forc_t[ci]) ** 4
             )
+
+        # CO2 and O2 partial pressures — Fortran lines 235-236
+        forc_pco2 = forc_pco2.at[g].set(
+            (TowerMetCO2() / 1.0e6) * float(forc_pbot[ci])
+        )
+        forc_po2 = forc_po2.at[g].set(0.209 * float(forc_pbot[ci]))
+
+        # ----------------------------------------------------------------
+        # Latitude and longitude — Fortran lines 239-240
+        # ----------------------------------------------------------------
+        # Type narrowing: grc arrays must be initialized at this point
+        assert GridcellType.grc.latdeg is not None
+        assert GridcellType.grc.londeg is not None
+        # Convert to JAX arrays if needed to use .at indexing
+        latdeg_jax = jnp.asarray(GridcellType.grc.latdeg)
+        londeg_jax = jnp.asarray(GridcellType.grc.londeg)
+        GridcellType.grc = GridcellType.grc._replace(
+            latdeg=latdeg_jax.at[g].set(float(tower_lat[it])),
+            londeg=londeg_jax.at[g].set(float(tower_lon[it]))
+        )
+
+    return (
+        atm2lnd_inst._replace(
+            forc_u_grc                = forc_u,
+            forc_v_grc                = forc_v,
+            forc_solad_downscaled_col = forc_solad,
+            forc_solai_grc            = forc_solai,
+            forc_pco2_grc             = forc_pco2,
+            forc_po2_grc              = forc_po2,
+            forc_t_downscaled_col     = forc_t,
+            forc_pbot_downscaled_col  = forc_pbot,
+            forc_lwrad_downscaled_col = forc_lwrad,
+        ),
+        wateratm2lndbulk_inst._replace(
+            forc_q_downscaled_col    = forc_q,
+            forc_rain_downscaled_col = forc_rain,
+            forc_snow_downscaled_col = forc_snow,
+        ),
+        frictionvel_inst._replace(
+            forc_hgt_u_patch = forc_hgt_u,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Private: read raw meteorology from tower netCDF file
+# ---------------------------------------------------------------------------
+
+def readTowerMet(
+    ncfilename: str,
+    strt: int,
+) -> Tuple[float, float, float, float, float, float, float, float, float]:
     """
-    # This is an I/O function that performs file reading and cannot be JIT-compiled.
-    # It should be called outside of any @jit decorated functions.
-    
-    try:
-        import xarray as xr
-        import os
-        
-        # Check if file exists
-        if not os.path.exists(ncfilename):
-            raise FileNotFoundError(f"Tower meteorology file not found: {ncfilename}")
-        
-        # Open dataset and read variables
-        ds = xr.open_dataset(ncfilename)
-        
-        # Read required variables
-        zbot = float(ds['ZBOT'].isel(time=strt).values) if 'ZBOT' in ds else 30.0
-        tbot = float(ds['TBOT'].isel(time=strt).values)
-        ubot = float(ds['WIND'].isel(time=strt).values)
-        fsdsbot = float(ds['FSDS'].isel(time=strt).values)
-        prect = float(ds['PRECTmms'].isel(time=strt).values)
-        
-        # Read optional variables (set to -999.0 if missing)
-        rhbot = float(ds['RH'].isel(time=strt).values) if 'RH' in ds else -999.0
-        qbot = float(ds['QBOT'].isel(time=strt).values) if 'QBOT' in ds else -999.0
-        fldsbot = float(ds['FLDS'].isel(time=strt).values) if 'FLDS' in ds else -999.0
-        pbot = float(ds['PSRF'].isel(time=strt).values) if 'PSRF' in ds else -999.0
-        
-        ds.close()
-        
-        return TowerMetRawData(
-            zbot=zbot,
-            tbot=tbot,
-            rhbot=rhbot,
-            qbot=qbot,
-            ubot=ubot,
-            fsdsbot=fsdsbot,
-            fldsbot=fldsbot,
-            pbot=pbot,
-            prect=prect,
-        )
-        
-    except ImportError:
-        # xarray not available, return default test data
-        import warnings
-        warnings.warn(
-            f"xarray not available. Cannot read {ncfilename}. "
-            "Returning default meteorology values for testing. "
-            "Install xarray for actual file I/O: pip install xarray netCDF4",
-            category=ImportWarning,
-            stacklevel=2
-        )
-        return TowerMetRawData(
-            zbot=30.0,  # 30m measurement height
-            tbot=293.15,  # 20°C
-            rhbot=70.0,  # 70% relative humidity
-            qbot=-999.0,  # Not available
-            ubot=3.0,  # 3 m/s wind speed
-            fsdsbot=400.0,  # 400 W/m² shortwave radiation
-            fldsbot=300.0,  # 300 W/m² longwave radiation
-            pbot=101325.0,  # Standard atmospheric pressure (Pa)
-            prect=0.0,  # No precipitation
-        )
-    
-    except Exception as e:
-        # Handle any file reading errors
-        raise IOError(f"Error reading tower meteorology file {ncfilename}: {str(e)}")
+    Read atmospheric forcing variables from a tower netCDF file.
 
+    Mirrors Fortran subroutine ``readTowerMet`` (lines 218-280).
 
-# =============================================================================
-# Default Parameters
-# =============================================================================
+    All variables are read at a single spatial point (tower site) and
+    single time slice ``strt``. Optional variables (``FLDS``, ``PSRF``,
+    ``RH``, ``QBOT``, ``ZBOT``) are set to ``-999.0`` when absent from
+    the file, matching the Fortran fallback assignments.
 
+    Required variables (abort if missing): ``FSDS``, ``PRECTmms``,
+    ``TBOT``, ``WIND``.
 
-def get_default_solar_params() -> SolarRadiationParams:
-    """Get default solar radiation partitioning parameters.
-    
+    Fortran dimension convention note (lines 233-235): Fortran column-
+    major ``(lon, lat, time)`` maps to Python/C row-major
+    ``(time, lat, lon)``; the single tower gridcell is at index
+    ``[t, 0, 0]``.
+
+    Args:
+        ncfilename: Path to the tower meteorology netCDF file.
+        strt: 1-based time slice index.
+
     Returns:
-        SolarRadiationParams with default empirical coefficients
+        Tuple of scalar floats
+        ``(zbot, tbot, rhbot, qbot, ubot, fsdsbot, fldsbot, pbot,
+        prect)`` matching the Fortran ``intent(out)`` arguments.
     """
-    return SolarRadiationParams()
+    t = strt - 1    # Convert 1-based Fortran index to 0-based Python
+
+    def _read_optional(ds: nc.Dataset, varname: str) -> float:
+        """Return variable value or -999.0 if absent."""
+        if varname in ds.variables:
+            return float(ds.variables[varname][t, 0, 0])
+        return -999.0
+
+    ds = _get_cached_dataset(ncfilename)
+
+    # Optional variables — Fortran lines 238-262
+    fldsbot = _read_optional(ds, 'FLDS')     # Longwave radiation (W/m2)
+    pbot    = _read_optional(ds, 'PSRF')     # Atmospheric pressure (Pa)
+    rhbot   = _read_optional(ds, 'RH')       # Relative humidity (%)
+    qbot    = _read_optional(ds, 'QBOT')     # Specific humidity (kg/kg)
+    zbot    = _read_optional(ds, 'ZBOT')     # Observational height (m)
+
+    # Required variables — Fortran lines 248-278
+    if 'FSDS' not in ds.variables:
+        handle_err(-1, 'FSDS')
+    fsdsbot = float(ds.variables['FSDS'][t, 0, 0])        # Solar radiation (W/m2)
+
+    if 'PRECTmms' not in ds.variables:
+        handle_err(-1, 'PRECTmms')
+    prect   = float(ds.variables['PRECTmms'][t, 0, 0])    # Precipitation (mm/s)
+
+    if 'TBOT' not in ds.variables:
+        handle_err(-1, 'TBOT')
+    tbot    = float(ds.variables['TBOT'][t, 0, 0])        # Air temperature (K)
+
+    if 'WIND' not in ds.variables:
+        handle_err(-1, 'WIND')
+    ubot    = float(ds.variables['WIND'][t, 0, 0])        # Wind speed (m/s)
+
+    return zbot, tbot, rhbot, qbot, ubot, fsdsbot, fldsbot, pbot, prect
 
 
-def get_default_constants() -> PhysicalConstants:
-    """Get default physical constants.
-    
+# ---------------------------------------------------------------------------
+# Public: read forcing for the next CLM time step (CLMml 3-point interp)
+# ---------------------------------------------------------------------------
+
+def TowerMetNext(
+    ncfilename: str,
+    strt: int,
+    begp: int,
+    endp: int,
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """
+    Read atmospheric forcing for the next CLM time step.
+
+    Mirrors Fortran subroutine ``TowerMetNext`` (lines 216-280).
+
+    Required by the 3-point time interpolation of atmospheric forcing
+    from the CLM time step to the finer multilayer canopy time step
+    (``met_type == 3``). Populates ``*_next_forcing`` fields in the
+    ``mlcanopy_type`` container rather than the CLM forcing arrays.
+
+    Missing-value handling is identical to :func:`TowerMetCurr`:
+    pressure defaults to 101325 Pa, specific humidity is derived from
+    RH when available, and longwave radiation is computed from
+    atmospheric emissivity when missing.
+
+    CO2 is stored as ppm (not Pa) in the multilayer canopy container,
+    matching the CLMml convention (Fortran line 280).
+
+    Args:
+        ncfilename: Path to the tower meteorology netCDF file.
+        strt: 1-based time slice index for the **next** CLM time step.
+        begp: First patch index.
+        endp: Last patch index.
+        mlcanopy_inst: Multilayer canopy container; ``*_next_forcing``
+            fields are updated and returned in a new instance.
+
     Returns:
-        PhysicalConstants with standard values
+        Updated :class:`mlcanopy_type`.
     """
-    return PhysicalConstants()
+    # Unpack next-timestep forcing arrays (Fortran associate block, lines 247-256)
+    tref_next: Array   = mlcanopy_inst.tref_next_forcing     # Air temperature (K)
+    qref_next: Array   = mlcanopy_inst.qref_next_forcing     # Specific humidity (kg/kg)
+    uref_next: Array   = mlcanopy_inst.uref_next_forcing     # Wind speed (m/s)
+    pref_next: Array   = mlcanopy_inst.pref_next_forcing     # Air pressure (Pa)
+    co2ref_next: Array = mlcanopy_inst.co2ref_next_forcing   # CO2 (umol/mol = ppm)
+    swskyb_next: Array = mlcanopy_inst.swskyb_next_forcing   # Direct beam solar (W/m2)
+    swskyd_next: Array = mlcanopy_inst.swskyd_next_forcing   # Diffuse solar (W/m2)
+    lwsky_next: Array  = mlcanopy_inst.lwsky_next_forcing    # Longwave radiation (W/m2)
+
+    # Read raw tower meteorology — Fortran line 259
+    (zref, tref, rhref, qref, uref,
+     fsds_raw, flds, pref, prect) = readTowerMet(ncfilename, strt)
+
+    for p in range(begp, endp + 1):                   # Fortran: do p = begp, endp
+
+        # Direct assignments — Fortran lines 263-267
+        uref_next  = uref_next.at[p].set(uref)
+        tref_next  = tref_next.at[p].set(tref)
+        qref_next  = qref_next.at[p].set(qref)
+        pref_next  = pref_next.at[p].set(pref)
+        lwsky_next = lwsky_next.at[p].set(flds)
+
+        # Solar radiation partition — Fortran lines 269-270
+        fsds = float(jnp.maximum(fsds_raw, 0.0))
+        solad_vis, solai_vis, solad_nir, solai_nir = TowerMetSolarRad(fsds)
+        swskyb_next = swskyb_next.at[p, ivis].set(solad_vis)
+        swskyd_next = swskyd_next.at[p, ivis].set(solai_vis)
+        swskyb_next = swskyb_next.at[p, inir].set(solad_nir)
+        swskyd_next = swskyd_next.at[p, inir].set(solai_nir)
+
+        # Missing value handling (same logic as TowerMetCurr) — Fortran lines 273-285
+        if round(float(pref_next[p])) == -999:
+            pref_next = pref_next.at[p].set(101325.0)
+
+        forc_rh = rhref
+        if round(forc_rh) != -999:
+            esat, _ = SatVap(float(tref_next[p]))
+            eair = (forc_rh / 100.0) * esat
+            q_val = (mmh2o / mmdry * eair
+                     / (float(pref_next[p]) - (1.0 - mmh2o / mmdry) * eair))
+            qref_next = qref_next.at[p].set(q_val)
+        elif round(float(qref_next[p])) != -999:
+            eair = (float(qref_next[p]) * float(pref_next[p])
+                    / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * float(qref_next[p])))
+        else:
+            endrun(msg=' TowerMetNext error: rhref and qref not valid')
+            eair = 0.0   # Unreachable; satisfies type checker
+
+        if round(float(lwsky_next[p])) == -999:
+            emiss = TowerMetEmiss(eair, float(tref_next[p]))
+            lwsky_next = lwsky_next.at[p].set(
+                emiss * sb * float(tref_next[p]) ** 4
+            )
+
+        # CO2 in ppm for multilayer canopy — Fortran line 280
+        co2ref_next = co2ref_next.at[p].set(TowerMetCO2())
+
+    return mlcanopy_inst._replace(
+        tref_next_forcing   = tref_next,
+        qref_next_forcing   = qref_next,
+        uref_next_forcing   = uref_next,
+        pref_next_forcing   = pref_next,
+        co2ref_next_forcing = co2ref_next,
+        swskyb_next_forcing = swskyb_next,
+        swskyd_next_forcing = swskyd_next,
+        lwsky_next_forcing  = lwsky_next,
+    )

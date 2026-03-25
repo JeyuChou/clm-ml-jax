@@ -1,1684 +1,1156 @@
 """
-CLM-ML Offline Driver Module.
+JAX translation of CLMml_driver Fortran module.
 
-Translated from CTSM's CLMml_driver.F90 (lines 1-843)
+Top-level model driver for the CLMml (multilayer canopy) offline
+tower-site simulation. Orchestrates the full run sequence: namelist
+parsing, CLM initialization, orbital parameters, acclimation
+temperature calculation, vegetation and soil initialization, output
+file management, and the main time-stepping loop.
 
-This module provides the main driver for the CLM-ML offline model, coordinating
-initialization, time stepping, and output for tower-based simulations. It manages:
-
-- Model initialization and setup
-- Time stepping loop with forcing data reading
-- Canopy and soil state initialization
-- Model execution and flux calculations
-- Output writing for fluxes, profiles, and diagnostics
-
-Key Components:
-    - CLMml_drv: Main driver routine
-    - init_acclim: Acclimation temperature initialization
-    - TowerVeg: Tower vegetation initialization
-    - SoilInit: Soil state initialization from CLM history
-    - output: Model output writing
-    - ReadCanopyProfiles: Prescribed profile reading
-
-Physics:
-    - Acclimation temperature: Average air temperature over all time slices
-    - Soil moisture: h2osoi_liq = h2osoi_vol * dz * denh2o
-    - Specific humidity: qair = 1000 * (mmh2o/mmdry) * eair / (pref - (1-mmh2o/mmdry) * eair)
-
-Reference: CLMml_driver.F90:1-843
+Original Fortran module: CLMml_driver
+Fortran lines 1-200
 """
 
-from typing import NamedTuple, Tuple, Protocol, runtime_checkable, Callable
-import jax
+from __future__ import annotations
 import jax.numpy as jnp
-from jax import lax
-import netCDF4 as nc
+import math
+import os
+from typing import IO
 
-# ============================================================================
-# Type Definitions
-# ============================================================================
+from clm_src_main.abortutils import endrun                                           # noqa: F401
+from clm_src_main.clm_varctl import iulog                                            # noqa: F401
+from clm_src_main.clm_instMod import (                                               # noqa: F401
+    atm2lnd_inst, wateratm2lndbulk_inst, soilstate_inst,
+    waterstatebulk_inst, canopystate_inst, temperature_inst,
+    frictionvel_inst, mlcanopy_inst,
+)
+# Type imports for function signatures
+from clm_src_main.atm2lndType import atm2lnd_type                                    # noqa: F401
+from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type                  # noqa: F401
+from clm_src_biogeophys.TemperatureType import temperature_type                      # noqa: F401
+from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type                  # noqa: F401
+from clm_src_biogeophys.CanopyStateType import canopystate_type                      # noqa: F401
+from clm_src_biogeophys.SoilStateType import soilstate_type                          # noqa: F401
+from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type                # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type                       # noqa: F401
+from clm_src_main import clm_instMod                                                      # noqa: F401
+from multilayer_canopy.MLclm_varctl import flux_profile_type, met_type                    # noqa: F401
+from clm_src_utils import clm_time_manager                                                  # noqa: F401
+from clm_src_utils.clm_time_manager import (                                          # noqa: F401
+    start_date_ymd, start_date_tod, curr_date_tod, dtstep, itim,
+    get_curr_date, get_curr_calday, get_curr_time,
+)
+from clm_src_utils.clm_varorb import eccen, mvelpp, lambm0, obliqr                   # noqa: F401
+from offline_driver.controlMod import control                                          # noqa: F401
+from clm_src_main.filterMod import setFilters, filter                                # noqa: F401
+from clm_src_cpl.lnd_comp_nuopc import InitializeRealize, ModelAdvance, bounds_type  # noqa: F401
+from clm_src_main.PatchType import patch                                             # noqa: F401
+from clm_share.shr_orb_mod import shr_orb_params                                  # noqa: F401
+from offline_driver.TowerDataMod import tower_id, tower_num                            # noqa: F401
+from offline_driver.TowerMetMod import TowerMetCurr, TowerMetNext                      # noqa: F401
 
 
-class BoundsType(NamedTuple):
-    """Domain decomposition bounds.
-    
-    Attributes:
-        begp: First patch index [scalar int]
-        endp: Last patch index [scalar int]
-        begc: First column index [scalar int]
-        endc: Last column index [scalar int]
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+def CLMml_drv(bounds: bounds_type) -> None:
     """
-    begp: int
-    endp: int
-    begc: int
-    endc: int
+    Top-level model driver: process one tower site and year.
+
+    Mirrors Fortran subroutine ``CLMml_drv`` (lines 30-185).
+
+    Execution sequence
+    ------------------
+    1. Parse namelist run control variables via :func:`controlMod.control`.
+    2. Extract year/month/day from ``start_date_ymd`` and log the
+       tower site being processed.
+    3. Initialize CLM via :func:`InitializeRealize` and build filters.
+    4. Compute orbital parameters for the current year.
+    5. Read tower meteorology once to derive the acclimation temperature
+       (:func:`init_acclim`).
+    6. Initialize tower vegetation (:func:`TowerVeg`).
+    7. Compute the correct CLM history file time slice index and
+       initialize soil temperature and moisture (:func:`SoilInit`).
+    8. Open six ASCII output files (flux, auxiliary, profile, sun/shade
+       flux, vertical flux profile, soil temperature) and optionally
+       an ASCII profile input file.
+    9. Run the main time-stepping loop (``itim = 1, ntim``):
+       - Update date/time bookkeeping.
+       - Recalculate CLM history file slice index.
+       - Read current-step tower meteorology (:func:`TowerMetCurr`).
+       - Optionally read next-step meteorology for 3-point interpolation
+         (:func:`TowerMetNext`, active when ``met_type == 3``).
+       - Optionally read canopy T/Q/U profile data.
+       - Advance the model (:func:`ModelAdvance`).
+       - Write output (:func:`output`).
+    10. Close and release all file handles.
 
-
-class Atm2LndState(NamedTuple):
-    """Atmospheric forcing state downscaled to land surface.
-    
-    Attributes:
-        forc_t_downscaled_col: Atmospheric temperature [K] [n_columns]
-        forc_pbot_downscaled_col: Atmospheric pressure [Pa] [n_columns]
-    """
-    forc_t_downscaled_col: jnp.ndarray
-    forc_pbot_downscaled_col: jnp.ndarray
-
-
-class TemperatureState(NamedTuple):
-    """Temperature state variables.
-    
-    Attributes:
-        t_a10_patch: 10-day average air temperature for acclimation [K] [n_patches]
-        t_soisno_col: Soil temperature [K] [n_columns, nlevgrnd]
-    """
-    t_a10_patch: jnp.ndarray
-    t_soisno_col: jnp.ndarray
-
-
-class FrictionVelState(NamedTuple):
-    """Friction velocity state variables."""
-    pass
-
-
-class MLCanopyState(NamedTuple):
-    """Multi-layer canopy state variables.
-    
-    Attributes:
-        pref_forcing: Air pressure at reference height [Pa] [n_patches]
-        root_biomass_canopy: Fine root biomass [g biomass/m2] [n_patches]
-        ncan_canopy: Number of aboveground layers [n_patches]
-        ntop_canopy: Index of top canopy layer [n_patches]
-        nbot_canopy: Index of bottom canopy layer [n_patches]
-        zs_profile: Layer height [m] [n_patches, n_layers]
-        wind_profile: Wind speed [m/s] [n_patches, n_layers]
-        tair_profile: Air temperature [K] [n_patches, n_layers]
-        eair_profile: Vapor pressure [Pa] [n_patches, n_layers]
-        dpai_profile: Layer plant area index [m2/m2] [n_patches, n_layers]
-        dz_profile: Layer thickness [m] [n_patches, n_layers]
-        fracsun_profile: Sunlit fraction [0-1] [n_patches, n_layers]
-        rnleaf_leaf: Net radiation [W/m2 leaf] [n_patches, n_layers, 2]
-        shleaf_leaf: Sensible heat [W/m2 leaf] [n_patches, n_layers, 2]
-        lhleaf_leaf: Latent heat [W/m2 leaf] [n_patches, n_layers, 2]
-        anet_leaf: Net photosynthesis [umol/m2/s] [n_patches, n_layers, 2]
-        apar_leaf: Absorbed PAR [W/m2 leaf] [n_patches, n_layers, 2]
-        gs_leaf: Stomatal conductance [mol/m2/s] [n_patches, n_layers, 2]
-        lwp_hist_leaf: Leaf water potential [MPa] [n_patches, n_layers, 2]
-        tleaf_hist_leaf: Leaf temperature [K] [n_patches, n_layers, 2]
-        vcmax25_leaf: Vcmax at 25C [umol/m2/s] [n_patches, n_layers, 2]
-        lsc_profile: Leaf-specific conductance [mmol/m2/s/MPa] [n_patches, n_layers]
-        lwp_mean_profile: Mean leaf water potential [MPa] [n_patches, n_layers]
-        # Canopy-level aggregates
-        rnet_canopy: Net radiation [W/m2] [n_patches]
-        stflx_canopy: Sensible heat storage [W/m2] [n_patches]
-        shflx_canopy: Sensible heat flux [W/m2] [n_patches]
-        lhflx_canopy: Latent heat flux [W/m2] [n_patches]
-        gppveg_canopy: Gross primary production [umol CO2/m2/s] [n_patches]
-        ustar_canopy: Friction velocity [m/s] [n_patches]
-        lwup_canopy: Upward longwave [W/m2] [n_patches]
-        taf_canopy: Air temperature at reference [K] [n_patches]
-        albcan_canopy: Canopy albedo [0-1] [n_patches, 2]
-        lai_canopy: Leaf area index [m2/m2] [n_patches]
-        sai_canopy: Stem area index [m2/m2] [n_patches]
-        laisun_canopy: Sunlit LAI [m2/m2] [n_patches]
-        laisha_canopy: Shaded LAI [m2/m2] [n_patches]
-        swveg_canopy: Absorbed SW by vegetation [W/m2] [n_patches, 2]
-        swvegsun_canopy: Absorbed SW sunlit [W/m2] [n_patches, 2]
-        swvegsha_canopy: Absorbed SW shaded [W/m2] [n_patches, 2]
-        gppvegsun_canopy: Sunlit GPP [umol CO2/m2/s] [n_patches]
-        gppvegsha_canopy: Shaded GPP [umol CO2/m2/s] [n_patches]
-        lhveg_canopy: Total latent heat [W/m2] [n_patches]
-        lhvegsun_canopy: Sunlit latent heat [W/m2] [n_patches]
-        lhvegsha_canopy: Shaded latent heat [W/m2] [n_patches]
-        shveg_canopy: Total sensible heat [W/m2] [n_patches]
-        shvegsun_canopy: Sunlit sensible heat [W/m2] [n_patches]
-        shvegsha_canopy: Shaded sensible heat [W/m2] [n_patches]
-        vcmax25veg_canopy: Total Vcmax at 25C [umol/m2/s] [n_patches]
-        vcmax25sun_canopy: Sunlit Vcmax at 25C [umol/m2/s] [n_patches]
-        vcmax25sha_canopy: Shaded Vcmax at 25C [umol/m2/s] [n_patches]
-        gsveg_canopy: Total stomatal conductance [mol/m2/s] [n_patches]
-        gsvegsun_canopy: Sunlit stomatal conductance [mol/m2/s] [n_patches]
-        gsvegsha_canopy: Shaded stomatal conductance [mol/m2/s] [n_patches]
-        windveg_canopy: Total wind speed [m/s] [n_patches]
-        windvegsun_canopy: Sunlit wind speed [m/s] [n_patches]
-        windvegsha_canopy: Shaded wind speed [m/s] [n_patches]
-        tlveg_canopy: Total leaf temperature [K] [n_patches]
-        tlvegsun_canopy: Sunlit leaf temperature [K] [n_patches]
-        tlvegsha_canopy: Shaded leaf temperature [K] [n_patches]
-        taveg_canopy: Total air temperature [K] [n_patches]
-        tavegsun_canopy: Sunlit air temperature [K] [n_patches]
-        tavegsha_canopy: Shaded air temperature [K] [n_patches]
-        fracminlwp_canopy: Fraction at minimum water potential [0-1] [n_patches]
-        # Forcing
-        swskyb_forcing: Direct beam SW [W/m2] [n_patches, 2]
-        swskyd_forcing: Diffuse SW [W/m2] [n_patches, 2]
-        solar_zen_forcing: Solar zenith angle [radians] [n_patches]
-        rhomol_forcing: Molar density [mol/m3] [n_patches]
-        gac_profile: Aerodynamic conductance [mol/m2/s] [n_patches, n_layers]
-        wind_data: Wind from dataset [m/s] [n_patches, n_layers]
-        tair_data: Temperature from dataset [K] [n_patches, n_layers]
-        eair_data: Vapor pressure from dataset [Pa] [n_patches, n_layers]
-    """
-    pref_forcing: jnp.ndarray
-    root_biomass_canopy: jnp.ndarray
-    ncan_canopy: jnp.ndarray
-    ntop_canopy: jnp.ndarray
-    nbot_canopy: jnp.ndarray
-    zs_profile: jnp.ndarray
-    wind_profile: jnp.ndarray
-    tair_profile: jnp.ndarray
-    eair_profile: jnp.ndarray
-    dpai_profile: jnp.ndarray
-    dz_profile: jnp.ndarray
-    fracsun_profile: jnp.ndarray
-    rnleaf_leaf: jnp.ndarray
-    shleaf_leaf: jnp.ndarray
-    lhleaf_leaf: jnp.ndarray
-    anet_leaf: jnp.ndarray
-    apar_leaf: jnp.ndarray
-    gs_leaf: jnp.ndarray
-    lwp_hist_leaf: jnp.ndarray
-    tleaf_hist_leaf: jnp.ndarray
-    vcmax25_leaf: jnp.ndarray
-    lsc_profile: jnp.ndarray
-    lwp_mean_profile: jnp.ndarray
-    rnet_canopy: jnp.ndarray
-    stflx_canopy: jnp.ndarray
-    shflx_canopy: jnp.ndarray
-    lhflx_canopy: jnp.ndarray
-    gppveg_canopy: jnp.ndarray
-    ustar_canopy: jnp.ndarray
-    lwup_canopy: jnp.ndarray
-    taf_canopy: jnp.ndarray
-    albcan_canopy: jnp.ndarray
-    lai_canopy: jnp.ndarray
-    sai_canopy: jnp.ndarray
-    laisun_canopy: jnp.ndarray
-    laisha_canopy: jnp.ndarray
-    swveg_canopy: jnp.ndarray
-    swvegsun_canopy: jnp.ndarray
-    swvegsha_canopy: jnp.ndarray
-    gppvegsun_canopy: jnp.ndarray
-    gppvegsha_canopy: jnp.ndarray
-    lhveg_canopy: jnp.ndarray
-    lhvegsun_canopy: jnp.ndarray
-    lhvegsha_canopy: jnp.ndarray
-    shveg_canopy: jnp.ndarray
-    shvegsun_canopy: jnp.ndarray
-    shvegsha_canopy: jnp.ndarray
-    vcmax25veg_canopy: jnp.ndarray
-    vcmax25sun_canopy: jnp.ndarray
-    vcmax25sha_canopy: jnp.ndarray
-    gsveg_canopy: jnp.ndarray
-    gsvegsun_canopy: jnp.ndarray
-    gsvegsha_canopy: jnp.ndarray
-    windveg_canopy: jnp.ndarray
-    windvegsun_canopy: jnp.ndarray
-    windvegsha_canopy: jnp.ndarray
-    tlveg_canopy: jnp.ndarray
-    tlvegsun_canopy: jnp.ndarray
-    tlvegsha_canopy: jnp.ndarray
-    taveg_canopy: jnp.ndarray
-    tavegsun_canopy: jnp.ndarray
-    tavegsha_canopy: jnp.ndarray
-    fracminlwp_canopy: jnp.ndarray
-    swskyb_forcing: jnp.ndarray
-    swskyd_forcing: jnp.ndarray
-    solar_zen_forcing: jnp.ndarray
-    rhomol_forcing: jnp.ndarray
-    gac_profile: jnp.ndarray
-    wind_data: jnp.ndarray
-    tair_data: jnp.ndarray
-    eair_data: jnp.ndarray
-
-
-class CanopyState(NamedTuple):
-    """Canopy state variables.
-    
-    Attributes:
-        htop_patch: Canopy top height [m] [n_patches]
-    """
-    htop_patch: jnp.ndarray
-
-
-class PatchInfo(NamedTuple):
-    """Patch information.
-    
-    Attributes:
-        itype: PFT type index [n_patches]
-        column: Column index for each patch [n_patches]
-    """
-    itype: jnp.ndarray
-    column: jnp.ndarray
-
-
-class ColumnState(NamedTuple):
-    """Column-level state variables.
-    
-    Attributes:
-        dz: Soil layer thickness [m] [n_columns, nlevgrnd]
-        nbedrock: Depth to bedrock index [n_columns]
-    """
-    dz: jnp.ndarray
-    nbedrock: jnp.ndarray
-
-
-class SoilState(NamedTuple):
-    """Soil state variables.
-    
-    Attributes:
-        watsat_col: Volumetric water content at saturation [m3/m3] [n_columns, nlevgrnd]
-        btran_soil: Soil moisture stress factor [0-1] [n_patches]
-        psis_soil: Soil water potential [MPa] [n_patches]
-        gsoi_soil: Soil heat flux [W/m2] [n_patches]
-        rnsoi_soil: Net radiation at soil [W/m2] [n_patches]
-        shsoi_soil: Sensible heat from soil [W/m2] [n_patches]
-        lhsoi_soil: Latent heat from soil [W/m2] [n_patches]
-        tg_soil: Ground temperature [K] [n_patches]
-        eg_soil: Ground vapor pressure [Pa] [n_patches]
-        gac0_soil: Ground aerodynamic conductance [mol/m2/s] [n_patches]
-    """
-    watsat_col: jnp.ndarray
-    btran_soil: jnp.ndarray
-    psis_soil: jnp.ndarray
-    gsoi_soil: jnp.ndarray
-    rnsoi_soil: jnp.ndarray
-    shsoi_soil: jnp.ndarray
-    lhsoi_soil: jnp.ndarray
-    tg_soil: jnp.ndarray
-    eg_soil: jnp.ndarray
-    gac0_soil: jnp.ndarray
-
-
-class WaterState(NamedTuple):
-    """Water state variables.
-    
-    Attributes:
-        h2osoi_vol_col: Volumetric water content [m3/m3] [n_columns, nlevgrnd]
-        h2osoi_ice_col: Ice lens mass [kg H2O/m2] [n_columns, nlevgrnd]
-        h2osoi_liq_col: Liquid water mass [kg H2O/m2] [n_columns, nlevgrnd]
-    """
-    h2osoi_vol_col: jnp.ndarray
-    h2osoi_ice_col: jnp.ndarray
-    h2osoi_liq_col: jnp.ndarray
-
-
-class PhysicalConstants(NamedTuple):
-    """Physical constants.
-    
-    Attributes:
-        mwh2o: Molecular weight of water [g/mol]
-        mwdry: Molecular weight of dry air [g/mol]
-        denh2o: Density of liquid water [kg/m3]
-        pi: Pi constant
-    """
-    mwh2o: float = 18.016
-    mwdry: float = 28.966
-    denh2o: float = 1000.0
-    pi: float = 3.14159265358979323846
-
-
-class PFTParameters(NamedTuple):
-    """PFT-specific parameters.
-    
-    Attributes:
-        pbeta_lai: LAI beta parameter [dimensionless] [n_pfts]
-        qbeta_lai: LAI q parameter [dimensionless] [n_pfts]
-        pbeta_sai: SAI beta parameter [dimensionless] [n_pfts]
-        qbeta_sai: SAI q parameter [dimensionless] [n_pfts]
-    """
-    pbeta_lai: jnp.ndarray
-    qbeta_lai: jnp.ndarray
-    pbeta_sai: jnp.ndarray
-    qbeta_sai: jnp.ndarray
-
-
-class InitializationState(NamedTuple):
-    """State after initialization phase.
-    
-    Attributes:
-        yr: Current year [integer]
-        mon: Current month [1-12]
-        day: Current day of month [1-31]
-        curr_date_tod: Current time of day [seconds]
-        itim: Time step counter
-        eccen: Orbital eccentricity [dimensionless]
-        obliq: Obliquity [degrees]
-        mvelp: Moving vernal equinox longitude of perihelion [degrees]
-        obliqr: Obliquity [radians]
-        lambm0: Mean longitude of perihelion at vernal equinox [radians]
-        mvelpp: Moving vernal equinox longitude of perihelion plus pi [radians]
-        fin_tower: Tower meteorology file path
-        fin_clm: CLM history file path
-        pft_params_adjusted: Whether PFT parameters were adjusted
-    """
-    yr: int
-    mon: int
-    day: int
-    curr_date_tod: int
-    itim: int
-    eccen: float
-    obliq: float
-    mvelp: float
-    obliqr: float
-    lambm0: float
-    mvelpp: float
-    fin_tower: str
-    fin_clm: str
-    pft_params_adjusted: bool
-
-
-class CLMHistoryFileInfo(NamedTuple):
-    """Information for CLM history file initialization.
-    
-    Attributes:
-        fin_clm: Full path to CLM history file
-        time_indx: Time slice index into CLM history file [1-based]
-        start_calday_clm: Calendar day of first time slice
-        curr_calday: Calendar day for start of simulation
-    """
-    fin_clm: str
-    time_indx: int
-    start_calday_clm: float
-    curr_calday: float
-
-
-class TimeStepState(NamedTuple):
-    """State for a single time step.
-    
-    Attributes:
-        year: Current year
-        month: Current month [1-12]
-        day: Current day of month [1-31]
-        curr_date_tod: Current time of day [seconds]
-        curr_time_day: Current time as day fraction [0-1]
-        curr_time_sec: Current time in seconds
-        curr_calday: Current calendar day [1.0 = 0Z Jan 1]
-        time_indx: Time index into CLM history file
-    """
-    year: jnp.ndarray
-    month: jnp.ndarray
-    day: jnp.ndarray
-    curr_date_tod: jnp.ndarray
-    curr_time_day: jnp.ndarray
-    curr_time_sec: jnp.ndarray
-    curr_calday: jnp.ndarray
-    time_indx: jnp.ndarray
-
-
-class OutputFluxes(NamedTuple):
-    """Canopy and soil flux outputs.
-    
-    Attributes:
-        rnet_canopy: Net radiation at canopy [W/m2]
-        stflx_canopy: Sensible heat flux storage [W/m2]
-        shflx_canopy: Sensible heat flux [W/m2]
-        lhflx_canopy: Latent heat flux [W/m2]
-        gppveg_canopy: Gross primary production [umol CO2/m2/s]
-        ustar_canopy: Friction velocity [m/s]
-        swup: Upward shortwave radiation [W/m2]
-        lwup_canopy: Upward longwave radiation [W/m2]
-        taf_canopy: Air temperature at reference height [K]
-        gsoi_soil: Soil heat flux [W/m2]
-        rnsoi_soil: Net radiation at soil surface [W/m2]
-        shsoi_soil: Sensible heat flux from soil [W/m2]
-        lhsoi_soil: Latent heat flux from soil [W/m2]
-    """
-    rnet_canopy: jnp.ndarray
-    stflx_canopy: jnp.ndarray
-    shflx_canopy: jnp.ndarray
-    lhflx_canopy: jnp.ndarray
-    gppveg_canopy: jnp.ndarray
-    ustar_canopy: jnp.ndarray
-    swup: jnp.ndarray
-    lwup_canopy: jnp.ndarray
-    taf_canopy: jnp.ndarray
-    gsoi_soil: jnp.ndarray
-    rnsoi_soil: jnp.ndarray
-    shsoi_soil: jnp.ndarray
-    lhsoi_soil: jnp.ndarray
-
-
-class OutputSunShade(NamedTuple):
-    """Sunlit/shaded canopy flux outputs.
-    
-    Attributes:
-        solar_zen_deg: Solar zenith angle [degrees]
-        sw_vis_total: Total visible shortwave [W/m2]
-        lai_sai_total: Total LAI + SAI [m2/m2]
-        laisun: Sunlit LAI [m2/m2]
-        laisha: Shaded LAI [m2/m2]
-        swveg_vis: Absorbed visible SW by vegetation [W/m2]
-        swvegsun_vis: Absorbed visible SW by sunlit leaves [W/m2]
-        swvegsha_vis: Absorbed visible SW by shaded leaves [W/m2]
-        gppveg: Total GPP [umol CO2/m2/s]
-        gppvegsun: Sunlit GPP [umol CO2/m2/s]
-        gppvegsha: Shaded GPP [umol CO2/m2/s]
-        lhveg: Total latent heat [W/m2]
-        lhvegsun: Sunlit latent heat [W/m2]
-        lhvegsha: Shaded latent heat [W/m2]
-        shveg: Total sensible heat [W/m2]
-        shvegsun: Sunlit sensible heat [W/m2]
-        shvegsha: Shaded sensible heat [W/m2]
-        vcmax25veg: Total Vcmax at 25C [umol/m2/s]
-        vcmax25sun: Sunlit Vcmax at 25C [umol/m2/s]
-        vcmax25sha: Shaded Vcmax at 25C [umol/m2/s]
-        gsveg: Total stomatal conductance [mol/m2/s]
-        gsvegsun: Sunlit stomatal conductance [mol/m2/s]
-        gsvegsha: Shaded stomatal conductance [mol/m2/s]
-        windveg: Total wind speed [m/s]
-        windvegsun: Sunlit wind speed [m/s]
-        windvegsha: Shaded wind speed [m/s]
-        tlveg: Total leaf temperature [K]
-        tlvegsun: Sunlit leaf temperature [K]
-        tlvegsha: Shaded leaf temperature [K]
-        taveg: Total air temperature [K]
-        tavegsun: Sunlit air temperature [K]
-        tavegsha: Shaded air temperature [K]
-    """
-    solar_zen_deg: jnp.ndarray
-    sw_vis_total: jnp.ndarray
-    lai_sai_total: jnp.ndarray
-    laisun: jnp.ndarray
-    laisha: jnp.ndarray
-    swveg_vis: jnp.ndarray
-    swvegsun_vis: jnp.ndarray
-    swvegsha_vis: jnp.ndarray
-    gppveg: jnp.ndarray
-    gppvegsun: jnp.ndarray
-    gppvegsha: jnp.ndarray
-    lhveg: jnp.ndarray
-    lhvegsun: jnp.ndarray
-    lhvegsha: jnp.ndarray
-    shveg: jnp.ndarray
-    shvegsun: jnp.ndarray
-    shvegsha: jnp.ndarray
-    vcmax25veg: jnp.ndarray
-    vcmax25sun: jnp.ndarray
-    vcmax25sha: jnp.ndarray
-    gsveg: jnp.ndarray
-    gsvegsun: jnp.ndarray
-    gsvegsha: jnp.ndarray
-    windveg: jnp.ndarray
-    windvegsun: jnp.ndarray
-    windvegsha: jnp.ndarray
-    tlveg: jnp.ndarray
-    tlvegsun: jnp.ndarray
-    tlvegsha: jnp.ndarray
-    taveg: jnp.ndarray
-    tavegsun: jnp.ndarray
-    tavegsha: jnp.ndarray
-
-
-class OutputAuxiliary(NamedTuple):
-    """Leaf water potential and soil moisture stress outputs.
-    
-    Attributes:
-        btran: Soil moisture stress factor [0-1]
-        lsc_top: Leaf-specific conductance at top layer [mmol/m2/s/MPa]
-        psis: Soil water potential [MPa]
-        lwp_mean_top: Mean leaf water potential at top [MPa]
-        lwp_mean_mid: Mean leaf water potential at mid-canopy [MPa]
-        fracminlwp: Fraction of leaves at minimum water potential [0-1]
-    """
-    btran: jnp.ndarray
-    lsc_top: jnp.ndarray
-    psis: jnp.ndarray
-    lwp_mean_top: jnp.ndarray
-    lwp_mean_mid: jnp.ndarray
-    fracminlwp: jnp.ndarray
-
-
-class OutputProfile(NamedTuple):
-    """Vertical profile outputs above canopy.
-    
-    Attributes:
-        curr_calday: Current calendar day [days]
-        zs: Height above ground [m] [n_patches, n_levels]
-        wind: Wind speed [m/s] [n_patches, n_levels]
-        tair: Air temperature [K] [n_patches, n_levels]
-        qair: Specific humidity [g/kg] [n_patches, n_levels]
-    """
-    curr_calday: jnp.ndarray
-    zs: jnp.ndarray
-    wind: jnp.ndarray
-    tair: jnp.ndarray
-    qair: jnp.ndarray
-
-
-class CanopyLayerOutput(NamedTuple):
-    """Output data for a single canopy layer.
-    
-    Attributes:
-        curr_calday: Current calendar day [days]
-        zs: Layer height [m]
-        fracsun: Sunlit fraction [0-1]
-        lad: Leaf area density [m2/m3]
-        lad_sun: Sunlit leaf area density [m2/m3]
-        lad_shade: Shaded leaf area density [m2/m3]
-        rnleaf_sun: Net radiation sunlit [W/m2 leaf]
-        rnleaf_shade: Net radiation shaded [W/m2 leaf]
-        shleaf_sun: Sensible heat sunlit [W/m2 leaf]
-        shleaf_shade: Sensible heat shaded [W/m2 leaf]
-        lhleaf_sun: Latent heat sunlit [W/m2 leaf]
-        lhleaf_shade: Latent heat shaded [W/m2 leaf]
-        anet_sun: Net photosynthesis sunlit [umol/m2 leaf/s]
-        anet_shade: Net photosynthesis shaded [umol/m2 leaf/s]
-        apar_sun: Absorbed PAR sunlit [W/m2 leaf]
-        apar_shade: Absorbed PAR shaded [W/m2 leaf]
-        gs_sun: Stomatal conductance sunlit [mol/m2 leaf/s]
-        gs_shade: Stomatal conductance shaded [mol/m2 leaf/s]
-        lwp_sun: Leaf water potential sunlit [MPa]
-        lwp_shade: Leaf water potential shaded [MPa]
-        tleaf_sun: Leaf temperature sunlit [K]
-        tleaf_shade: Leaf temperature shaded [K]
-        vcmax25_sun: Vcmax at 25C sunlit [umol/m2 leaf/s]
-        vcmax25_shade: Vcmax at 25C shaded [umol/m2 leaf/s]
-        wind: Wind speed [m/s]
-        tair: Air temperature [K]
-        qair: Specific humidity [g/kg]
-    """
-    curr_calday: float
-    zs: float
-    fracsun: float
-    lad: float
-    lad_sun: float
-    lad_shade: float
-    rnleaf_sun: float
-    rnleaf_shade: float
-    shleaf_sun: float
-    shleaf_shade: float
-    lhleaf_sun: float
-    lhleaf_shade: float
-    anet_sun: float
-    anet_shade: float
-    apar_sun: float
-    apar_shade: float
-    gs_sun: float
-    gs_shade: float
-    lwp_sun: float
-    lwp_shade: float
-    tleaf_sun: float
-    tleaf_shade: float
-    vcmax25_sun: float
-    vcmax25_shade: float
-    wind: float
-    tair: float
-    qair: float
-
-
-class GroundOutputState(NamedTuple):
-    """Ground surface output diagnostics.
-    
-    Attributes:
-        tair: Ground air temperature [K] [n_patches]
-        eair: Ground vapor pressure [kPa] [n_patches]
-        ra: Aerodynamic resistance [s/m] [n_patches]
-    """
-    tair: jnp.ndarray
-    eair: jnp.ndarray
-    ra: jnp.ndarray
-
-
-class CanopyProfileData(NamedTuple):
-    """Data structure for canopy profile information.
-    
-    Attributes:
-        ncan: Number of aboveground layers [n_patches]
-        zs: Canopy layer height [m] [n_patches, n_layers]
-        wind_data: Wind speed from dataset [m/s] [n_patches, n_layers]
-        tair_data: Air temperature from dataset [K] [n_patches, n_layers]
-        eair_data: Vapor pressure from dataset [Pa] [n_patches, n_layers]
-        pref: Air pressure at reference height [Pa] [n_patches]
-    """
-    ncan: jnp.ndarray
-    zs: jnp.ndarray
-    wind_data: jnp.ndarray
-    tair_data: jnp.ndarray
-    eair_data: jnp.ndarray
-    pref: jnp.ndarray
-
-
-class CleanupState(NamedTuple):
-    """State indicating cleanup operations to perform.
-    
-    Attributes:
-        close_nout1: Whether to close output file 1
-        close_nout2: Whether to close output file 2
-        close_nout3: Whether to close output file 3
-        close_nout4: Whether to close output file 4
-        close_nin1: Whether to close input file 1
-        success: Whether simulation completed successfully
-    """
-    close_nout1: bool
-    close_nout2: bool
-    close_nout3: bool
-    close_nout4: bool
-    close_nin1: bool
-    success: bool
-
-
-class TowerVegInputs(NamedTuple):
-    """Inputs for tower vegetation initialization.
-    
-    Attributes:
-        tower_pft: PFT type for this tower site
-        tower_canht: Observed canopy height [m] (-999.0 = no observation)
-        begp: First patch index
-        endp: Last patch index
-    """
-    tower_pft: int
-    tower_canht: float
-    begp: int
-    endp: int
-
-
-# ============================================================================
-# Protocol Definitions
-# ============================================================================
-
-
-@runtime_checkable
-class CLMmlDriverProtocol(Protocol):
-    """Protocol defining the CLM-ML driver interface.
-    
-    Reference: CLMml_driver.F90:1-29
-    """
-    
-    def clmml_drv(self, bounds: BoundsType) -> None:
-        """Main model driver routine.
-        
-        Args:
-            bounds: Decomposition bounds for this processor
-        """
-        ...
-
-
-# ============================================================================
-# Constants and Parameters
-# ============================================================================
-
-
-# Physical constants (lines 560-579)
-PHYSICAL_CONSTANTS = PhysicalConstants()
-
-# Band indices (lines 594-666)
-IVIS = 0  # Visible band index
-INIR = 1  # Near-infrared band index
-
-# Sun/shade indices (lines 667-730)
-ISUN = 0  # Sunlit leaf index
-ISHA = 1  # Shaded leaf index
-
-# Missing value sentinel (lines 667-730)
-MISSING_VALUE = -999.0
-ZERO_VALUE = 0.0
-
-# PFT canopy height lookup table (lines 395-399)
-# PFT indices: 0=bare, 1-8=trees, 9-16=grasses, 17+=unused
-HTOP_PFT_DEFAULT = jnp.array([
-    0.0,   # 0: bare ground
-    17.0, 17.0, 14.0, 35.0, 35.0, 18.0, 20.0, 20.0,  # 1-8: trees
-    0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,          # 9-16: grasses/crops
-] + [0.0] * 62, dtype=jnp.float32)  # 17-78: unused
-
-# Pine parameters for US-Me2 (lines 113-118)
-PINE_PBETA_LAI = 11.5
-PINE_QBETA_LAI = 3.5
-PINE_PBETA_SAI = 11.5
-PINE_QBETA_SAI = 3.5
-
-# Fine root biomass default (line 408)
-DEFAULT_ROOT_BIOMASS = 500.0  # g biomass/m2
-
-
-# ============================================================================
-# Initialization Functions
-# ============================================================================
-
-
-def adjust_usme2_pft_parameters(
-    pft_params: PFTParameters,
-    patch_itype: int,
-    tower_id: str,
-) -> PFTParameters:
-    """Adjust PFT parameters for US-Me2 tower site.
-    
-    For the US-Me2 site, reset leaf/stem area density parameters to pine values.
-    
-    Reference: CLMml_driver.F90:113-118
-    
     Args:
-        pft_params: Current PFT parameters (PFTParameters NamedTuple or dict)
-        patch_itype: PFT type index for patch 1
-        tower_id: Tower site identifier
-        
-    Returns:
-        Updated PFT parameters (unchanged if not US-Me2)
+        bounds: Decomposition bounds supplying ``begp``, ``endp``,
+            ``begc``, ``endc`` for the local task.
     """
-    # Handle dict input for testing
-    if isinstance(pft_params, dict):
-        if tower_id == 'US-Me2':
-            return {
-                "pbeta_lai": PINE_PBETA_LAI,
-                "qbeta_lai": PINE_QBETA_LAI,
-                "pbeta_sai": PINE_PBETA_SAI,
-                "qbeta_sai": PINE_QBETA_SAI,
-            }
-        else:
-            return pft_params
-    
-    # Handle PFTParameters NamedTuple with JAX arrays
-    if tower_id == 'US-Me2':
-        pbeta_lai = pft_params.pbeta_lai.at[patch_itype].set(PINE_PBETA_LAI)
-        qbeta_lai = pft_params.qbeta_lai.at[patch_itype].set(PINE_QBETA_LAI)
-        pbeta_sai = pft_params.pbeta_sai.at[patch_itype].set(PINE_PBETA_SAI)
-        qbeta_sai = pft_params.qbeta_sai.at[patch_itype].set(PINE_QBETA_SAI)
-        
-        return PFTParameters(
-            pbeta_lai=pbeta_lai,
-            qbeta_lai=qbeta_lai,
-            pbeta_sai=pbeta_sai,
-            qbeta_sai=qbeta_sai,
+    # ------------------------------------------------------------------
+    # Initialize namelist run control variables — Fortran line 55
+    # ------------------------------------------------------------------
+    ntim, clm_start_ymd, clm_start_tod, fin_tower, fin_clm, fin_soil_adjust, dirout = \
+        control()
+
+    # ------------------------------------------------------------------
+    # Get current date from start_date_ymd — Fortran lines 63-65
+    # ------------------------------------------------------------------
+    clm_time_manager.itim = 1
+    yr, mon, day, _ = get_curr_date()
+
+    print(f'{iulog}: Processing: {tower_id[tower_num]} {yr} {mon}')
+
+    # ------------------------------------------------------------------
+    # Initialize CLM and build filters — Fortran lines 73-77
+    # ------------------------------------------------------------------
+    InitializeRealize(bounds)
+    setFilters(filter)
+
+    # ------------------------------------------------------------------
+    # Orbital parameters for this year — Fortran lines 80-81
+    # ------------------------------------------------------------------
+    from clm_src_utils import clm_varorb
+    obliq, mvelp = shr_orb_params( yr    )    # obliq, mvelp are local (not used further)
+
+    # ------------------------------------------------------------------
+    # Acclimation temperature from full tower record — Fortran lines 84-87
+    # ------------------------------------------------------------------
+    init_acclim(
+        fin_tower, tower_num, ntim,
+        bounds.begp, bounds.endp,
+        clm_instMod.atm2lnd_inst,
+        clm_instMod.wateratm2lndbulk_inst,
+        clm_instMod.temperature_inst,
+        clm_instMod.frictionvel_inst,
+        clm_instMod.mlcanopy_inst,
+    )
+
+    # ------------------------------------------------------------------
+    # Initialize tower vegetation — Fortran lines 91-92
+    # ------------------------------------------------------------------
+    TowerVeg(
+        tower_num, bounds.begp, bounds.endp,
+        clm_instMod.canopystate_inst,
+        clm_instMod.mlcanopy_inst,
+    )
+
+    # ------------------------------------------------------------------
+    # Compute CLM history file calendar day and time slice index
+    # Fortran lines 95-120
+    #
+    # NOTE: This is described as a "hack" in the Fortran source
+    # (lines 97-100). start_date_ymd/tod are temporarily overwritten
+    # with the CLM history file start date so that get_curr_calday
+    # returns the CLM file's calendar day rather than the run start.
+    # ------------------------------------------------------------------
+
+    # Save run start date/time — Fortran lines 103-104
+    run_start_date = clm_time_manager.start_date_ymd
+    run_start_tod  = clm_time_manager.start_date_tod
+
+    # Temporarily set to CLM history start to compute start_calday_clm — Fortran lines 106-109
+    clm_time_manager.start_date_ymd = clm_start_ymd
+    clm_time_manager.start_date_tod = clm_start_tod
+    clm_time_manager.itim = 1
+    start_calday_clm = get_curr_calday(offset=0)
+
+    # Restore run start date/time — Fortran lines 111-112
+    clm_time_manager.start_date_ymd = run_start_date
+    clm_time_manager.start_date_tod = run_start_tod
+    clm_time_manager.itim = 1
+    curr_calday = get_curr_calday(offset=0)
+
+    # Time slice index into CLM history file — Fortran line 116
+    time_indx = round(
+        (curr_calday - start_calday_clm) * 86400.0 / float(dtstep)
+    ) + 1
+
+    # Initialize soil temperature and moisture — Fortran lines 118-120
+    SoilInit(
+        fin_clm, time_indx,
+        bounds.begc, bounds.endc,
+        clm_instMod.soilstate_inst,
+        clm_instMod.waterstatebulk_inst,
+        clm_instMod.temperature_inst,
+    )
+
+    # ------------------------------------------------------------------
+    # Open ASCII output files — Fortran lines 123-153
+    # Output file names follow the pattern:
+    #   {tower_id}_{yyyy}-{mm}_{tag}.out
+    # ------------------------------------------------------------------
+    tid = tower_id[tower_num]
+
+    def _outpath(tag: str) -> str:
+        """Build full output file path matching Fortran write/format."""
+        fname = f'{tid}_{yr:04d}-{mon:02d}_{tag}.out'
+        return os.path.join(dirout.strip(), fname)
+
+    fout1 = open(_outpath('flux'),         'w')   # Fluxes
+    fout2 = open(_outpath('aux'),          'w')   # Auxiliary data
+    fout3 = open(_outpath('profile'),      'w')   # Profile data
+    fout4 = open(_outpath('fsun'),         'w')   # Sun/shade fluxes
+    fout5 = open(_outpath('fluxprofile'),  'w')   # Vertical flux profiles
+    fout6 = open(_outpath('soiltemp'),     'w')   # Soil temperature
+
+    # ------------------------------------------------------------------
+    # Optionally open ASCII profile input file — Fortran lines 155-162
+    # ------------------------------------------------------------------
+    fin1: IO | None = None
+    if flux_profile_type == -1:
+        endrun(msg=' ERROR: flux_profile_type not supported')
+        # Lines below are unreachable; preserved from Fortran lines 157-161
+        fin1_path = 'set_file_name'
+        fin1 = open(fin1_path, 'r')
+
+    # ------------------------------------------------------------------
+    # Main time-stepping loop — Fortran lines 165-183
+    # ------------------------------------------------------------------
+    print(f'{iulog}: Starting time stepping loop .....')
+
+    for _itim in range(1, ntim + 1):              # Fortran: do itim = 1, ntim
+        clm_time_manager.itim = _itim
+
+        # Date, time, and calendar day — Fortran lines 171-173
+        yr, mon, day, _ = get_curr_date()
+        curr_time_day, curr_time_sec = get_curr_time()
+        curr_calday = get_curr_calday(offset=0)
+
+        # Time slice into CLM history file — Fortran line 176
+        time_indx = round(
+            (curr_calday - start_calday_clm) * 86400.0 / float(dtstep)
+        ) + 1
+
+        # Read tower meteorology for current time step — Fortran lines 178-180
+        (clm_instMod.atm2lnd_inst,
+         clm_instMod.wateratm2lndbulk_inst,
+         clm_instMod.frictionvel_inst) = TowerMetCurr(
+            fin_tower, _itim, tower_num,
+            bounds.begp, bounds.endp,
+            clm_instMod.atm2lnd_inst,
+            clm_instMod.wateratm2lndbulk_inst,
+            clm_instMod.frictionvel_inst,
         )
-    else:
-        return pft_params
 
+        # Read next-step meteorology for 3-point interpolation — Fortran lines 182-185
+        if met_type == 3:
+            itim_next = min(_itim + 1, ntim)      # Fortran: itim_next = min(itim+1, ntim)
+            clm_instMod.mlcanopy_inst = TowerMetNext(
+                fin_tower, itim_next,
+                bounds.begp, bounds.endp,
+                clm_instMod.mlcanopy_inst,
+            )
 
-def construct_tower_file_path(
-    tower_id: str,
-    yr: int,
-    mon: int,
-    diratm: str,
-) -> str:
-    """Construct path to tower meteorology file.
-    
-    Reference: CLMml_driver.F90:131-132
-    
-    Args:
-        tower_id: Tower site identifier (e.g., 'US-Me2')
-        yr: Year
-        mon: Month [1-12]
-        diratm: Atmospheric forcing directory path
-        
-    Returns:
-        Full path to tower meteorology netCDF file
-    """
-    ext = f"{tower_id}/{yr:04d}-{mon:02d}.nc"
-    return f"{diratm.rstrip('/')}/{ext}"
+        # Read canopy profile data if required — Fortran line 188
+        if flux_profile_type == -1:
+            if fin1 is None:
+                endrun(msg=' ERROR: flux_profile_type -1 requires profile input file')
+            assert fin1 is not None  # Type narrowing for static analysis
+            clm_instMod.mlcanopy_inst = ReadCanopyProfiles(
+                _itim, curr_calday, fin1, clm_instMod.mlcanopy_inst
+            )
 
+        # Advance the model — Fortran lines 190-192
+        ModelAdvance(bounds, time_indx, fin_clm, fin_soil_adjust)
+        if _itim == 1:
+            print(f'{iulog}: Executing model .....')
 
-def construct_clm_filename(
-    tower_id: str,
-    tower_num: int,
-    yr: int,
-    dirclm: str,
-    use_wozniak: bool = False,
-) -> str:
-    """Construct CLM history file path.
-    
-    Reference: CLMml_driver.F90:140-145
-    
-    Args:
-        tower_id: Tower identifier string
-        tower_num: Tower number index
-        yr: Year for file
-        dirclm: Base directory path for CLM files
-        use_wozniak: Whether to use Wozniak-specific naming
-        
-    Returns:
-        Full path to CLM history file
-    """
-    if use_wozniak:
-        ext = f"clm50d30wspinsp_US-UMB_WOZNIAK.clm2.h1.{yr:04d}.nc"
-    else:
-        ext = f"lp67wspinPTCLM_{tower_id}_I_2000_CLM45.clm2.h1.{yr:04d}.nc"
-    
-    dirclm_trimmed = dirclm.rstrip()
-    fin_clm = f"{dirclm_trimmed}{tower_id}/{ext}"
-    
-    return fin_clm
+        # Write output — Fortran lines 194-196
+        output(
+            curr_calday, tower_num,
+            fout1, fout2, fout3, fout4, fout5, fout6,
+            clm_instMod.mlcanopy_inst,
+            clm_instMod.temperature_inst,
+        )
 
+    # ------------------------------------------------------------------
+    # Close output and input files — Fortran lines 198-209
+    # ------------------------------------------------------------------
+    for fh in (fout1, fout2, fout3, fout4, fout5, fout6):
+        fh.close()
 
-def calculate_time_index(
-    curr_calday: jnp.ndarray,
-    start_calday_clm: jnp.ndarray,
-    dtstep: jnp.ndarray,
-) -> jnp.ndarray:
-    """Calculate time index into CLM history file.
-    
-    Reference: CLMml_driver.F90:186-188, 245-247
-    
-    Args:
-        curr_calday: Current calendar day [1.0 = 0Z Jan 1]
-        start_calday_clm: Starting calendar day from CLM file
-        dtstep: Time step size [seconds]
-        
-    Returns:
-        Time index (1-based) into CLM history file
-    """
-    elapsed_seconds = (curr_calday - start_calday_clm) * 86400.0
-    time_steps = elapsed_seconds / dtstep
-    time_indx = jnp.round(time_steps).astype(jnp.int32) + 1
-    
-    return time_indx
+    if flux_profile_type == -1 and fin1 is not None:
+        fin1.close()
 
-
-def get_htop_pft_lookup() -> jnp.ndarray:
-    """Get PFT-specific canopy height lookup table.
+    print(f'{iulog}: Successfully finished simulation')
     
-    Reference: CLMml_driver.F90:395-399
-    
-    Returns:
-        Array of canopy heights [m] indexed by PFT [79 elements]
-    """
-    return HTOP_PFT_DEFAULT
-
-
 def init_acclim(
     fin: str,
     tower_num: int,
     ntim: int,
     begp: int,
     endp: int,
-    patch_info: PatchInfo,
-    atm2lnd_inst: Atm2LndState,
-    temperature_inst: TemperatureState,
-    frictionvel_inst: FrictionVelState,
-    mlcanopy_inst: MLCanopyState,
-    tower_met_reader: Callable,
-) -> Tuple[TemperatureState, MLCanopyState]:
-    """Read tower meteorology data to compute acclimation temperature.
-    
-    This function processes all time slices from the tower meteorology file
-    to compute the average air temperature for physiological acclimation.
-    
-    Reference: CLMml_driver.F90:296-370
-    
-    Args:
-        fin: Tower meteorology file path
-        tower_num: Tower site index
-        ntim: Number of time slices to process
-        begp: First patch index (0-based in JAX)
-        endp: Last patch index (0-based in JAX, inclusive)
-        patch_info: Patch hierarchy information
-        atm2lnd_inst: Atmospheric forcing state
-        temperature_inst: Temperature state
-        frictionvel_inst: Friction velocity state
-        mlcanopy_inst: Multi-layer canopy state
-        tower_met_reader: Function to read tower meteorology data
-        
-    Returns:
-        Updated temperature_inst and mlcanopy_inst with:
-            - t_a10_patch: Average air temperature over all time slices [K]
-            - pref_forcing: Reference pressure from first timestep [Pa]
+    atm2lnd_inst: atm2lnd_type,
+    wateratm2lndbulk_inst: wateratm2lndbulk_type,
+    temperature_inst: temperature_type,
+    frictionvel_inst: frictionvel_type,
+    mlcanopy_inst: mlcanopy_type,
+) -> tuple[atm2lnd_type, wateratm2lndbulk_type, temperature_type,
+           frictionvel_type, mlcanopy_type]:
     """
-    n_patches = endp - begp + 1
-    
-    # Initialize temperature accumulator (lines 333-335)
-    t10_accum = jnp.zeros(n_patches, dtype=jnp.float64)
-    pref = jnp.zeros(n_patches, dtype=jnp.float64)
-    
-    def time_loop_body(itim, carry):
-        """Process one time slice."""
-        t10_accum, pref, atm2lnd_curr, frictionvel_curr = carry
-        
-        # Read temperature for this time slice (lines 341-342)
-        atm2lnd_updated, frictionvel_updated = tower_met_reader(
-            fin, itim, tower_num, begp, endp, atm2lnd_curr, frictionvel_curr
+    Read tower meteorology data once over all time slices to derive
+    the mean acclimation temperature for each patch.
+
+    Mirrors Fortran subroutine ``init_acclim`` (private to
+    ``CLMml_driver``).
+
+    For each patch ``p`` in ``[begp, endp]``, ``t_a10_patch`` is
+    initialised to zero, then accumulated with ``forc_t_downscaled_col``
+    at the patch's column for every time slice, and finally divided by
+    ``ntim`` to yield the time-mean air temperature used by the
+    acclimation scheme.
+
+    Additionally, ``pref_forcing`` in the multilayer canopy container is
+    set to ``forc_pbot_downscaled_col`` at the first time slice for each
+    patch. This pressure value is used only when reading Q vertical
+    profiles from an external dataset.
+
+    Args:
+        fin: Path to the tower meteorology netCDF file.
+        tower_num: Tower site index into ``TowerDataMod`` arrays.
+        ntim: Total number of time slices to process.
+        begp: First patch index.
+        endp: Last patch index.
+        atm2lnd_inst: Atmosphere-to-land forcing container.
+            ``forc_t_downscaled_col`` and ``forc_pbot_downscaled_col``
+            are read (updated internally by :func:`TowerMetCurr`).
+        wateratm2lndbulk_inst: Bulk atm-to-land water forcing container
+            (passed through to :func:`TowerMetCurr`).
+        temperature_inst: Temperature state container;
+            ``t_a10_patch`` is accumulated and averaged in-place.
+        frictionvel_inst: Friction velocity container (passed through
+            to :func:`TowerMetCurr`).
+        mlcanopy_inst: Multilayer canopy container;
+            ``pref_forcing`` is set from the first time slice.
+
+    Returns:
+        Tuple of updated ``(atm2lnd_inst, wateratm2lndbulk_inst,
+        temperature_inst, frictionvel_inst, mlcanopy_inst)``.
+    """
+    # Unpack mutable arrays (Fortran associate block)
+    t10      = temperature_inst.t_a10_patch            # Acclimation temperature (K)
+    pref     = mlcanopy_inst.pref_forcing              # Air pressure at reference height (Pa)
+
+    # ------------------------------------------------------------------
+    # Initialize accumulator to zero — Fortran lines: do p = begp, endp; t10(p) = 0
+    # ------------------------------------------------------------------
+    for p in range(begp, endp + 1):
+        t10 = t10.at[p].set(0.0)
+
+    # ------------------------------------------------------------------
+    # Loop over all time slices — Fortran: do itim = 1, ntim
+    # ------------------------------------------------------------------
+    for _itim in range(1, ntim + 1):
+
+        # Read temperature for this time slice — Fortran lines: call TowerMetCurr(...)
+        (atm2lnd_inst,
+         wateratm2lndbulk_inst,
+         frictionvel_inst) = TowerMetCurr(
+            fin, _itim, tower_num,
+            begp, endp,
+            atm2lnd_inst,
+            wateratm2lndbulk_inst,
+            frictionvel_inst,
         )
-        
-        # Extract column indices for patches (lines 344-345)
-        patch_indices = jnp.arange(begp, endp + 1)
-        col_indices = patch_info.column[patch_indices]
-        
-        # Sum temperature (lines 347-348)
-        forc_t_patches = atm2lnd_updated.forc_t_downscaled_col[col_indices]
-        t10_accum = t10_accum + forc_t_patches
-        
-        # Save pressure for first timestep (lines 350-352)
-        forc_pbot_patches = atm2lnd_updated.forc_pbot_downscaled_col[col_indices]
-        pref = jnp.where(itim == 0, forc_pbot_patches, pref)
-        
-        return (t10_accum, pref, atm2lnd_updated, frictionvel_updated)
-    
-    # Loop over all time slices (lines 337-354)
-    init_carry = (t10_accum, pref, atm2lnd_inst, frictionvel_inst)
-    t10_accum_final, pref_final, _, _ = lax.fori_loop(
-        0, ntim, time_loop_body, init_carry
+
+        # Re-bind after TowerMetCurr returns updated instances
+        forc_t    = atm2lnd_inst.forc_t_downscaled_col
+        forc_pbot = atm2lnd_inst.forc_pbot_downscaled_col
+
+        for p in range(begp, endp + 1):               # Fortran: do p = begp, endp
+            c = int(patch.column[p])
+
+            # Accumulate temperature — Fortran: t10(p) = t10(p) + forc_t(c)
+            t10 = t10.at[p].add(float(forc_t[c]))
+
+            # Save pressure from first time slice — Fortran: if (itim == 1) pref(p) = forc_pbot(c)
+            if _itim == 1:
+                pref = pref.at[p].set(float(forc_pbot[c]))
+
+    # ------------------------------------------------------------------
+    # Average over all time slices — Fortran: t10(p) = t10(p) / float(ntim)
+    # ------------------------------------------------------------------
+    for p in range(begp, endp + 1):
+        t10 = t10.at[p].set(float(t10[p]) / float(ntim))
+
+    return (
+        atm2lnd_inst,
+        wateratm2lndbulk_inst,
+        temperature_inst._replace(t_a10_patch = t10),
+        frictionvel_inst,
+        mlcanopy_inst._replace(pref_forcing = pref),
     )
     
-    # Average temperature (lines 356-358)
-    t10_avg = t10_accum_final / jnp.float64(ntim)
-    
-    # Update states
-    t_a10_full = temperature_inst.t_a10_patch.at[begp:endp+1].set(t10_avg)
-    temperature_inst_updated = temperature_inst._replace(t_a10_patch=t_a10_full)
-    
-    pref_full = mlcanopy_inst.pref_forcing.at[begp:endp+1].set(pref_final)
-    mlcanopy_inst_updated = mlcanopy_inst._replace(pref_forcing=pref_full)
-    
-    return temperature_inst_updated, mlcanopy_inst_updated
-
-
-def tower_veg(
-    inputs: TowerVegInputs,
-    canopystate: CanopyState,
-    mlcanopy: MLCanopyState,
-    patch: PatchInfo,
-) -> Tuple[CanopyState, MLCanopyState, PatchInfo]:
-    """Initialize tower vegetation properties.
-    
-    Assigns PFT type, fine root biomass, and canopy height for all patches
-    at a tower site.
-    
-    Reference: CLMml_driver.F90:373-424
-    
-    Args:
-        inputs: Tower vegetation inputs including PFT and canopy height
-        canopystate: Canopy state to update
-        mlcanopy: ML canopy state to update
-        patch: Patch information to update
-        
-    Returns:
-        Tuple of (updated_canopystate, updated_mlcanopy, updated_patch)
+def TowerVeg(
+    it: int,
+    begp: int,
+    endp: int,
+    canopystate_inst: canopystate_type,
+    mlcanopy_inst: mlcanopy_type,
+) -> tuple[canopystate_type, mlcanopy_type]:
     """
-    htop_pft_lookup = get_htop_pft_lookup()
-    
-    n_patches = inputs.endp - inputs.begp + 1
-    
-    # Assign PFT type (line 407)
-    itype = jnp.full(n_patches, inputs.tower_pft, dtype=jnp.int32)
-    
-    # Assign fine root biomass (line 408)
-    root_biomass = jnp.full(n_patches, DEFAULT_ROOT_BIOMASS, dtype=jnp.float32)
-    
-    # Get canopy height from PFT lookup (line 409)
-    htop = jnp.full(n_patches, htop_pft_lookup[inputs.tower_pft], dtype=jnp.float32)
-    
-    # Override with tower observation if available (lines 413-415)
-    htop = jnp.where(
-        inputs.tower_canht != MISSING_VALUE,
-        inputs.tower_canht,
-        htop
+    Initialize tower vegetation properties for each patch.
+
+    Mirrors Fortran subroutine ``TowerVeg`` (private to
+    ``CLMml_driver``).
+
+    For each patch ``p`` in ``[begp, endp]``:
+
+    - ``patch.itype`` is set to the CLM PFT for the tower site.
+    - ``htop_patch`` (canopy height) is set from ``tower_canht`` when
+      positive; otherwise falls back to the PFT-default table
+      ``htop_pft``.
+    - ``root_biomass_canopy`` is set from ``tower_root`` when positive;
+      missing root biomass is a fatal error.
+    - Beta-distribution shape parameters for leaf (``pbeta_lai_canopy``)
+      and stem (``pbeta_sai_canopy``) area density profiles are set from
+      ``tower_pbeta_lai`` / ``tower_pbeta_sai`` when all four values are
+      positive. If any are non-positive the assignment is skipped and
+      the parameters are filled later by ``getPADparameters`` from the
+      PFT defaults.
+
+    CLM top canopy height by PFT (``htop_pft``, Fortran local ``data``
+    statements, lines 40-42):
+
+    .. code-block:: none
+
+        0        => 0.0   (not_vegetated)
+        1-3      => 17, 17, 14  (needleleaf trees)
+        4-8      => 35, 35, 18, 20, 20  (broadleaf trees)
+        9-16     => 0.5  (shrubs, grasses, crops)
+        17-mxpft => 0.0  (additional crop PFTs)
+
+    Args:
+        it: Tower site index into ``TowerDataMod`` arrays (1-based).
+        begp: First patch index.
+        endp: Last patch index.
+        canopystate_inst: Canopy state container; ``htop_patch`` is
+            updated.
+        mlcanopy_inst: Multilayer canopy container; ``root_biomass_canopy``,
+            ``pbeta_lai_canopy``, and ``pbeta_sai_canopy`` are updated.
+
+    Returns:
+        Tuple of updated ``(canopystate_inst, mlcanopy_inst)``.
+    """
+    from clm_src_main.abortutils import endrun                        # noqa: F401
+    from clm_src_main.clm_varpar import mxpft                        # noqa: F401
+    from clm_src_main.PatchType import patch                         # noqa: F401
+    from offline_driver.TowerDataMod import (                          # noqa: F401
+        tower_pft, tower_canht, tower_root,
+        tower_pbeta_lai, tower_pbeta_sai,
+    )
+
+    # ------------------------------------------------------------------
+    # CLM canopy top height by PFT — Fortran local data htop_pft(0:mxpft)
+    # Fortran lines 40-42
+    # ------------------------------------------------------------------
+    _htop_pft: list[float] = (
+        [0.0]                                           # index 0: not_vegetated
+        + [17.0, 17.0, 14.0,                            # 1-3:  needleleaf trees
+           35.0, 35.0, 18.0, 20.0, 20.0,               # 4-8:  broadleaf trees
+           0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]    # 9-16: shrubs/grasses/crops
+        + [0.0] * (mxpft - 16)                          # 17-mxpft: additional crop PFTs
+    )
+
+    # Unpack mutable arrays (Fortran associate block)
+    htop         = canopystate_inst.htop_patch
+    root_biomass = mlcanopy_inst.root_biomass_canopy
+    pbeta_lai    = mlcanopy_inst.pbeta_lai_canopy
+    pbeta_sai    = mlcanopy_inst.pbeta_sai_canopy
+
+    for p in range(begp, endp + 1):                    # Fortran: do p = begp, endp
+
+        # PFT assignment — Fortran: patch%itype(p) = tower_pft(it)
+        patch.itype = patch.itype.at[p].set(int(tower_pft[it]))
+
+        # Canopy height — Fortran lines 52-56
+        if float(tower_canht[it]) > 0.0:
+            htop = htop.at[p].set(float(tower_canht[it]))
+        else:
+            htop = htop.at[p].set(_htop_pft[int(patch.itype[p])])
+
+        # Fine root biomass — Fortran lines 58-62
+        if float(tower_root[it]) > 0.0:
+            root_biomass = root_biomass.at[p].set(float(tower_root[it]))
+        else:
+            endrun(msg=' TowerVeg ERROR: invalid root biomass')
+
+        # Beta distribution parameters — Fortran lines 64-71
+        # Use tower values only when all four are positive; otherwise
+        # deferred to getPADparameters using PFT defaults.
+        if (float(tower_pbeta_lai[it, 0]) > 0.0
+                and float(tower_pbeta_lai[it, 1]) > 0.0
+                and float(tower_pbeta_sai[it, 0]) > 0.0
+                and float(tower_pbeta_sai[it, 1]) > 0.0):
+            pbeta_lai = pbeta_lai.at[p, 1].set(float(tower_pbeta_lai[it, 0]))
+            pbeta_lai = pbeta_lai.at[p, 2].set(float(tower_pbeta_lai[it, 1]))
+            pbeta_sai = pbeta_sai.at[p, 1].set(float(tower_pbeta_sai[it, 0]))
+            pbeta_sai = pbeta_sai.at[p, 2].set(float(tower_pbeta_sai[it, 1]))
+
+    return (
+        canopystate_inst._replace(htop_patch = htop),
+        mlcanopy_inst._replace(
+            root_biomass_canopy = root_biomass,
+            pbeta_lai_canopy    = pbeta_lai,
+            pbeta_sai_canopy    = pbeta_sai,
+        ),
     )
     
-    # Update state tuples
-    updated_canopystate = canopystate._replace(htop_patch=htop)
-    updated_mlcanopy = mlcanopy._replace(root_biomass_canopy=root_biomass)
-    updated_patch = patch._replace(itype=itype)
-    
-    return updated_canopystate, updated_mlcanopy, updated_patch
-
-
-def soil_init_vectorized(
+def SoilInit(
     ncfilename: str,
     strt: int,
     begc: int,
     endc: int,
-    col: ColumnState,
-    soilstate_inst: SoilState,
-    waterstate_inst: WaterState,
-    temperature_inst: TemperatureState,
-    clm_phys: str,
-    nlevgrnd: int,
-    nlevsoi: int,
-    denh2o: float,
-) -> Tuple[WaterState, TemperatureState]:
-    """Initialize soil temperature and moisture from CLM netCDF history file.
-    
-    Vectorized version for JIT compilation.
-    
-    Reference: CLMml_driver.F90:427-557
-    
-    Args:
-        ncfilename: Path to CLM netCDF history file
-        strt: Current time slice to retrieve (1-indexed)
-        begc: First column index (1-indexed)
-        endc: Last column index (1-indexed)
-        col: Column state with layer thickness and bedrock depth
-        soilstate_inst: Soil state with saturation values
-        waterstate_inst: Water state to be updated
-        temperature_inst: Temperature state to be updated
-        clm_phys: CLM physics version ('CLM4_5' or 'CLM5_0')
-        nlevgrnd: Number of ground layers
-        nlevsoi: Number of soil layers (hydrologically active)
-        denh2o: Density of liquid water [kg/m3]
-        
-    Returns:
-        Tuple of (updated_waterstate, updated_temperature)
+    soilstate_inst: soilstate_type,
+    waterstatebulk_inst: waterstatebulk_type,
+    temperature_inst: temperature_type,
+) -> tuple[waterstatebulk_type, temperature_type]:
     """
-    # Open netCDF file and read data
-    with nc.Dataset(ncfilename, 'r') as ncid:
-        tsoi_var = ncid.variables['TSOI']
-        tsoi_loc = jnp.array(tsoi_var[strt-1, :, 0, 0])
-        
-        h2osoi_var = ncid.variables['H2OSOI']
-        
+    Initialize soil temperature and volumetric soil moisture profiles
+    from a CLM netCDF history file.
+
+    Mirrors Fortran subroutine ``SoilInit`` (private to
+    ``CLMml_driver``).
+
+    Reads ``TSOI`` (soil temperature, ``nlevgrnd`` layers) and
+    ``H2OSOI`` (volumetric soil moisture) at time slice ``strt`` from
+    the CLM history file and copies the values into the model state
+    containers for every column in ``[begc, endc]``.
+
+    Soil moisture handling mirrors :func:`clmDataMod.clmData`:
+
+    - **CLM4.5**: ``nlevgrnd`` layers read directly.
+    - **CLM5.0**: ``nlevsoi`` layers read; bedrock layers
+      (``nlevsoi+1`` to ``nlevgrnd``) set to zero; active layers capped
+      at ``watsat`` because the model porosity may differ from the CLM5
+      history file.
+
+    Liquid water and ice are derived as:
+
+    .. code-block:: none
+
+        h2osoi_liq(c,j) = h2osoi_vol(c,j) * dz(c,j) * denh2o
+        h2osoi_ice(c,j) = 0
+
+    Args:
+        ncfilename: Path to the CLM netCDF history file.
+        strt: 1-based time slice index into the netCDF file.
+        begc: First column index.
+        endc: Last column index.
+        soilstate_inst: Soil state container supplying ``watsat_col``
+            (read-only).
+        waterstatebulk_inst: Bulk water state container;
+            ``h2osoi_vol_col``, ``h2osoi_liq_col``, and
+            ``h2osoi_ice_col`` are updated.
+        temperature_inst: Temperature state container;
+            ``t_soisno_col`` is updated.
+
+    Returns:
+        Tuple of updated ``(waterstatebulk_inst, temperature_inst)``.
+    """
+    import netCDF4 as nc                                # noqa: F401
+
+    from clm_src_main.abortutils import handle_err                   # noqa: F401
+    from clm_src_main.clm_varcon import denh2o, spval                       # noqa: F401
+    from clm_src_main.clm_varpar import nlevgrnd, nlevsoi, nlevsno   # noqa: F401
+    from clm_src_main.ColumnType import col                          # noqa: F401
+    from offline_driver.clmSoilOptionMod import clm_phys               # noqa: F401
+
+    # Unpack read-only inputs (Fortran associate block)
+    dz       = col.dz                                   # Soil layer thickness (m)
+    nbedrock = col.nbedrock                             # Depth to bedrock index
+    watsat   = soilstate_inst.watsat_col                # Porosity
+
+    t_soisno   = temperature_inst.t_soisno_col          # Soil temperature (K)
+    h2osoi_vol = waterstatebulk_inst.h2osoi_vol_col     # Volumetric soil water (m3/m3)
+    h2osoi_liq = waterstatebulk_inst.h2osoi_liq_col     # Liquid water (kg H2O/m2)
+    h2osoi_ice = waterstatebulk_inst.h2osoi_ice_col     # Ice lens (kg H2O/m2)
+
+    # ------------------------------------------------------------------
+    # Read soil temperature and moisture from netCDF — Fortran lines 55-82
+    # Fortran: start3=(1,1,strt), count3=(1,nlevgrnd,1)
+    # Python/C row-major: ds['VAR'][t, :nlev, 0]
+    # ------------------------------------------------------------------
+    t = strt - 1    # Convert 1-based Fortran index to 0-based Python
+
+    with nc.Dataset(ncfilename, 'r') as ds:
+
+        # TSOI(nlndgrid, nlevgrnd, ntime) — Fortran lines 60-64
+        if 'TSOI' not in ds.variables:
+            handle_err(-1, 'TSOI')
+        tsoi_loc = ds.variables['TSOI'][t, :nlevgrnd, 0]          # (nlevgrnd,)
+
+        # H2OSOI — Fortran lines 66-77
+        if 'H2OSOI' not in ds.variables:
+            handle_err(-1, 'H2OSOI')
+
         if clm_phys == 'CLM4_5':
-            h2osoi_loc = jnp.array(h2osoi_var[strt-1, :nlevgrnd, 0, 0])
+            # count3=(1,nlevgrnd,1) — Fortran lines 68-70
+            h2osoi_loc_clm45 = ds.variables['H2OSOI'][t, :nlevgrnd, 0]   # (nlevgrnd,)
+            h2osoi_loc_clm50 = None
         elif clm_phys == 'CLM5_0':
-            h2osoi_loc = jnp.array(h2osoi_var[strt-1, :nlevsoi, 0, 0])
+            # count3=(1,nlevsoi,1) — Fortran lines 71-74
+            h2osoi_loc_clm45 = None
+            h2osoi_loc_clm50 = ds.variables['H2OSOI'][t, :nlevsoi, 0]    # (nlevsoi,)
+
+    # ------------------------------------------------------------------
+    # Copy data to model variables — Fortran lines 82-107
+    # ------------------------------------------------------------------
+    for c in range(begc, endc + 1):                    # Fortran: do c = begc, endc
+
+        # Soil temperature — Fortran lines 84-86
+        for j in range(1, nlevgrnd + 1):               # Fortran: do j = 1, nlevgrnd
+            t_soisno = t_soisno.at[c, j].set(float(tsoi_loc[j - 1]))
+
+        # Volumetric soil moisture — Fortran lines 88-97
+        if clm_phys == 'CLM4_5':
+            assert h2osoi_loc_clm45 is not None  # Type narrowing
+            for j in range(1, nlevgrnd + 1):
+                h2osoi_vol = h2osoi_vol.at[c, j].set(float(h2osoi_loc_clm45[j - 1]))
+
+        elif clm_phys == 'CLM5_0':
+            assert h2osoi_loc_clm50 is not None  # Type narrowing
+            for j in range(1, nlevsoi + 1):
+                h2osoi_vol = h2osoi_vol.at[c, j].set(float(h2osoi_loc_clm50[j - 1]))
+            for j in range(nlevsoi + 1, nlevgrnd + 1):    # Bedrock layers = 0
+                h2osoi_vol = h2osoi_vol.at[c, j].set(0.0)
+
+        # Cap soil moisture at porosity for CLM5.0 — Fortran lines 99-103
+        if clm_phys == 'CLM5_0':
+            nb = int(nbedrock[c])
+            for j in range(1, nb + 1):                 # Fortran: do j = 1, nbedrock(c)
+                h2osoi_vol = h2osoi_vol.at[c, j].set(
+                    float(jnp.minimum(h2osoi_vol[c, j], watsat[c, j]))
+                )
+
+        # Liquid water and ice — Fortran lines 105-108
+        for j in range(1, nlevgrnd + 1):               # Fortran: do j = 1, nlevgrnd
+            h2osoi_liq = h2osoi_liq.at[c, j].set(
+                float(h2osoi_vol[c, j]) * float(dz[c, j]) * denh2o
+            )
+            h2osoi_ice = h2osoi_ice.at[c, j].set(0.0)
+
+    return (
+        waterstatebulk_inst._replace(
+            h2osoi_vol_col = h2osoi_vol,
+            h2osoi_liq_col = h2osoi_liq,
+            h2osoi_ice_col = h2osoi_ice,
+        ),
+        temperature_inst._replace(
+            t_soisno_col = t_soisno,
+        ),
+    )
+    
+def output(
+    curr_calday: float,
+    it: int,
+    nout1: IO,
+    nout2: IO,
+    nout3: IO,
+    nout4: IO,
+    nout5: IO,
+    nout6: IO,
+    mlcan: mlcanopy_type,
+    temperature_inst: temperature_type,
+) -> None:
+    """
+    Write per-timestep model output to six ASCII files.
+
+    Mirrors Fortran subroutine ``output`` (private to ``CLMml_driver``).
+
+    Output files and their contents
+    --------------------------------
+    - ``nout1`` (``*_flux.out``): Canopy and soil energy fluxes,
+      GPP, wind, albedo, and storage terms (18 columns).
+    - ``nout2`` (``*_aux.out``): Leaf water potential and soil
+      moisture stress (6 columns).
+    - ``nout3`` (``*_profile.out``): Vertical profiles of leaf and
+      air-layer state variables; above-canopy layers use
+      ``missing_value`` for leaf quantities; within-canopy layers
+      with ``dpai > 0`` include per-leaf-area fluxes (28 columns).
+    - ``nout4`` (``*_fsun.out``): Sunlit/shaded canopy fluxes and
+      bulk canopy properties (32 columns).
+    - ``nout5`` (``*_fluxprofile.out``): Vertical flux profiles of
+      sensible heat, latent heat (converted from mol H2O/m2/s),
+      momentum, and shortwave/longwave radiation (13 columns).
+    - ``nout6`` (``*_soiltemp.out``): Soil layer depths and
+      temperatures for the first 10 layers (21 columns).
+
+    Time stamp adjustment (Fortran lines 64-72):
+    - ``met_type == 0``: time at end of time step — ``curr_calday``.
+    - ``met_type == 3``: time centred in time step —
+      ``curr_calday - 0.5 * dtstep / 86400``.
+    - ``met_type == 2``: fatal error (not supported).
+
+    All patch-level quantities are read at ``p = 1`` (single-patch
+    tower site).
+
+    Args:
+        curr_calday: Current calendar day (1.000 = 0Z 1 January).
+        it: Tower site index into ``TowerDataMod`` arrays.
+        nout1–nout6: Open Python file objects for the six output
+            streams (replace Fortran unit numbers).
+        mlcan: Multilayer canopy state container (read-only).
+        temperature_inst: Temperature state container (read-only).
+    """
+    from clm_src_main.abortutils import endrun                        # noqa: F401
+    from clm_src_main.clm_varcon import tfrz                         # noqa: F401
+    from clm_src_main.clm_varpar import ivis, inir, nlevsno          # noqa: F401
+    from clm_src_main.ColumnType import col                          # noqa: F401
+    from clm_src_utils.clm_time_manager import dtstep                 # noqa: F401
+    from multilayer_canopy.MLclm_varcon import mmdry, mmh2o              # noqa: F401
+    from multilayer_canopy.MLclm_varctl import met_type                   # noqa: F401
+    from multilayer_canopy.MLclm_varpar import isun, isha                 # noqa: F401
+    from multilayer_canopy.MLWaterVaporMod import LatVap                  # noqa: F401
+    import math
+
+    missing_value: float = -999.0
+    zero_value:    float =    0.0
+
+    p: int = 0    # Single-patch tower site — 0-based Python indexing (Fortran used 1)
+
+    # ------------------------------------------------------------------
+    # Time stamp — Fortran lines 66-74
+    # ------------------------------------------------------------------
+    if met_type == 0:
+        # Time at end of timestep — Fortran line 68
+        time_stamp = curr_calday
+    elif met_type == 3:
+        # Time centred in timestep — Fortran line 71
+        time_stamp = curr_calday - 0.5 * dtstep / 86400.0
+    elif met_type == 2:
+        # Time at end of timestep (not supported) — Fortran lines 73-74
+        time_stamp = curr_calday
+        endrun(msg=' ERROR: met_type not valid')
+    else:
+        time_stamp = curr_calday
+
+    # ------------------------------------------------------------------
+    # nout1: flux.out — canopy and soil fluxes — Fortran lines 77-95
+    # write(nout1,'(f12.7,17f10.3)') time_stamp, 17 variables
+    # ------------------------------------------------------------------
+    swup = (
+        float(mlcan.albcan_canopy[p, ivis])
+        * (float(mlcan.swskyb_forcing[p, ivis]) + float(mlcan.swskyd_forcing[p, ivis]))
+        + float(mlcan.albcan_canopy[p, inir])
+        * (float(mlcan.swskyb_forcing[p, inir]) + float(mlcan.swskyd_forcing[p, inir]))
+    )
+
+    lhflx_tr = float(mlcan.trveg_canopy[p]) * LatVap(float(mlcan.tref_forcing[p]))
+    lhflx_ev = float(mlcan.evveg_canopy[p]) * LatVap(float(mlcan.tref_forcing[p]))
+
+    ic_top = int(mlcan.ntop_canopy[p])
+    tair   = float(mlcan.tair_profile[p, ic_top])
+
+    nout1.write(
+        f'{time_stamp:12.7f}'
+        + _fmt10(mlcan.rnet_canopy[p])
+        + _fmt10(mlcan.stflx_air_canopy[p])
+        + _fmt10(mlcan.shflx_canopy[p])
+        + _fmt10(mlcan.lhflx_canopy[p])
+        + _fmt10(mlcan.gppveg_canopy[p])
+        + _fmt10(mlcan.ustar_canopy[p])
+        + _fmt10(swup)
+        + _fmt10(mlcan.lwup_canopy[p])
+        + _fmt10(tair)
+        + _fmt10(mlcan.gsoi_soil[p])
+        + _fmt10(mlcan.rnsoi_soil[p])
+        + _fmt10(mlcan.shsoi_soil[p])
+        + _fmt10(mlcan.lhsoi_soil[p])
+        + _fmt10(lhflx_tr)
+        + _fmt10(lhflx_ev)
+        + _fmt10(mlcan.beta_canopy[p])
+        + _fmt10(mlcan.stflx_veg_canopy[p])
+        + '\n'
+    )
+
+    # ------------------------------------------------------------------
+    # nout4: fsun.out — sunlit/shaded fluxes — Fortran lines 98-113
+    # write(nout4,'(32f10.3)') 32 variables
+    # ------------------------------------------------------------------
+    nout4.write(
+        _fmt10(float(mlcan.solar_zen_forcing[p]) * 180.0 / math.pi)
+        + _fmt10(float(mlcan.swskyb_forcing[p, ivis]) + float(mlcan.swskyd_forcing[p, ivis]))
+        + _fmt10(float(mlcan.lai_canopy[p]) + float(mlcan.sai_canopy[p]))
+        + _fmt10(mlcan.laisun_canopy[p])
+        + _fmt10(mlcan.laisha_canopy[p])
+        + _fmt10(mlcan.swveg_canopy[p, ivis])
+        + _fmt10(mlcan.swvegsun_canopy[p, ivis])
+        + _fmt10(mlcan.swvegsha_canopy[p, ivis])
+        + _fmt10(mlcan.gppveg_canopy[p])
+        + _fmt10(mlcan.gppvegsun_canopy[p])
+        + _fmt10(mlcan.gppvegsha_canopy[p])
+        + _fmt10(mlcan.lhveg_canopy[p])
+        + _fmt10(mlcan.lhvegsun_canopy[p])
+        + _fmt10(mlcan.lhvegsha_canopy[p])
+        + _fmt10(mlcan.shveg_canopy[p])
+        + _fmt10(mlcan.shvegsun_canopy[p])
+        + _fmt10(mlcan.shvegsha_canopy[p])
+        + _fmt10(mlcan.vcmax25veg_canopy[p])
+        + _fmt10(mlcan.vcmax25sun_canopy[p])
+        + _fmt10(mlcan.vcmax25sha_canopy[p])
+        + _fmt10(mlcan.gsveg_canopy[p])
+        + _fmt10(mlcan.gsvegsun_canopy[p])
+        + _fmt10(mlcan.gsvegsha_canopy[p])
+        + _fmt10(mlcan.windveg_canopy[p])
+        + _fmt10(mlcan.windvegsun_canopy[p])
+        + _fmt10(mlcan.windvegsha_canopy[p])
+        + _fmt10(mlcan.tlveg_canopy[p])
+        + _fmt10(mlcan.tlvegsun_canopy[p])
+        + _fmt10(mlcan.tlvegsha_canopy[p])
+        + _fmt10(mlcan.taveg_canopy[p])
+        + _fmt10(mlcan.tavegsun_canopy[p])
+        + _fmt10(mlcan.tavegsha_canopy[p])
+        + '\n'
+    )
+
+    # ------------------------------------------------------------------
+    # nout2: aux.out — leaf water potential / soil stress — Fortran lines 116-120
+    # write(nout2,'(f10.4,5f10.3)') 6 variables
+    # ------------------------------------------------------------------
+    top = int(mlcan.ntop_canopy[p])
+    mid = max(
+        1,
+        int(mlcan.nbot_canopy[p])
+        + (int(mlcan.ntop_canopy[p]) - int(mlcan.nbot_canopy[p]) + 1) // 2
+        - 1,
+    )
+
+    nout2.write(
+        f'{float(mlcan.btran_soil[p]):10.4f}'
+        + _fmt10(mlcan.lsc_profile[p, top])
+        + _fmt10(mlcan.psis_soil[p])
+        + _fmt10(mlcan.lwp_mean_profile[p, top])
+        + _fmt10(mlcan.lwp_mean_profile[p, mid])
+        + _fmt10(mlcan.fracminlwp_canopy[p])
+        + '\n'
+    )
+
+    # ------------------------------------------------------------------
+    # nout3: profile.out — vertical profiles — Fortran lines 122-176
+    # write(nout3,'(f12.7,27f10.3)') time_stamp + 27 variables
+    # ------------------------------------------------------------------
+
+    def _qair(ic_: int) -> float:
+        """Specific humidity (g/kg) from vapour pressure profile."""
+        e  = float(mlcan.eair_profile[p, ic_])
+        pr = float(mlcan.pref_forcing[p])
+        return 1000.0 * (mmh2o / mmdry) * e / (pr - (1.0 - mmh2o / mmdry) * e)
+
+    def _eair_kpa(ic_: int) -> float:
+        """Vapour pressure (kPa)."""
+        return float(mlcan.eair_profile[p, ic_]) / 1000.0
+
+    def _ra(ic_: int) -> float:
+        """Aerodynamic resistance (s/m)."""
+        return float(mlcan.rhomol_forcing[p]) / float(mlcan.gac_profile[p, ic_])
+
+    def _lad(ic_: int) -> float:
+        """Plant area density (m2/m3)."""
+        return float(mlcan.dpai_profile[p, ic_]) / float(mlcan.dz_profile[p, ic_])
+
+    def _profile_line(ic_: int, is_above: bool) -> str:
+        """Build one nout3 record (28 columns)."""
+        tair_ = float(mlcan.tair_profile[p, ic_])
+        qair_ = _qair(ic_)
+        ra_   = _ra(ic_)
+        mv    = missing_value
+        zv    = zero_value
+
+        if is_above:
+            # Above-canopy: all leaf quantities are missing — Fortran lines 131-149
+            return (
+                f'{time_stamp:12.7f}'
+                + _fmt10(mlcan.zs_profile[p, ic_])
+                + _fmt10(zv) + _fmt10(zv) + _fmt10(zv) + _fmt10(zv)
+                + (_fmt10(mv) * 18)
+                + _fmt10(float(mlcan.wind_profile[p, ic_]))
+                + _fmt10(tair_)
+                + _fmt10(qair_)
+                + _fmt10(ra_)
+                + '\n'
+            )
         else:
-            raise ValueError(f"Unknown clm_phys: {clm_phys}")
-    
-    n_cols = endc - begc + 1
-    
-    # Broadcast temperature to all columns (lines 516-518)
-    t_soisno_new = jnp.tile(tsoi_loc[jnp.newaxis, :], (n_cols, 1))
-    
-    # Initialize moisture array
-    h2osoi_vol_new = jnp.zeros((n_cols, nlevgrnd))
-    
-    # Set moisture based on CLM physics version
-    if clm_phys == 'CLM4_5':
-        h2osoi_vol_new = jnp.tile(h2osoi_loc[jnp.newaxis, :], (n_cols, 1))
-    elif clm_phys == 'CLM5_0':
-        h2osoi_vol_new = h2osoi_vol_new.at[:, :nlevsoi].set(
-            jnp.tile(h2osoi_loc[jnp.newaxis, :], (n_cols, 1))
+            dpai_ = float(mlcan.dpai_profile[p, ic_])
+            lad_  = _lad(ic_)
+            frac_ = float(mlcan.fracsun_profile[p, ic_])
+            if dpai_ > 0.0:
+                # Leaf layer — Fortran lines 155-170
+                return (
+                    f'{time_stamp:12.7f}'
+                    + _fmt10(mlcan.zs_profile[p, ic_])
+                    + _fmt10(frac_)
+                    + _fmt10(lad_)
+                    + _fmt10(lad_ * frac_)
+                    + _fmt10(lad_ * (1.0 - frac_))
+                    + _fmt10(mlcan.rnleaf_leaf[p, ic_, isun])
+                    + _fmt10(mlcan.rnleaf_leaf[p, ic_, isha])
+                    + _fmt10(mlcan.shleaf_leaf[p, ic_, isun])
+                    + _fmt10(mlcan.shleaf_leaf[p, ic_, isha])
+                    + _fmt10(mlcan.lhleaf_leaf[p, ic_, isun])
+                    + _fmt10(mlcan.lhleaf_leaf[p, ic_, isha])
+                    + _fmt10(mlcan.anet_leaf[p, ic_, isun])
+                    + _fmt10(mlcan.anet_leaf[p, ic_, isha])
+                    + _fmt10(mlcan.apar_leaf[p, ic_, isun])
+                    + _fmt10(mlcan.apar_leaf[p, ic_, isha])
+                    + _fmt10(mlcan.gs_leaf[p, ic_, isun])
+                    + _fmt10(mlcan.gs_leaf[p, ic_, isha])
+                    + _fmt10(mlcan.lwp_hist_leaf[p, ic_, isun])
+                    + _fmt10(mlcan.lwp_hist_leaf[p, ic_, isha])
+                    + _fmt10(mlcan.tleaf_hist_leaf[p, ic_, isun])
+                    + _fmt10(mlcan.tleaf_hist_leaf[p, ic_, isha])
+                    + _fmt10(mlcan.vcmax25_leaf[p, ic_, isun])
+                    + _fmt10(mlcan.vcmax25_leaf[p, ic_, isha])
+                    + _fmt10(float(mlcan.wind_profile[p, ic_]))
+                    + _fmt10(tair_)
+                    + _fmt10(qair_)
+                    + _fmt10(ra_)
+                    + '\n'
+                )
+            else:
+                # Non-leaf within-canopy layer — Fortran lines 172-185
+                return (
+                    f'{time_stamp:12.7f}'
+                    + _fmt10(mlcan.zs_profile[p, ic_])
+                    + _fmt10(frac_)
+                    + _fmt10(zv) + _fmt10(zv) + _fmt10(zv)
+                    + (_fmt10(mv) * 18)
+                    + _fmt10(float(mlcan.wind_profile[p, ic_]))
+                    + _fmt10(tair_)
+                    + _fmt10(qair_)
+                    + _fmt10(ra_)
+                    + '\n'
+                )
+
+    # Above-canopy layers — Fortran: do ic = ncan, ntop+1, -1
+    # Python range stop is exclusive, so use ntop (not ntop+1) to include ic=ntop+1
+    for ic in range(int(mlcan.ncan_canopy[p]),
+                    int(mlcan.ntop_canopy[p]),
+                    -1):
+        nout3.write(_profile_line(ic, is_above=True))
+
+    # Within-canopy layers — Fortran: do ic = ntop, 1, -1
+    for ic in range(int(mlcan.ntop_canopy[p]), 0, -1):
+        nout3.write(_profile_line(ic, is_above=False))
+
+    # ------------------------------------------------------------------
+    # nout5: fluxprofile.out — vertical flux profiles — Fortran lines 188-202
+    # write(nout5,'(f12.7,26f10.3)') time_stamp + 12 variables (13 cols total)
+    # ------------------------------------------------------------------
+    _ntop_fp = int(mlcan.ntop_canopy[p])
+    for ic in range(int(mlcan.ncan_canopy[p]), 0, -1):  # Fortran: do ic = ncan, 1, -1
+        shf  = float(mlcan.shair_profile[p, ic])
+        lhf  = float(mlcan.etair_profile[p, ic]) * LatVap(float(mlcan.tref_forcing[p]))
+        mflx = float(mlcan.mflx_profile[p, ic])
+        # LW profiles are only computed for within-canopy layers (0..ntop).
+        # Above-canopy layers retain spval; write 0.0 to match Fortran behavior.
+        lwdwn_ic = float(mlcan.lwdwn_profile[p, ic]) if ic <= _ntop_fp else 0.0
+        lwupw_ic = float(mlcan.lwupw_profile[p, ic]) if ic <= _ntop_fp else 0.0
+        nout5.write(
+            f'{time_stamp:12.7f}'
+            + _fmt10(mlcan.zw_profile[p, ic])
+            + _fmt10(shf)
+            + _fmt10(lhf)
+            + _fmt10(mflx)
+            + _fmt10(mlcan.swbeam_profile[p, ic, ivis])
+            + _fmt10(mlcan.swbeam_profile[p, ic, inir])
+            + _fmt10(mlcan.swdwn_profile[p, ic, ivis])
+            + _fmt10(mlcan.swdwn_profile[p, ic, inir])
+            + _fmt10(mlcan.swupw_profile[p, ic, ivis])
+            + _fmt10(mlcan.swupw_profile[p, ic, inir])
+            + _fmt10(lwdwn_ic)
+            + _fmt10(lwupw_ic)
+            + '\n'
         )
-    
-    # Limit to saturation for CLM5.0 (lines 532-537)
-    if clm_phys == 'CLM5_0':
-        col_indices = jnp.arange(begc - 1, endc)
-        layer_indices = jnp.arange(nlevgrnd)
-        
-        nbedrock_broadcast = col.nbedrock[col_indices, jnp.newaxis]
-        layer_broadcast = layer_indices[jnp.newaxis, :]
-        
-        active_mask = layer_broadcast < nbedrock_broadcast
-        
-        watsat_subset = soilstate_inst.watsat_col[col_indices, :]
-        
-        h2osoi_vol_limited = jnp.minimum(h2osoi_vol_new, watsat_subset)
-        h2osoi_vol_new = jnp.where(active_mask, h2osoi_vol_limited, h2osoi_vol_new)
-    
-    # Calculate liquid water (lines 541-544)
-    dz_subset = col.dz[begc-1:endc, :]
-    h2osoi_liq_new = h2osoi_vol_new * dz_subset * denh2o
-    
-    # Ice is zero (line 543)
-    h2osoi_ice_new = jnp.zeros((n_cols, nlevgrnd))
-    
-    # Update state tuples
-    waterstate_updated = WaterState(
-        h2osoi_vol_col=waterstate_inst.h2osoi_vol_col.at[begc-1:endc, :].set(h2osoi_vol_new),
-        h2osoi_ice_col=waterstate_inst.h2osoi_ice_col.at[begc-1:endc, :].set(h2osoi_ice_new),
-        h2osoi_liq_col=waterstate_inst.h2osoi_liq_col.at[begc-1:endc, :].set(h2osoi_liq_new),
-    )
-    
-    temperature_updated = TemperatureState(
-        t_a10_patch=temperature_inst.t_a10_patch,
-        t_soisno_col=temperature_inst.t_soisno_col.at[begc-1:endc, :].set(t_soisno_new),
-    )
-    
-    return waterstate_updated, temperature_updated
+
+    # ------------------------------------------------------------------
+    # nout6: soiltemp.out — soil temperature — Fortran lines 204-207
+    # write(nout6,'(f12.7,20f10.3)') time_stamp, (z(1,ic), t_soisno(1,ic), ic=1,10)
+    # ------------------------------------------------------------------
+    soiltemp_cols = ''
+    for ic in range(1, 11):                             # Fortran: ic=1,10
+        soiltemp_cols += _fmt10(col.z[1, ic])
+        soiltemp_cols += _fmt10(temperature_inst.t_soisno_col[1, ic])
+    nout6.write(f'{time_stamp:12.7f}' + soiltemp_cols + '\n')
 
 
-# ============================================================================
-# Output Functions
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Private formatting helper
+# ---------------------------------------------------------------------------
 
-
-def compute_upward_shortwave(
-    albcan_vis: jnp.ndarray,
-    albcan_nir: jnp.ndarray,
-    swskyb_vis: jnp.ndarray,
-    swskyd_vis: jnp.ndarray,
-    swskyb_nir: jnp.ndarray,
-    swskyd_nir: jnp.ndarray,
-) -> jnp.ndarray:
-    """Compute upward shortwave radiation.
-    
-    Reference: CLMml_driver.F90:600-601
-    
-    Args:
-        albcan_vis: Canopy albedo for visible [0-1] [n_patches]
-        albcan_nir: Canopy albedo for near-infrared [0-1] [n_patches]
-        swskyb_vis: Direct beam visible SW [W/m2] [n_patches]
-        swskyd_vis: Diffuse visible SW [W/m2] [n_patches]
-        swskyb_nir: Direct beam NIR SW [W/m2] [n_patches]
-        swskyd_nir: Diffuse NIR SW [W/m2] [n_patches]
-        
-    Returns:
-        Upward shortwave radiation [W/m2] [n_patches]
+def _fmt10(val) -> str:
     """
-    swup = (albcan_vis * (swskyb_vis + swskyd_vis) +
-            albcan_nir * (swskyb_nir + swskyd_nir))
-    return swup
-
-
-def compute_output_fluxes(
-    mlcan: MLCanopyState,
-) -> OutputFluxes:
-    """Compute canopy and soil flux outputs.
-    
-    Reference: CLMml_driver.F90:594-607
-    
-    Args:
-        mlcan: Multi-layer canopy state
-        
-    Returns:
-        OutputFluxes containing all flux variables
+    Format a scalar as a 10-character field with 3 decimal places,
+    matching Fortran ``f10.3``.
     """
-    p = 0  # Single patch (0-based indexing)
-    
-    swup = compute_upward_shortwave(
-        mlcan.albcan_canopy[p, IVIS],
-        mlcan.albcan_canopy[p, INIR],
-        mlcan.swskyb_forcing[p, IVIS],
-        mlcan.swskyd_forcing[p, IVIS],
-        mlcan.swskyb_forcing[p, INIR],
-        mlcan.swskyd_forcing[p, INIR],
-    )
-    
-    return OutputFluxes(
-        rnet_canopy=mlcan.rnet_canopy[p],
-        stflx_canopy=mlcan.stflx_canopy[p],
-        shflx_canopy=mlcan.shflx_canopy[p],
-        lhflx_canopy=mlcan.lhflx_canopy[p],
-        gppveg_canopy=mlcan.gppveg_canopy[p],
-        ustar_canopy=mlcan.ustar_canopy[p],
-        swup=swup,
-        lwup_canopy=mlcan.lwup_canopy[p],
-        taf_canopy=mlcan.taf_canopy[p],
-        gsoi_soil=mlcan.gsoi_soil[p],
-        rnsoi_soil=mlcan.rnsoi_soil[p],
-        shsoi_soil=mlcan.shsoi_soil[p],
-        lhsoi_soil=mlcan.lhsoi_soil[p],
-    )
+    return f'{float(val):10.3f}'
 
-
-def compute_output_sunshade(
-    mlcan: MLCanopyState,
-) -> OutputSunShade:
-    """Compute sunlit/shaded canopy flux outputs.
-    
-    Reference: CLMml_driver.F90:609-625
-    
-    Args:
-        mlcan: Multi-layer canopy state
-        
-    Returns:
-        OutputSunShade containing all sun/shade variables
-    """
-    p = 0  # Single patch
-    
-    # Convert solar zenith angle from radians to degrees (line 612)
-    solar_zen_deg = mlcan.solar_zen_forcing[p] * 180.0 / PHYSICAL_CONSTANTS.pi
-    
-    # Total visible shortwave (line 613)
-    sw_vis_total = mlcan.swskyb_forcing[p, IVIS] + mlcan.swskyd_forcing[p, IVIS]
-    
-    # Total LAI + SAI (line 614)
-    lai_sai_total = mlcan.lai_canopy[p] + mlcan.sai_canopy[p]
-    
-    return OutputSunShade(
-        solar_zen_deg=solar_zen_deg,
-        sw_vis_total=sw_vis_total,
-        lai_sai_total=lai_sai_total,
-        laisun=mlcan.laisun_canopy[p],
-        laisha=mlcan.laisha_canopy[p],
-        swveg_vis=mlcan.swveg_canopy[p, IVIS],
-        swvegsun_vis=mlcan.swvegsun_canopy[p, IVIS],
-        swvegsha_vis=mlcan.swvegsha_canopy[p, IVIS],
-        gppveg=mlcan.gppveg_canopy[p],
-        gppvegsun=mlcan.gppvegsun_canopy[p],
-        gppvegsha=mlcan.gppvegsha_canopy[p],
-        lhveg=mlcan.lhveg_canopy[p],
-        lhvegsun=mlcan.lhvegsun_canopy[p],
-        lhvegsha=mlcan.lhvegsha_canopy[p],
-        shveg=mlcan.shveg_canopy[p],
-        shvegsun=mlcan.shvegsun_canopy[p],
-        shvegsha=mlcan.shvegsha_canopy[p],
-        vcmax25veg=mlcan.vcmax25veg_canopy[p],
-        vcmax25sun=mlcan.vcmax25sun_canopy[p],
-        vcmax25sha=mlcan.vcmax25sha_canopy[p],
-        gsveg=mlcan.gsveg_canopy[p],
-        gsvegsun=mlcan.gsvegsun_canopy[p],
-        gsvegsha=mlcan.gsvegsha_canopy[p],
-        windveg=mlcan.windveg_canopy[p],
-        windvegsun=mlcan.windvegsun_canopy[p],
-        windvegsha=mlcan.windvegsha_canopy[p],
-        tlveg=mlcan.tlveg_canopy[p],
-        tlvegsun=mlcan.tlvegsun_canopy[p],
-        tlvegsha=mlcan.tlvegsha_canopy[p],
-        taveg=mlcan.taveg_canopy[p],
-        tavegsun=mlcan.tavegsun_canopy[p],
-        tavegsha=mlcan.tavegsha_canopy[p],
-    )
-
-
-def compute_output_auxiliary(
-    mlcan: MLCanopyState,
-    soilstate: SoilState,
-) -> OutputAuxiliary:
-    """Compute leaf water potential and soil moisture stress outputs.
-    
-    Reference: CLMml_driver.F90:627-636
-    
-    Args:
-        mlcan: Multi-layer canopy state
-        soilstate: Soil state
-        
-    Returns:
-        OutputAuxiliary containing water stress variables
-    """
-    p = 0  # Single patch
-    
-    # Get top and mid-canopy layer indices (lines 633-634)
-    top = mlcan.ntop_canopy[p]
-    nbot = mlcan.nbot_canopy[p]
-    mid = jnp.maximum(1, nbot + (top - nbot + 1) // 2 - 1)
-    
-    return OutputAuxiliary(
-        btran=soilstate.btran_soil[p],
-        lsc_top=mlcan.lsc_profile[p, top],
-        psis=soilstate.psis_soil[p],
-        lwp_mean_top=mlcan.lwp_mean_profile[p, top],
-        lwp_mean_mid=mlcan.lwp_mean_profile[p, mid],
-        fracminlwp=mlcan.fracminlwp_canopy[p],
-    )
-
-
-def compute_output_profile_above_canopy(
-    mlcan: MLCanopyState,
+def ReadCanopyProfiles(
+    itim: int,
     curr_calday: float,
-) -> OutputProfile:
-    """Compute vertical profile outputs above canopy.
-    
-    Reference: CLMml_driver.F90:638-666
-    
-    Args:
-        mlcan: Multi-layer canopy state
-        curr_calday: Current calendar day [days]
-        
-    Returns:
-        OutputProfile containing vertical profile data
+    nin1: IO,
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
     """
-    p = 0  # Single patch
-    
-    ncan = mlcan.ncan_canopy[p]
-    ntop = mlcan.ntop_canopy[p]
-    
-    # Extract profile data for layers above canopy
-    layer_indices = jnp.arange(ntop + 1, ncan + 1)
-    
-    tair = mlcan.tair_profile[p, layer_indices]
-    
-    # Convert vapor pressure to specific humidity (lines 653-655)
-    mmh2o = PHYSICAL_CONSTANTS.mwh2o
-    mmdry = PHYSICAL_CONSTANTS.mwdry
-    eair = mlcan.eair_profile[p, layer_indices]
-    pref = mlcan.pref_forcing[p]
-    
-    qair = (1000.0 * (mmh2o / mmdry) * eair /
-            (pref - (1.0 - mmh2o / mmdry) * eair))
-    
-    wind = mlcan.wind_profile[p, layer_indices]
-    zs = mlcan.zs_profile[p, layer_indices]
-    
-    return OutputProfile(
-        curr_calday=curr_calday,
-        zs=zs,
-        wind=wind,
-        tair=tair,
-        qair=qair,
-    )
+    Read T, Q, U vertical profile data for the current time step from
+    an ASCII profile input file.
 
+    Mirrors Fortran subroutine ``ReadCanopyProfiles`` (private to
+    ``CLMml_driver``; final routine in the module, lines 1-80).
 
-def compute_canopy_layer_output(
-    ic: int,
-    p: int,
-    curr_calday: float,
-    mlcan: MLCanopyState,
-) -> CanopyLayerOutput:
-    """Compute output data for a single canopy layer.
-    
-    Reference: CLMml_driver.F90:667-730
-    
+    On the **first time step** (``itim == 1``) the file is scanned from
+    the beginning to count the number of vertical levels by reading
+    records that share the same calendar day, then the file is rewound.
+    On all subsequent time steps the file is read sequentially,
+    continuing from where the previous call left off.
+
+    Each record in the file has the format ``(f10.4, 26f10.3)``
+    (Fortran), providing:
+
+    .. code-block:: none
+
+        curr_calday_data   (f10.4)   calendar day
+        zs_data            (f10.3)   layer height (m)
+        x(1:22)            (22f10.3) dummy variables (discarded)
+        wind               (f10.3)   wind speed (m/s)
+        tair               (f10.3)   air temperature (K)
+        qair               (f10.3)   specific humidity (g/kg)
+
+    Layers are stored top-to-bottom in the file (``ic = ncan, ..., 1``)
+    matching the Fortran ``do ic = ncan(p), 1, -1`` loop.
+
+    After reading, specific humidity is converted from g/kg to kg/kg
+    and then to vapour pressure (Pa):
+
+    .. code-block:: none
+
+        qair [kg/kg] = qair_file / 1000
+        eair [Pa]    = qair * pref / (mmh2o/mmdry + (1 - mmh2o/mmdry) * qair)
+
+    Two error checks are applied:
+
+    - Calendar day mismatch: ``|curr_calday_data - curr_calday| >= 1e-4``
+      → fatal error.
+    - Height profile mismatch (``itim > 1``):
+      ``|zs_data - zs(p,ic)| >= 1e-3`` → fatal error.
+
     Args:
-        ic: Canopy layer index [0-based]
-        p: Patch index
-        curr_calday: Current calendar day [days]
-        mlcan: Multi-layer canopy state
-        
+        itim: Current time step index (1-based).
+        curr_calday: Current calendar day (1.000 = 0Z 1 January).
+        nin1: Open Python file object for the ASCII profile input file
+            (replaces Fortran unit ``nin1``).
+        mlcanopy_inst: Multilayer canopy container; ``ncan_canopy``,
+            ``wind_data_profile``, ``tair_data_profile``, and
+            ``eair_data_profile`` are updated.
+
     Returns:
-        CanopyLayerOutput containing all layer variables
+        Updated :class:`mlcanopy_type`.
     """
-    mmh2o = PHYSICAL_CONSTANTS.mwh2o
-    mmdry = PHYSICAL_CONSTANTS.mwdry
-    
-    # Extract layer values
-    tair = mlcan.tair_profile[p, ic]
-    
-    # Convert vapor pressure to specific humidity
-    eair_pa = mlcan.eair_profile[p, ic]
-    qair = 1000.0 * (mmh2o / mmdry) * eair_pa / (
-        mlcan.pref_forcing[p] - (1.0 - mmh2o / mmdry) * eair_pa
+    from clm_src_main.abortutils import endrun           # noqa: F401
+    from multilayer_canopy.MLclm_varcon import mmh2o, mmdry  # noqa: F401
+
+    # Unpack mutable arrays (Fortran associate block)
+    ncan      = mlcanopy_inst.ncan_canopy           # Number of aboveground layers
+    pref      = mlcanopy_inst.pref_forcing          # Air pressure at reference height (Pa)
+    zs        = mlcanopy_inst.zs_profile            # Layer height for scalar conc. and source (m)
+    wind_data = mlcanopy_inst.wind_data_profile     # Wind speed FROM DATASET (m/s)
+    tair_data = mlcanopy_inst.tair_data_profile     # Air temperature FROM DATASET (K)
+    eair_data = mlcanopy_inst.eair_data_profile     # Vapour pressure FROM DATASET (Pa)
+
+    p: int = 0    # 0-based single-patch tower site (Fortran used 1)
+
+    # ------------------------------------------------------------------
+    # Private helper: parse one record from the profile file
+    # Format: (f10.4, 26f10.3) = 1 + 26 = 27 values per line
+    # Fields: curr_calday_data, zs_data, x(1:22), wind, tair, qair
+    # ------------------------------------------------------------------
+    def _read_record(fh: IO) -> tuple[float, float, float, float, float] | None:
+        """
+        Read and parse one profile record.
+
+        Returns ``(curr_calday_data, zs_data, wind, tair, qair)`` or
+        ``None`` on end-of-file.
+        """
+        line = fh.readline()
+        if not line:
+            return None
+        vals = [float(line[i*10:(i+1)*10]) for i in range(27)]
+        curr_calday_data = vals[0]
+        zs_data          = vals[1]
+        # vals[2:24] are 22 dummy variables x(1:22) — discarded
+        wind             = vals[24]
+        tair             = vals[25]
+        qair             = vals[26]
+        return curr_calday_data, zs_data, wind, tair, qair
+
+    # ------------------------------------------------------------------
+    # First time step: scan file to count vertical levels — Fortran lines 47-57
+    # ------------------------------------------------------------------
+    if itim == 1:
+        nrec:  int   = 0
+        check: float = 0.0
+
+        while True:
+            rec = _read_record(nin1)
+            if rec is None:                            # Fortran: end=100
+                break
+            calday_rec, _, _, _, _ = rec
+            if nrec == 0:
+                check = calday_rec                     # Fortran: check = curr_calday_data
+            if calday_rec == check:
+                nrec += 1
+            else:
+                break                                  # Fortran: exit
+
+        # Fortran label 100: ncan(p) = nrec; rewind(nin1)
+        ncan = ncan.at[p].set(nrec)
+        nin1.seek(0)                                   # Fortran: rewind(nin1)
+
+    # ------------------------------------------------------------------
+    # Read profile data for the current time slice — Fortran lines 60-77
+    # Fortran: do ic = ncan(p), 1, -1
+    # ------------------------------------------------------------------
+    for ic in range(int(ncan[p]), 0, -1):
+
+        rec = _read_record(nin1)
+        if rec is None:
+            endrun(msg=' ERROR: ReadCanopyProfiles: unexpected end of file')
+            break
+
+        curr_calday_data, zs_data, wind, tair, qair_gkg = rec
+
+        qair = qair_gkg / 1000.0    # g/kg -> kg/kg — Fortran line 63
+
+        # Calendar day error check — Fortran lines 65-68
+        err = curr_calday_data - curr_calday
+        if abs(err) >= 1.0e-4:
+            endrun(msg=' ERROR: ReadCanopyProfiles: calendar error')
+
+        # Height profile error check (skip on first time step) — Fortran lines 70-74
+        if itim > 1:
+            err = zs_data - float(zs[p, ic])
+            if abs(err) >= 1.0e-3:
+                endrun(msg=' ERROR: ReadCanopyProfiles: height profile error')
+
+        # Store wind and temperature — Fortran lines 76-77
+        wind_data = wind_data.at[p, ic].set(wind)
+        tair_data = tair_data.at[p, ic].set(tair)
+
+        # Specific humidity -> vapour pressure (Pa) — Fortran line 78
+        eair_val = (
+            qair * float(pref[p])
+            / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * qair)
+        )
+        eair_data = eair_data.at[p, ic].set(eair_val)
+
+    return mlcanopy_inst._replace(
+        ncan_canopy          = ncan,
+        wind_data_profile    = wind_data,
+        tair_data_profile    = tair_data,
+        eair_data_profile    = eair_data,
     )
-    
-    # Leaf area density
-    dpai = mlcan.dpai_profile[p, ic]
-    dz = mlcan.dz_profile[p, ic]
-    lad = jnp.where(dz > 0.0, dpai / dz, 0.0)
-    
-    # Check if this is a leaf layer
-    has_leaves = dpai > 0.0
-    
-    # Extract layer properties
-    zs = mlcan.zs_profile[p, ic]
-    fracsun = mlcan.fracsun_profile[p, ic]
-    wind = mlcan.wind_profile[p, ic]
-    
-    # Compute LAD components
-    lad_sun = lad * fracsun
-    lad_shade = lad * (1.0 - fracsun)
-    
-    # Extract leaf fluxes (use jnp.where for missing values)
-    rnleaf_sun = jnp.where(has_leaves, mlcan.rnleaf_leaf[p, ic, ISUN], MISSING_VALUE)
-    rnleaf_shade = jnp.where(has_leaves, mlcan.rnleaf_leaf[p, ic, ISHA], MISSING_VALUE)
-    
-    shleaf_sun = jnp.where(has_leaves, mlcan.shleaf_leaf[p, ic, ISUN], MISSING_VALUE)
-    shleaf_shade = jnp.where(has_leaves, mlcan.shleaf_leaf[p, ic, ISHA], MISSING_VALUE)
-    
-    lhleaf_sun = jnp.where(has_leaves, mlcan.lhleaf_leaf[p, ic, ISUN], MISSING_VALUE)
-    lhleaf_shade = jnp.where(has_leaves, mlcan.lhleaf_leaf[p, ic, ISHA], MISSING_VALUE)
-    
-    anet_sun = jnp.where(has_leaves, mlcan.anet_leaf[p, ic, ISUN], MISSING_VALUE)
-    anet_shade = jnp.where(has_leaves, mlcan.anet_leaf[p, ic, ISHA], MISSING_VALUE)
-    
-    apar_sun = jnp.where(has_leaves, mlcan.apar_leaf[p, ic, ISUN], MISSING_VALUE)
-    apar_shade = jnp.where(has_leaves, mlcan.apar_leaf[p, ic, ISHA], MISSING_VALUE)
-    
-    gs_sun = jnp.where(has_leaves, mlcan.gs_leaf[p, ic, ISUN], MISSING_VALUE)
-    gs_shade = jnp.where(has_leaves, mlcan.gs_leaf[p, ic, ISHA], MISSING_VALUE)
-    
-    lwp_sun = jnp.where(has_leaves, mlcan.lwp_hist_leaf[p, ic, ISUN], MISSING_VALUE)
-    lwp_shade = jnp.where(has_leaves, mlcan.lwp_hist_leaf[p, ic, ISHA], MISSING_VALUE)
-    
-    tleaf_sun = jnp.where(has_leaves, mlcan.tleaf_hist_leaf[p, ic, ISUN], MISSING_VALUE)
-    tleaf_shade = jnp.where(has_leaves, mlcan.tleaf_hist_leaf[p, ic, ISHA], MISSING_VALUE)
-    
-    vcmax25_sun = jnp.where(has_leaves, mlcan.vcmax25_leaf[p, ic, ISUN], MISSING_VALUE)
-    vcmax25_shade = jnp.where(has_leaves, mlcan.vcmax25_leaf[p, ic, ISHA], MISSING_VALUE)
-    
-    # Handle LAD for non-leaf layers
-    lad = jnp.where(has_leaves, lad, ZERO_VALUE)
-    lad_sun = jnp.where(has_leaves, lad_sun, ZERO_VALUE)
-    lad_shade = jnp.where(has_leaves, lad_shade, ZERO_VALUE)
-    
-    return CanopyLayerOutput(
-        curr_calday=curr_calday,
-        zs=zs,
-        fracsun=fracsun,
-        lad=lad,
-        lad_sun=lad_sun,
-        lad_shade=lad_shade,
-        rnleaf_sun=rnleaf_sun,
-        rnleaf_shade=rnleaf_shade,
-        shleaf_sun=shleaf_sun,
-        shleaf_shade=shleaf_shade,
-        lhleaf_sun=lhleaf_sun,
-        lhleaf_shade=lhleaf_shade,
-        anet_sun=anet_sun,
-        anet_shade=anet_shade,
-        apar_sun=apar_sun,
-        apar_shade=apar_shade,
-        gs_sun=gs_sun,
-        gs_shade=gs_shade,
-        lwp_sun=lwp_sun,
-        lwp_shade=lwp_shade,
-        tleaf_sun=tleaf_sun,
-        tleaf_shade=tleaf_shade,
-        vcmax25_sun=vcmax25_sun,
-        vcmax25_shade=vcmax25_shade,
-        wind=wind,
-        tair=tair,
-        qair=qair,
-    )
-
-
-def compute_ground_output(
-    soilstate: SoilState,
-) -> GroundOutputState:
-    """Compute ground surface output diagnostics.
-    
-    Reference: CLMml_driver.F90:731-748
-    
-    Args:
-        soilstate: Soil state
-        
-    Returns:
-        GroundOutputState containing ground diagnostics
-    """
-    # Ground air temperature (using soil temperature directly)
-    tair = soilstate.tg_soil
-    
-    # Ground vapor pressure: convert from Pa to kPa
-    eair = soilstate.eg_soil / 1000.0
-    
-    # Aerodynamic resistance
-    ra = soilstate.rhomol_forcing / soilstate.gac0_soil
-    
-    return GroundOutputState(
-        tair=tair,
-        eair=eair,
-        ra=ra,
-    )
-
-
-def clmml_drv_cleanup(
-    turb_type: int,
-) -> CleanupState:
-    """Prepare cleanup state for CLM-ML driver.
-    
-    Reference: CLMml_driver.F90:272-293
-    
-    Args:
-        turb_type: Turbulence type flag [-1 for prescribed, other for computed]
-        
-    Returns:
-        CleanupState indicating which files to close and success status
-    """
-    # Always close all output files
-    close_nout1 = True
-    close_nout2 = True
-    close_nout3 = True
-    close_nout4 = True
-    
-    # Close input file only if turb_type == -1
-    close_nin1 = (turb_type == -1)
-    
-    # Indicate successful completion
-    success = True
-    
-    return CleanupState(
-        close_nout1=close_nout1,
-        close_nout2=close_nout2,
-        close_nout3=close_nout3,
-        close_nout4=close_nout4,
-        close_nin1=close_nin1,
-        success=success,
-    )
-
-
-# ============================================================================
-# Profile Reading Functions
-# ============================================================================
-
-
-def convert_qair_to_eair(
-    qair: jnp.ndarray,
-    pref: jnp.ndarray,
-    mmh2o: float,
-    mmdry: float,
-) -> jnp.ndarray:
-    """Convert specific humidity to vapor pressure.
-    
-    Reference: CLMml_driver.F90:838
-    
-    Args:
-        qair: Specific humidity [kg/kg] [n_patches, n_layers]
-        pref: Reference pressure [Pa] [n_patches]
-        mmh2o: Molecular weight of water [g/mol]
-        mmdry: Molecular weight of dry air [g/mol]
-        
-    Returns:
-        Vapor pressure [Pa] [n_patches, n_layers]
-    """
-    pref_expanded = pref[:, jnp.newaxis]
-    mm_ratio = mmh2o / mmdry
-    
-    eair = qair * pref_expanded / (mm_ratio + (1.0 - mm_ratio) * qair)
-    
-    return eair
-
-
-def process_profile_data(
-    wind_raw: jnp.ndarray,
-    tair_raw: jnp.ndarray,
-    qair_raw: jnp.ndarray,
-    pref: jnp.ndarray,
-    mmh2o: float = 18.016,
-    mmdry: float = 28.966,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Process raw profile data from dataset.
-    
-    Reference: CLMml_driver.F90:827-838
-    
-    Args:
-        wind_raw: Wind speed from dataset [m/s] [n_patches, n_layers]
-        tair_raw: Air temperature from dataset [K] [n_patches, n_layers]
-        qair_raw: Specific humidity from dataset [g/kg] [n_patches, n_layers]
-        pref: Reference pressure [Pa] [n_patches]
-        mmh2o: Molecular weight of water [g/mol]
-        mmdry: Molecular weight of dry air [g/mol]
-        
-    Returns:
-        Tuple of (wind_data, tair_data, eair_data)
-    """
-    # Convert g/kg to kg/kg (line 827)
-    qair_kgkg = qair_raw / 1000.0
-    
-    # Convert specific humidity to vapor pressure (line 838)
-    eair_data = convert_qair_to_eair(qair_kgkg, pref, mmh2o, mmdry)
-    
-    # Wind and temperature are used directly
-    wind_data = wind_raw
-    tair_data = tair_raw
-    
-    return wind_data, tair_data, eair_data
-
-
-def read_canopy_profiles_physics(
-    wind_raw: jnp.ndarray,
-    tair_raw: jnp.ndarray,
-    qair_raw: jnp.ndarray,
-    profile_data: CanopyProfileData,
-) -> CanopyProfileData:
-    """Apply physics calculations to canopy profile data.
-    
-    Reference: CLMml_driver.F90:751-841
-    
-    Args:
-        wind_raw: Wind speed from dataset [m/s] [n_patches, n_layers]
-        tair_raw: Air temperature from dataset [K] [n_patches, n_layers]
-        qair_raw: Specific humidity from dataset [g/kg] [n_patches, n_layers]
-        profile_data: Current canopy profile data structure
-        
-    Returns:
-        Updated CanopyProfileData with processed values
-    """
-    wind_data, tair_data, eair_data = process_profile_data(
-        wind_raw,
-        tair_raw,
-        qair_raw,
-        profile_data.pref,
-    )
-    
-    return CanopyProfileData(
-        ncan=profile_data.ncan,
-        zs=profile_data.zs,
-        wind_data=wind_data,
-        tair_data=tair_data,
-        eair_data=eair_data,
-        pref=profile_data.pref,
-    )
-
-
-# ============================================================================
-# Module Exports
-# ============================================================================
-
-
-__all__ = [
-    # Protocols
-    "CLMmlDriverProtocol",
-    
-    # Types
-    "BoundsType",
-    "Atm2LndState",
-    "TemperatureState",
-    "FrictionVelState",
-    "MLCanopyState",
-    "CanopyState",
-    "PatchInfo",
-    "ColumnState",
-    "SoilState",
-    "WaterState",
-    "PhysicalConstants",
-    "PFTParameters",
-    "InitializationState",
-    "CLMHistoryFileInfo",
-    "TimeStepState",
-    "OutputFluxes",
-    "OutputSunShade",
-    "OutputAuxiliary",
-    "OutputProfile",
-    "CanopyLayerOutput",
-    "GroundOutputState",
-    "CanopyProfileData",
-    "CleanupState",
-    "TowerVegInputs",
-    
-    # Constants
-    "PHYSICAL_CONSTANTS",
-    "IVIS",
-    "INIR",
-    "ISUN",
-    "ISHA",
-    "MISSING_VALUE",
-    "ZERO_VALUE",
-    "HTOP_PFT_DEFAULT",
-    "PINE_PBETA_LAI",
-    "PINE_QBETA_LAI",
-    "PINE_PBETA_SAI",
-    "PINE_QBETA_SAI",
-    "DEFAULT_ROOT_BIOMASS",
-    
-    # Initialization functions
-    "adjust_usme2_pft_parameters",
-    "construct_tower_file_path",
-    "construct_clm_filename",
-    "calculate_time_index",
-    "get_htop_pft_lookup",
-    "init_acclim",
-    "tower_veg",
-    "soil_init_vectorized",
-    
-    # Output functions
-    "compute_upward_shortwave",
-    "compute_output_fluxes",
-    "compute_output_sunshade",
-    "compute_output_auxiliary",
-    "compute_output_profile_above_canopy",
-    "compute_canopy_layer_output",
-    "compute_ground_output",
-    "clmml_drv_cleanup",
-    
-    # Profile reading functions
-    "convert_qair_to_eair",
-    "process_profile_data",
-    "read_canopy_profiles_physics",
-]

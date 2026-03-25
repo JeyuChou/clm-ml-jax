@@ -1,388 +1,228 @@
 """
-Filter module for CLM
+JAX/Python translation of the CLM filter module.
 
-This module provides filters used for processing CLM columns and patches.
-Filters allow selective processing of subsets of the computational domain.
-Translated from Fortran CLM code to Python JAX.
+Provides the :class:`clumpfilter` data structure and helper functions
+for initialising, setting, and updating the patch/column filters used
+throughout CLM processing.
+
+In standalone mode the domain is a single patch and a single column,
+so every filter collapses to a one-element array pointing at index 1.
+
+Design: ``clumpfilter`` is an immutable :class:`NamedTuple`; all
+"mutation" is expressed by returning a new instance, consistent with
+the JAX pure-function convention used throughout the codebase.
+Index arrays are NumPy (not JAX) because they serve as Python-level
+loop indices and are never passed through ``jit``-compiled kernels.
+
+Original Fortran module: filterMod
 """
 
-import jax
-import jax.numpy as jnp
-from typing import Optional, List, Union
-from dataclasses import dataclass
+from __future__ import annotations
+from typing import NamedTuple
 
-# Import dependencies
-try:
-    from ..cime_src_share_util.shr_kind_mod import r8
-    from .clm_varcon import ispval, spval as nan
-except ImportError:
-    # Fallback for when running outside package context
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from cime_src_share_util.shr_kind_mod import r8
-    from clm_src_main.clm_varcon import ispval, spval as nan
+import numpy as np
+from jax import Array
 
 
-@dataclass
-class clumpfilter:
+# ---------------------------------------------------------------------------
+# clumpfilter
+# ---------------------------------------------------------------------------
+
+class clumpfilter(NamedTuple):
     """
-    CLM filter data structure
-    
-    This class contains various filters for processing subsets of
-    CLM patches and columns based on different criteria.
+    Immutable container for CLM patch and column filter arrays.
+
+    Mirrors Fortran derived type ``clumpfilter`` (lines 20-33).
+
+    All index arrays are 1-based NumPy integer arrays; counts are plain
+    Python ints.  A new instance is constructed by :func:`allocFilters`,
+    populated by :func:`setFilters`, and refined by
+    :func:`setExposedvegpFilter`.  NumPy is used (rather than JAX) because
+    these arrays serve as Python-level loop indices and are never passed
+    through ``jit``-compiled kernels.
+
+    Attributes:
+        num_exposedvegp:   Number of patches in the exposedvegp filter.
+        exposedvegp:       Patch indices where ``frac_veg_nosno > 0``.
+        num_nolakeurbanp:  Number of patches in the non-lake/non-urban filter.
+        nolakeurbanp:      Non-lake, non-urban patch indices.
+        num_nolakec:       Number of columns in the non-lake filter.
+        nolakec:           Non-lake column indices.
+        num_nourbanc:      Number of columns in the non-urban filter.
+        nourbanc:          Non-urban column indices.
+        num_hydrologyc:    Number of columns in the hydrology filter.
+        hydrologyc:        Hydrology column indices.
     """
-    
-    # Exposed vegetation patch filter
-    num_exposedvegp: int = 0                    # number of patches in exposedvegp filter
-    exposedvegp: Optional[jnp.ndarray] = None   # patches where frac_veg_nosno is non-zero
-    
-    # Non-lake, non-urban patch filter  
-    num_nolakeurbanp: int = 0                   # number of patches in non-lake, non-urban filter
-    nolakeurbanp: Optional[jnp.ndarray] = None  # non-lake, non-urban filter (patches)
-    
-    # Non-lake column filter
-    num_nolakec: int = 0                        # number of columns in non-lake filter
-    nolakec: Optional[jnp.ndarray] = None       # non-lake filter (columns)
-    
-    # Non-urban column filter
-    num_nourbanc: int = 0                       # number of columns in non-urban filter
-    nourbanc: Optional[jnp.ndarray] = None      # non-urban filter (columns)
-    
-    # Hydrology column filter
-    num_hydrologyc: int = 0                     # number of columns in hydrology filter
-    hydrologyc: Optional[jnp.ndarray] = None    # hydrology filter (columns)
-    
-    # Store bounds for reference
-    begp: Optional[int] = None
-    endp: Optional[int] = None
-    begc: Optional[int] = None
-    endc: Optional[int] = None
-    
-    def is_allocated(self) -> bool:
-        """Check if filter arrays have been allocated"""
-        return all([
-            self.exposedvegp is not None,
-            self.nolakeurbanp is not None,
-            self.nolakec is not None,
-            self.nourbanc is not None,
-            self.hydrologyc is not None
-        ])
-    
-    def get_patch_count(self) -> int:
-        """Get total number of patches"""
-        if self.begp is not None and self.endp is not None:
-            return self.endp - self.begp + 1
-        return 0
-    
-    def get_column_count(self) -> int:
-        """Get total number of columns"""
-        if self.begc is not None and self.endc is not None:
-            return self.endc - self.begc + 1
-        return 0
-    
-    def get_filter_info(self) -> dict:
-        """Get information about all filters"""
-        return {
-            'total_patches': self.get_patch_count(),
-            'total_columns': self.get_column_count(),
-            'num_exposedvegp': self.num_exposedvegp,
-            'num_nolakeurbanp': self.num_nolakeurbanp,
-            'num_nolakec': self.num_nolakec,
-            'num_nourbanc': self.num_nourbanc,
-            'num_hydrologyc': self.num_hydrologyc
-        }
-    
-    def validate_filters(self) -> bool:
-        """Validate filter consistency and bounds"""
-        if not self.is_allocated():
-            return False
-        
-        try:
-            # Check that filter counts don't exceed array sizes
-            if (self.num_exposedvegp > len(self.exposedvegp) or
-                self.num_nolakeurbanp > len(self.nolakeurbanp) or
-                self.num_nolakec > len(self.nolakec) or
-                self.num_nourbanc > len(self.nourbanc) or
-                self.num_hydrologyc > len(self.hydrologyc)):
-                return False
-            
-            # Check that indices are within bounds
-            patch_max = self.get_patch_count()
-            column_max = self.get_column_count()
-            
-            if patch_max > 0:
-                exposed_indices = self.exposedvegp[:self.num_exposedvegp]
-                nolakeurban_indices = self.nolakeurbanp[:self.num_nolakeurbanp]
-                
-                if (jnp.any(exposed_indices < 1) or jnp.any(exposed_indices > patch_max) or
-                    jnp.any(nolakeurban_indices < 1) or jnp.any(nolakeurban_indices > patch_max)):
-                    return False
-            
-            if column_max > 0:
-                nolake_indices = self.nolakec[:self.num_nolakec]
-                nourban_indices = self.nourbanc[:self.num_nourbanc]
-                hydrology_indices = self.hydrologyc[:self.num_hydrologyc]
-                
-                if (jnp.any(nolake_indices < 1) or jnp.any(nolake_indices > column_max) or
-                    jnp.any(nourban_indices < 1) or jnp.any(nourban_indices > column_max) or
-                    jnp.any(hydrology_indices < 1) or jnp.any(hydrology_indices > column_max)):
-                    return False
-            
-            return True
-            
-        except Exception:
-            return False
+    # Counts — Fortran integer scalars inside clumpfilter
+    num_exposedvegp:  int
+    num_nolakeurbanp: int
+    num_nolakec:      int
+    num_nourbanc:     int
+    num_hydrologyc:   int
+
+    # Index arrays — NumPy int32, 0-based storage, 1-based values
+    exposedvegp:  np.ndarray   # shape (endp - begp + 1,)
+    nolakeurbanp: np.ndarray   # shape (endp - begp + 1,)
+    nolakec:      np.ndarray   # shape (endc - begc + 1,)
+    nourbanc:     np.ndarray   # shape (endc - begc + 1,)
+    hydrologyc:   np.ndarray   # shape (endc - begc + 1,)
 
 
-# Global filter instance (equivalent to Fortran module-level variable)
-filter = clumpfilter()
+# ---------------------------------------------------------------------------
+# allocFilters
+# ---------------------------------------------------------------------------
 
-
-def allocFilters(filter_inst: clumpfilter, begp: int, endp: int, begc: int, endc: int) -> None:
+def allocFilters(
+    begp: int,
+    endp: int,
+    begc: int,
+    endc: int,
+) -> clumpfilter:
     """
-    Initialize filter data structure by allocating arrays
-    
+    Allocate and return a zero-initialised :class:`clumpfilter`.
+
+    Mirrors Fortran subroutine ``allocFilters`` (lines 43-58).
+
+    Fortran allocates 1-based slices ``(begp:endp)`` and ``(begc:endc)``
+    as pointer components of the derived type.  Here we allocate flat
+    NumPy arrays of the same length and return an immutable
+    :class:`clumpfilter` NamedTuple — no mutation, no ``intent(inout)``.
+
     Args:
-        filter_inst: Filter instance to initialize
-        begp: Beginning patch index
-        endp: Ending patch index
-        begc: Beginning column index
-        endc: Ending column index
+        begp: First patch index (inclusive, 1-based).
+        endp: Last patch index (inclusive, 1-based).
+        begc: First column index (inclusive, 1-based).
+        endc: Last column index (inclusive, 1-based).
+
+    Returns:
+        A new :class:`clumpfilter` with all count fields set to 0 and
+        all index arrays zero-initialised.
     """
-    # Store bounds
-    filter_inst.begp = begp
-    filter_inst.endp = endp
-    filter_inst.begc = begc
-    filter_inst.endc = endc
-    
-    # Calculate array sizes
-    patch_size = endp - begp + 1
-    column_size = endc - begc + 1
-    
-    # Allocate arrays for patch filters
-    filter_inst.exposedvegp = jnp.zeros(patch_size, dtype=jnp.int32)
-    filter_inst.nolakeurbanp = jnp.zeros(patch_size, dtype=jnp.int32)
-    
-    # Allocate arrays for column filters
-    filter_inst.nolakec = jnp.zeros(column_size, dtype=jnp.int32)
-    filter_inst.nourbanc = jnp.zeros(column_size, dtype=jnp.int32)
-    filter_inst.hydrologyc = jnp.zeros(column_size, dtype=jnp.int32)
-    
-    # Initialize counts to 0
-    filter_inst.num_exposedvegp = 0
-    filter_inst.num_nolakeurbanp = 0
-    filter_inst.num_nolakec = 0
-    filter_inst.num_nourbanc = 0
-    filter_inst.num_hydrologyc = 0
+    np_size = endp - begp + 1   # number of patches
+    nc_size = endc - begc + 1   # number of columns
+
+    return clumpfilter(
+        num_exposedvegp  = 0,
+        num_nolakeurbanp = 0,
+        num_nolakec      = 0,
+        num_nourbanc     = 0,
+        num_hydrologyc   = 0,
+        exposedvegp  = np.zeros(np_size, dtype=np.int32),   # Fortran: (begp:endp)
+        nolakeurbanp = np.zeros(np_size, dtype=np.int32),   # Fortran: (begp:endp)
+        nolakec      = np.zeros(nc_size, dtype=np.int32),   # Fortran: (begc:endc)
+        nourbanc     = np.zeros(nc_size, dtype=np.int32),   # Fortran: (begc:endc)
+        hydrologyc   = np.zeros(nc_size, dtype=np.int32),   # Fortran: (begc:endc)
+    )
 
 
-def setFilters(filter_inst: clumpfilter) -> None:
+# ---------------------------------------------------------------------------
+# setFilters
+# ---------------------------------------------------------------------------
+
+def setFilters(filter: clumpfilter) -> clumpfilter:
     """
-    Set CLM filters to default values
-    
-    In this simplified implementation, all filters contain a single element
-    with index 1, matching the original Fortran behavior.
-    
+    Set CLM filters for the standalone single-patch/single-column case.
+
+    Mirrors Fortran subroutine ``setFilters`` (lines 62-75).
+
+    In the standalone configuration every filter count is 1 and every
+    element in the corresponding index array is set to 1 (the single
+    valid index), matching the Fortran assignments::
+
+        filter%num_nolakeurbanp = 1 ; filter%nolakeurbanp(:) = 1
+        filter%num_nolakec      = 1 ; filter%nolakec(:)      = 1
+        filter%num_nourbanc     = 1 ; filter%nourbanc(:)     = 1
+        filter%num_hydrologyc   = 1 ; filter%hydrologyc(:)   = 1
+
+    ``num_exposedvegp`` and ``exposedvegp`` are left to
+    :func:`setExposedvegpFilter`.
+
     Args:
-        filter_inst: Filter instance to set
+        filter: Existing :class:`clumpfilter` (from :func:`allocFilters`).
+
+    Returns:
+        A new :class:`clumpfilter` with non-lake/non-urban counts and
+        index arrays set to 1; ``exposedvegp`` fields carried over
+        unchanged.
     """
-    if not filter_inst.is_allocated():
-        raise RuntimeError("Filter arrays must be allocated before setting filters")
-    
-    # Set simple filters (all contain single element with index 1)
-    filter_inst.num_exposedvegp = 1
-    filter_inst.exposedvegp = filter_inst.exposedvegp.at[0].set(1)
-    
-    filter_inst.num_nolakeurbanp = 1
-    filter_inst.nolakeurbanp = filter_inst.nolakeurbanp.at[0].set(1)
-    
-    filter_inst.num_nolakec = 1
-    filter_inst.nolakec = filter_inst.nolakec.at[0].set(1)
-    
-    filter_inst.num_nourbanc = 1
-    filter_inst.nourbanc = filter_inst.nourbanc.at[0].set(1)
-    
-    filter_inst.num_hydrologyc = 1
-    filter_inst.hydrologyc = filter_inst.hydrologyc.at[0].set(1)
+    nolakeurbanp = filter.nolakeurbanp.copy(); nolakeurbanp[:] = 0  # 0-based index for single patch
+    nolakec      = filter.nolakec.copy();      nolakec[:]      = 0  # 0-based index for single column
+    nourbanc     = filter.nourbanc.copy();     nourbanc[:]     = 0  # 0-based index for single column
+    hydrologyc   = filter.hydrologyc.copy();   hydrologyc[:]   = 0  # 0-based index for single column
+
+    return clumpfilter(
+        num_exposedvegp  = filter.num_exposedvegp,
+        num_nolakeurbanp = 1,
+        num_nolakec      = 1,
+        num_nourbanc     = 1,
+        num_hydrologyc   = 1,
+        exposedvegp  = filter.exposedvegp,
+        nolakeurbanp = nolakeurbanp,
+        nolakec      = nolakec,
+        nourbanc     = nourbanc,
+        hydrologyc   = hydrologyc,
+    )
 
 
-def setExposedvegpFilter(filter_inst: clumpfilter, frac_veg_nosno: jnp.ndarray) -> None:
+# ---------------------------------------------------------------------------
+# setExposedvegpFilter
+# ---------------------------------------------------------------------------
+
+def setExposedvegpFilter(
+    filter: clumpfilter,
+    frac_veg_nosno: Array,
+) -> clumpfilter:
     """
-    Set the exposedvegp patch filter
-    
-    This filter includes patches for which frac_veg_nosno > 0.
-    It does not include urban or lake points.
-    
+    Build and return an updated filter with the ``exposedvegp`` patch list.
+
+    Mirrors Fortran subroutine ``setExposedvegpFilter`` (lines 79-101).
+
+    Iterates over the non-lake/non-urban patch filter and retains those
+    patches for which ``frac_veg_nosno(p) > 0``::
+
+        fe = 0
+        do fp = 1, filter%num_nolakeurbanp
+            p = filter%nolakeurbanp(fp)
+            if (frac_veg_nosno(p) > 0):
+                fe = fe + 1
+                filter%exposedvegp(fe) = p
+        filter%num_exposedvegp = fe
+
     Args:
-        filter_inst: Filter instance to update
-        frac_veg_nosno: Fraction of vegetation not covered by snow for each patch
+        filter:         Existing :class:`clumpfilter` (from :func:`setFilters`).
+        frac_veg_nosno: Fraction of vegetation not covered by snow, indexed
+                        by patch (1-based values; element 0 unused).
+
+    Returns:
+        A new :class:`clumpfilter` identical to ``filter`` except that
+        ``exposedvegp`` and ``num_exposedvegp`` reflect the current
+        ``frac_veg_nosno`` state.
     """
-    if not filter_inst.is_allocated():
-        raise RuntimeError("Filter arrays must be allocated before setting exposedvegp filter")
-    
-    # Use vectorized approach for better performance
-    fe = 0
-    exposed_patches = []
-    
-    # Iterate through non-lake, non-urban patches
-    for fp in range(filter_inst.num_nolakeurbanp):
-        p = filter_inst.nolakeurbanp[fp] - 1  # Convert to 0-based indexing
-        if p < len(frac_veg_nosno) and frac_veg_nosno[p] > 0:
-            exposed_patches.append(filter_inst.nolakeurbanp[fp])  # Keep 1-based for consistency
+    exposedvegp = filter.exposedvegp.copy()
+    fe: int = 0
+
+    for fp in range(1, filter.num_nolakeurbanp + 1):
+        p = int(filter.nolakeurbanp[fp - 1])   # 1-based fp → 0-based array slot
+        if frac_veg_nosno[p] > 0:
+            exposedvegp[fe] = p                # write into 0-based accumulator slot
             fe += 1
-    
-    # Update the filter
-    filter_inst.num_exposedvegp = fe
-    if fe > 0:
-        exposed_array = jnp.array(exposed_patches, dtype=jnp.int32)
-        filter_inst.exposedvegp = filter_inst.exposedvegp.at[:fe].set(exposed_array)
+
+    return clumpfilter(
+        num_exposedvegp  = fe,
+        num_nolakeurbanp = filter.num_nolakeurbanp,
+        num_nolakec      = filter.num_nolakec,
+        num_nourbanc     = filter.num_nourbanc,
+        num_hydrologyc   = filter.num_hydrologyc,
+        exposedvegp  = exposedvegp,
+        nolakeurbanp = filter.nolakeurbanp,
+        nolakec      = filter.nolakec,
+        nourbanc     = filter.nourbanc,
+        hydrologyc   = filter.hydrologyc,
+    )
 
 
-@jax.jit(static_argnums=(2,))
-def setExposedvegpFilter_jax(nolakeurban_indices: jnp.ndarray, 
-                            frac_veg_nosno: jnp.ndarray,
-                            max_patches: int) -> tuple:
-    """
-    JAX-compiled version of exposed vegetation filter setting
-    
-    Args:
-        nolakeurban_indices: Indices of non-lake, non-urban patches
-        frac_veg_nosno: Fraction of vegetation not covered by snow
-        max_patches: Maximum number of patches
-        
-    Returns:
-        Tuple of (exposed_indices, num_exposed)
-    """
-    # Create mask for patches with exposed vegetation
-    valid_mask = (nolakeurban_indices > 0) & (nolakeurban_indices <= len(frac_veg_nosno))
-    adjusted_indices = jnp.where(valid_mask, nolakeurban_indices - 1, 0)  # Convert to 0-based
-    veg_mask = jnp.where(valid_mask, frac_veg_nosno[adjusted_indices] > 0, False)
-    
-    # Get exposed patch indices (only those with vegetation)
-    exposed_indices = jnp.where(veg_mask, nolakeurban_indices, 0)
-    
-    # Count non-zero entries
-    num_exposed = jnp.sum(exposed_indices > 0, dtype=jnp.int32)
-    
-    # Create properly sized output array
-    output_indices = jnp.zeros(max_patches, dtype=jnp.int32)
-    
-    # Compact non-zero indices to the beginning of the array
-    # For each element, compute its position in the output (cumsum gives us this)
-    is_valid = exposed_indices > 0
-    positions = jnp.cumsum(is_valid, dtype=jnp.int32) - 1
-    
-    # Use scatter to place valid indices at their compacted positions
-    # We need to filter out the zeros first
-    valid_exposed = jnp.where(is_valid, exposed_indices, 0)
-    valid_positions = jnp.where(is_valid, positions, 0)
-    
-    # Scatter using a loop-free approach: for each valid entry, place it at its position
-    def scatter_one(i, arr):
-        return jnp.where(is_valid[i], arr.at[valid_positions[i]].set(valid_exposed[i]), arr)
-    
-    output_indices = jax.lax.fori_loop(0, len(exposed_indices), scatter_one, output_indices)
-    
-    return output_indices, num_exposed
-
-
-def create_filter_instance(begp: int, endp: int, begc: int, endc: int) -> clumpfilter:
-    """
-    Factory function to create and initialize a filter instance
-    
-    Args:
-        begp: Beginning patch index
-        endp: Ending patch index
-        begc: Beginning column index
-        endc: Ending column index
-        
-    Returns:
-        Initialized clumpfilter instance
-    """
-    filter_inst = clumpfilter()
-    allocFilters(filter_inst, begp, endp, begc, endc)
-    setFilters(filter_inst)
-    return filter_inst
-
-
-def reset_global_filter() -> None:
-    """Reset the global filter instance"""
-    global filter
-    filter = clumpfilter()
-
-
-def get_filter_indices(filter_inst: clumpfilter, filter_name: str) -> tuple:
-    """
-    Get indices and count for a specific filter
-    
-    Args:
-        filter_inst: Filter instance
-        filter_name: Name of the filter ('exposedvegp', 'nolakeurbanp', etc.)
-        
-    Returns:
-        Tuple of (indices_array, count)
-    """
-    filter_map = {
-        'exposedvegp': (filter_inst.exposedvegp, filter_inst.num_exposedvegp),
-        'nolakeurbanp': (filter_inst.nolakeurbanp, filter_inst.num_nolakeurbanp),
-        'nolakec': (filter_inst.nolakec, filter_inst.num_nolakec),
-        'nourbanc': (filter_inst.nourbanc, filter_inst.num_nourbanc),
-        'hydrologyc': (filter_inst.hydrologyc, filter_inst.num_hydrologyc)
-    }
-    
-    if filter_name not in filter_map:
-        raise ValueError(f"Unknown filter name: {filter_name}")
-    
-    indices, count = filter_map[filter_name]
-    return indices[:count], count
-
-
-def apply_patch_filter(data: jnp.ndarray, filter_inst: clumpfilter, filter_name: str) -> jnp.ndarray:
-    """
-    Apply a patch filter to data array
-    
-    Args:
-        data: Data array to filter (patch-indexed)
-        filter_inst: Filter instance
-        filter_name: Name of the filter to apply
-        
-    Returns:
-        Filtered data array
-    """
-    indices, count = get_filter_indices(filter_inst, filter_name)
-    if count == 0:
-        return jnp.array([])
-    
-    # Convert to 0-based indexing for array access
-    zero_based_indices = indices - 1
-    return data[zero_based_indices]
-
-
-def apply_column_filter(data: jnp.ndarray, filter_inst: clumpfilter, filter_name: str) -> jnp.ndarray:
-    """
-    Apply a column filter to data array
-    
-    Args:
-        data: Data array to filter (column-indexed)
-        filter_inst: Filter instance
-        filter_name: Name of the filter to apply
-        
-    Returns:
-        Filtered data array
-    """
-    indices, count = get_filter_indices(filter_inst, filter_name)
-    if count == 0:
-        return jnp.array([])
-    
-    # Convert to 0-based indexing for array access
-    zero_based_indices = indices - 1
-    return data[zero_based_indices]
-
-
-# Public interface
-__all__ = [
-    'clumpfilter', 'filter', 'allocFilters', 'setFilters', 'setExposedvegpFilter',
-    'setExposedvegpFilter_jax', 'create_filter_instance', 'reset_global_filter',
-    'get_filter_indices', 'apply_patch_filter', 'apply_column_filter'
-]
+# ---------------------------------------------------------------------------
+# Module-level singleton — Fortran: type(clumpfilter), public, target :: filter
+# Initialised to a single-patch, single-column domain (begp=endp=begc=endc=1).
+# ---------------------------------------------------------------------------
+filter: clumpfilter = allocFilters(begp=1, endp=1, begc=1, endc=1)

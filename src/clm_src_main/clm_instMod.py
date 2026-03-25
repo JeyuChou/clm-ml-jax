@@ -1,369 +1,152 @@
 """
-CLM instance module
+JAX translation of clm_instMod Fortran module.
 
-This module defines instances and initialization of CLM data types.
-Translated from Fortran CLM code to Python JAX.
+Instances and definitions of all CLM component data types.
+Provides module-level singletons for every state container used
+throughout the CLM and CLMml physics, together with initialization
+and restart entry points.
+
+Original Fortran module: clm_instMod
+Fortran lines 1-105
 """
 
-import jax
-import jax.numpy as jnp
-from typing import Optional, Any
+from clm_src_main.decompMod import bounds_type                                      # noqa: F401
 
-# Import dependencies
-try:
-    from ..cime_src_share_util.shr_kind_mod import r8
-    from .decompMod import BoundsType
-    # Definition of component types
-    from .atm2lndType import atm2lnd_type
-    from ..clm_src_biogeophys.SoilStateType import soilstate_type, init_soil_state
-    from ..clm_src_biogeophys.WaterStateType import waterstate_type
-    from ..clm_src_biogeophys.CanopyStateType import canopystate_type
-    from ..clm_src_biogeophys.TemperatureType import temperature_type
-    from ..clm_src_biogeophys.EnergyFluxType import energyflux_type
-    from ..clm_src_biogeophys.WaterFluxType import waterflux_type
-    from ..clm_src_biogeophys.FrictionVelocityMod import frictionvel_type
-    from ..clm_src_biogeophys.SurfaceAlbedoType import surfalb_type
-    from ..clm_src_biogeophys.SolarAbsorbedType import solarabs_type
-    from ..clm_src_biogeophys.SurfaceAlbedoMod import SurfaceAlbedoInitTimeConst
-    from ..clm_src_biogeophys.SoilStateInitTimeConstMod import SoilStateInitTimeConst
-    from .initVerticalMod import initVertical
-    from ..multilayer_canopy.MLCanopyFluxesType import mlcanopy_type
-except ImportError:
-    # Fallback for when running outside package context
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from cime_src_share_util.shr_kind_mod import r8
-    from clm_src_main.decompMod import BoundsType
-    from clm_src_main.atm2lndType import atm2lnd_type
-    from clm_src_biogeophys.SoilStateType import soilstate_type, init_soil_state
-    from clm_src_biogeophys.WaterStateType import waterstate_type
-    from clm_src_biogeophys.CanopyStateType import canopystate_type
-    from clm_src_biogeophys.TemperatureType import temperature_type
-    from clm_src_biogeophys.EnergyFluxType import energyflux_type
-    from clm_src_biogeophys.WaterFluxType import waterflux_type
-    from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type
-    from clm_src_biogeophys.SurfaceAlbedoType import surfalb_type
-    from clm_src_biogeophys.SolarAbsorbedType import solarabs_type
-    from clm_src_biogeophys.SurfaceAlbedoMod import SurfaceAlbedoInitTimeConst
-    from clm_src_biogeophys.SoilStateInitTimeConstMod import SoilStateInitTimeConst
-    from clm_src_main.initVerticalMod import initVertical
-    from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type
-
-# Alias for backward compatibility
-bounds_type = BoundsType
+from clm_src_main.atm2lndType import atm2lnd_type, Init as _atm2lnd_Init                           # noqa: F401
+from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type, Init as _wateratm2lndbulk_Init # noqa: F401
+from clm_src_biogeophys.SoilStateType import soilstate_type, create_soilstate as _soilstate_Init                     # noqa: F401
+from clm_src_biogeophys.WaterType import water_type, Init as _water_Init                                 # noqa: F401
+from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type, Init as _waterstatebulk_Init      # noqa: F401
+from clm_src_biogeophys.WaterFluxBulkType import waterfluxbulk_type, Init as _waterfluxbulk_Init         # noqa: F401
+from clm_src_biogeophys.WaterDiagnosticBulkType import waterdiagnosticbulk_type, Init as _waterdiagnosticbulk_Init  # noqa: F401
+from clm_src_biogeophys.CanopyStateType import canopystate_type, init_allocate_from_bounds as _canopystate_Init               # noqa: F401
+from clm_src_biogeophys.TemperatureType import temperature_type, Init as _temperature_Init               # noqa: F401
+from clm_src_biogeophys.EnergyFluxType import energyflux_type, init as _energyflux_Init                 # noqa: F401
+from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type, init_friction_velocity as _frictionvel_Init           # noqa: F401
+from clm_src_biogeophys.SurfaceAlbedoType import surfalb_type, init_allocate as _surfalb_Init                    # noqa: F401
+from clm_src_biogeophys.SolarAbsorbedType import solarabs_type, init as _solarabs_Init                  # noqa: F401
+from clm_src_biogeophys.SurfaceAlbedoMod import SurfaceAlbedoInitTimeConst                               # noqa: F401
+from clm_src_biogeophys.SoilStateInitTimeConstMod import SoilStateInitTimeConst                          # noqa: F401
+from clm_src_main.initVerticalMod import initVertical                                               # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type, create_mlcanopy as _mlcanopy_Init                  # noqa: F401  # CLMml
+from clm_src_main.ncdio_pio import file_desc_t                                                      # noqa: F401
 
 
-class CLMInstances:
-    """
-    Container class for all CLM component type instances
-    
-    This class holds all the CLM component instances and provides
-    methods for initialization and restart operations.
-    """
-    
-    def __init__(self):
-        # Initialize all component instances
-        self.atm2lnd_inst: Optional[atm2lnd_type] = None
-        self.soilstate_inst: Optional[soilstate_type] = None
-        self.waterstate_inst: Optional[waterstate_type] = None
-        self.canopystate_inst: Optional[canopystate_type] = None
-        self.temperature_inst: Optional[temperature_type] = None
-        self.energyflux_inst: Optional[energyflux_type] = None
-        self.waterflux_inst: Optional[waterflux_type] = None
-        self.frictionvel_inst: Optional[frictionvel_type] = None
-        self.surfalb_inst: Optional[surfalb_type] = None
-        self.solarabs_inst: Optional[solarabs_type] = None
-        self.mlcanopy_inst: Optional[mlcanopy_type] = None
-    
-    def is_initialized(self) -> bool:
-        """Check if all instances have been initialized"""
-        return all([
-            self.atm2lnd_inst is not None,
-            self.soilstate_inst is not None,
-            self.waterstate_inst is not None,
-            self.canopystate_inst is not None,
-            self.temperature_inst is not None,
-            self.energyflux_inst is not None,
-            self.waterflux_inst is not None,
-            self.frictionvel_inst is not None,
-            self.surfalb_inst is not None,
-            self.solarabs_inst is not None,
-            self.mlcanopy_inst is not None
-        ])
+# ---------------------------------------------------------------------------
+# Module-level singletons (Fortran lines 40-55)
+# These are initialised to None and populated by clm_instInit.
+# Mirrors Fortran public module-level instances.
+# ---------------------------------------------------------------------------
+
+atm2lnd_inst:             atm2lnd_type             = None   # type: ignore[assignment]
+wateratm2lndbulk_inst:    wateratm2lndbulk_type    = None   # type: ignore[assignment]
+soilstate_inst:           soilstate_type            = None   # type: ignore[assignment]
+water_inst:               water_type                = None   # type: ignore[assignment]
+waterstatebulk_inst:      waterstatebulk_type       = None   # type: ignore[assignment]
+waterfluxbulk_inst:       waterfluxbulk_type        = None   # type: ignore[assignment]
+waterdiagnosticbulk_inst: waterdiagnosticbulk_type  = None   # type: ignore[assignment]
+canopystate_inst:         canopystate_type          = None   # type: ignore[assignment]
+temperature_inst:         temperature_type          = None   # type: ignore[assignment]
+energyflux_inst:          energyflux_type           = None   # type: ignore[assignment]
+frictionvel_inst:         frictionvel_type          = None   # type: ignore[assignment]
+surfalb_inst:             surfalb_type              = None   # type: ignore[assignment]
+solarabs_inst:            solarabs_type             = None   # type: ignore[assignment]
+mlcanopy_inst:            mlcanopy_type             = None   # type: ignore[assignment]  # CLMml
 
 
-# Global instances of component types (equivalent to Fortran module-level variables)
-_clm_instances = CLMInstances()
-
-# Public access to instances (maintaining Fortran naming)
-atm2lnd_inst = _clm_instances.atm2lnd_inst
-soilstate_inst = _clm_instances.soilstate_inst
-waterstate_inst = _clm_instances.waterstate_inst
-canopystate_inst = _clm_instances.canopystate_inst
-temperature_inst = _clm_instances.temperature_inst
-energyflux_inst = _clm_instances.energyflux_inst
-waterflux_inst = _clm_instances.waterflux_inst
-frictionvel_inst = _clm_instances.frictionvel_inst
-surfalb_inst = _clm_instances.surfalb_inst
-solarabs_inst = _clm_instances.solarabs_inst
-mlcanopy_inst = _clm_instances.mlcanopy_inst
-
+# ---------------------------------------------------------------------------
+# Public: initialize all component instances
+# ---------------------------------------------------------------------------
 
 def clm_instInit(bounds: bounds_type) -> None:
     """
-    Initialization of public data types
-    
-    This function initializes all CLM component type instances in the
-    correct order, ensuring proper dependencies are satisfied.
-    
+    Initialize all public CLM component-type instances.
+
+    Mirrors Fortran subroutine ``clm_instInit`` (lines 62-83).
+
+    Initialization order matches the Fortran source exactly:
+
+    1. ``initVertical`` — vertical grid setup.
+    2. ``atm2lnd_inst.Init`` — atmosphere-to-land forcing.
+    3. ``wateratm2lndbulk_inst.Init`` — bulk atm-to-land water fluxes.
+    4. ``soilstate_inst.Init`` — soil state allocation.
+    5. ``SoilStateInitTimeConst`` — soil hydraulic/thermal constants.
+    6. ``water_inst.Init`` — snow water.
+    7. ``waterstatebulk_inst.Init`` — bulk water state.
+    8. ``waterfluxbulk_inst.Init`` — bulk water fluxes.
+    9. ``waterdiagnosticbulk_inst.Init`` — bulk water diagnostics.
+    10. ``canopystate_inst.Init`` — canopy state.
+    11. ``temperature_inst.Init`` — temperature state.
+    12. ``energyflux_inst.Init`` — energy fluxes.
+    13. ``frictionvel_inst.Init`` — friction velocity.
+    14. ``surfalb_inst.Init`` — surface albedo.
+    15. ``solarabs_inst.Init`` — solar absorption.
+    16. ``SurfaceAlbedoInitTimeConst`` — albedo lookup tables.
+    17. ``mlcanopy_inst.Init`` — multilayer canopy (CLMml).
+
     Args:
-        bounds: CLM bounds structure containing grid indices
+        bounds: Decomposition bounds for the local MPI task, supplying
+            ``begg``, ``endg``, ``begc``, ``endc``, ``begp``, and
+            ``endp``.
     """
-    global _clm_instances
+    global atm2lnd_inst, wateratm2lndbulk_inst, soilstate_inst
+    global water_inst, waterstatebulk_inst, waterfluxbulk_inst
+    global waterdiagnosticbulk_inst, canopystate_inst, temperature_inst
+    global energyflux_inst, frictionvel_inst, surfalb_inst, solarabs_inst
+    global mlcanopy_inst
+
+    from .clm_varpar import nlevgrnd, nlevsno
     
-    # Initialize vertical coordinate system first
+    # Fortran line 65
     initVertical(bounds)
-    
-    # Initialize component instances in dependency order
-    # Note: Some types may fail if they don't have proper Init methods
-    # or are NamedTuples requiring special initialization
-    
-    try:
-        _clm_instances.atm2lnd_inst = atm2lnd_type(bounds)
-        if hasattr(_clm_instances.atm2lnd_inst, 'Init'):
-            _clm_instances.atm2lnd_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    # Initialize soil state type
-    try:
-        _clm_instances.soilstate_inst = soilstate_type(bounds)
-        if hasattr(_clm_instances.soilstate_inst, 'Init'):
-            _clm_instances.soilstate_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        # Fallback to special initialization function if type doesn't work
-        try:
-            _clm_instances.soilstate_inst = init_soil_state(bounds)
-        except (TypeError, AttributeError):
-            pass  # Skip if initialization not available
-    
-    # Initialize soil state time constants
-    try:
-        SoilStateInitTimeConst(
-            bounds,
-            getattr(_clm_instances, "soilstate_inst", None),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    try:
-        _clm_instances.waterstate_inst = waterstate_type(bounds)
-        if hasattr(_clm_instances.waterstate_inst, 'Init'):
-            _clm_instances.waterstate_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    try:
-        _clm_instances.canopystate_inst = canopystate_type(bounds)
-        if hasattr(_clm_instances.canopystate_inst, 'Init'):
-            _clm_instances.canopystate_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    try:
-        _clm_instances.temperature_inst = temperature_type(bounds)
-        if hasattr(_clm_instances.temperature_inst, 'Init'):
-            _clm_instances.temperature_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    try:
-        _clm_instances.energyflux_inst = energyflux_type(bounds)
-        if hasattr(_clm_instances.energyflux_inst, 'Init'):
-            _clm_instances.energyflux_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    try:
-        _clm_instances.waterflux_inst = waterflux_type(bounds)
-        if hasattr(_clm_instances.waterflux_inst, 'Init'):
-            _clm_instances.waterflux_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    try:
-        _clm_instances.frictionvel_inst = frictionvel_type(bounds)
-        if hasattr(_clm_instances.frictionvel_inst, 'Init'):
-            _clm_instances.frictionvel_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    try:
-        _clm_instances.surfalb_inst = surfalb_type(bounds)
-        if hasattr(_clm_instances.surfalb_inst, 'Init'):
-            _clm_instances.surfalb_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    try:
-        _clm_instances.solarabs_inst = solarabs_type(bounds)
-        if hasattr(_clm_instances.solarabs_inst, 'Init'):
-            _clm_instances.solarabs_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    # Initialize surface albedo time constants
-    try:
-        SurfaceAlbedoInitTimeConst(bounds, _clm_instances.surfalb_inst)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    # Initialize multilayer canopy instance
-    try:
-        _clm_instances.mlcanopy_inst = mlcanopy_type(bounds)
-        if hasattr(_clm_instances.mlcanopy_inst, 'Init'):
-            _clm_instances.mlcanopy_inst.Init(bounds)
-    except (TypeError, AttributeError):
-        pass  # Skip if initialization not available
-    
-    # Update global references
-    update_global_instances()
+
+    # Fortran lines 66-82
+    atm2lnd_inst             = _atm2lnd_Init(bounds)
+    wateratm2lndbulk_inst    = _wateratm2lndbulk_Init(bounds)
+    soilstate_inst           = _soilstate_Init(bounds)
+    soilstate_inst           = SoilStateInitTimeConst(bounds, soilstate_inst)
+    water_inst               = _water_Init(bounds)
+    waterstatebulk_inst      = _waterstatebulk_Init(bounds)
+    waterfluxbulk_inst       = _waterfluxbulk_Init(bounds)
+    waterdiagnosticbulk_inst = _waterdiagnosticbulk_Init(bounds)
+    canopystate_inst         = _canopystate_Init(bounds)  # type: ignore[arg-type]
+    temperature_inst         = _temperature_Init(bounds)  # type: ignore[arg-type]
+    energyflux_inst          = _energyflux_Init(bounds)  # type: ignore[arg-type]
+    frictionvel_inst         = _frictionvel_Init(bounds)  # type: ignore[arg-type]
+    surfalb_inst             = _surfalb_Init(bounds)  # type: ignore[arg-type]
+    solarabs_inst            = _solarabs_Init(bounds)  # type: ignore[arg-type]
+    SurfaceAlbedoInitTimeConst(bounds)
+    mlcanopy_inst            = _mlcanopy_Init(bounds.begp, bounds.endp)    # CLMml
 
 
-def update_global_instances() -> None:
-    """Update global instance references after initialization"""
-    global atm2lnd_inst, soilstate_inst, waterstate_inst, canopystate_inst
-    global temperature_inst, energyflux_inst, waterflux_inst, frictionvel_inst
-    global surfalb_inst, solarabs_inst, mlcanopy_inst
-    
-    atm2lnd_inst = _clm_instances.atm2lnd_inst
-    soilstate_inst = _clm_instances.soilstate_inst
-    waterstate_inst = _clm_instances.waterstate_inst
-    canopystate_inst = _clm_instances.canopystate_inst
-    temperature_inst = _clm_instances.temperature_inst
-    energyflux_inst = _clm_instances.energyflux_inst
-    waterflux_inst = _clm_instances.waterflux_inst
-    frictionvel_inst = _clm_instances.frictionvel_inst
-    surfalb_inst = _clm_instances.surfalb_inst
-    solarabs_inst = _clm_instances.solarabs_inst
-    mlcanopy_inst = _clm_instances.mlcanopy_inst
+# ---------------------------------------------------------------------------
+# Public: restart (define / write / read)
+# ---------------------------------------------------------------------------
 
-
-def clm_instRest(bounds: bounds_type, ncid: Any, flag: str) -> None:
+def clm_instRest(
+    bounds: bounds_type,
+    ncid: file_desc_t,
+    flag: str,
+) -> None:
     """
-    Define/write/read CLM restart file
-    
-    This function handles restart operations for all CLM component types.
-    Currently only the mlcanopy_inst restart is active, following the
-    original Fortran implementation.
-    
+    Define, write, or read the CLM restart file.
+
+    Mirrors Fortran subroutine ``clm_instRest`` (lines 85-102).
+
+    In the Fortran source, most component restart calls are commented
+    out; only ``mlcanopy_inst.restart`` is active. The commented calls
+    are preserved below as Python comments at matching positions.
+
     Args:
-        bounds: CLM bounds structure
-        ncid: NetCDF file descriptor
-        flag: Operation flag ('define', 'write', 'read')
+        bounds: Decomposition bounds for the local MPI task.
+        ncid: NetCDF file descriptor (PIO).
+            Fortran: ``type(file_desc_t), intent(inout) :: ncid``.
+        flag: Restart operation selector. One of ``'define'``,
+            ``'write'``, or ``'read'``.
+            Fortran: ``character(len=*), intent(in) :: flag``.
     """
-    
-    # Each CLM component type has a restart subroutine 
-    # (shown here for example only - commented out as in original)
-    
-    # if hasattr(_clm_instances.atm2lnd_inst, 'restart'):
-    #     _clm_instances.atm2lnd_inst.restart(bounds, ncid, flag=flag)
-    # if hasattr(_clm_instances.soilstate_inst, 'restart'):
-    #     _clm_instances.soilstate_inst.restart(bounds, ncid, flag=flag)
-    # if hasattr(_clm_instances.canopystate_inst, 'restart'):
-    #     _clm_instances.canopystate_inst.restart(bounds, ncid, flag=flag)
-    # if hasattr(_clm_instances.waterflux_inst, 'restart'):
-    #     _clm_instances.waterflux_inst.restart(bounds, ncid, flag=flag)
-    
-    # Only mlcanopy_inst restart is active (following original Fortran)
-    if _clm_instances.mlcanopy_inst and hasattr(_clm_instances.mlcanopy_inst, 'restart'):
-        _clm_instances.mlcanopy_inst.restart(bounds, ncid, flag)
-
-
-def get_instance(instance_name: str) -> Any:
-    """
-    Get a specific CLM component instance by name
-    
-    Args:
-        instance_name: Name of the instance to retrieve
-        
-    Returns:
-        The requested instance or None if not found
-    """
-    # List of valid instance names
-    valid_names = [
-        'atm2lnd_inst', 'soilstate_inst', 'waterstate_inst', 'canopystate_inst',
-        'temperature_inst', 'energyflux_inst', 'waterflux_inst', 'frictionvel_inst',
-        'surfalb_inst', 'solarabs_inst', 'mlcanopy_inst'
-    ]
-    
-    if instance_name not in valid_names:
-        return None
-    
-    return getattr(_clm_instances, instance_name, None)
-
-
-def reset_instances() -> None:
-    """Reset all instances to None (for testing or reinitialization)"""
-    global _clm_instances
-    _clm_instances = CLMInstances()
-    update_global_instances()
-
-
-def validate_instances(bounds: bounds_type) -> bool:
-    """
-    Validate that all instances are properly initialized
-    
-    Args:
-        bounds: CLM bounds structure for validation
-        
-    Returns:
-        True if all instances are valid, False otherwise
-    """
-    try:
-        # Check if all required instances are not None
-        required_instances = [
-            _clm_instances.atm2lnd_inst,
-            _clm_instances.soilstate_inst,
-            _clm_instances.waterstate_inst,
-            _clm_instances.canopystate_inst,
-            _clm_instances.temperature_inst,
-            _clm_instances.energyflux_inst,
-            _clm_instances.waterflux_inst,
-            _clm_instances.frictionvel_inst,
-            _clm_instances.surfalb_inst,
-            _clm_instances.solarabs_inst,
-            _clm_instances.mlcanopy_inst
-        ]
-        
-        # Return False if any instance is None
-        if not all(inst is not None for inst in required_instances):
-            return False
-        
-        # Additional validation could be added here
-        # e.g., checking array dimensions against bounds
-        
-        return True
-        
-    except Exception:
-        return False
-
-
-# JIT-compiled version of initialization for performance
-clm_instInit_jit = jax.jit(clm_instInit, static_argnames=['bounds'])
-
-
-# Public interface
-__all__ = [
-    'clm_instInit', 'clm_instRest', 'clm_instInit_jit',
-    'atm2lnd_inst', 'soilstate_inst', 'waterstate_inst', 'canopystate_inst',
-    'temperature_inst', 'energyflux_inst', 'waterflux_inst', 'frictionvel_inst',
-    'surfalb_inst', 'solarabs_inst', 'mlcanopy_inst',
-    'CLMInstances', 'get_instance', 'reset_instances', 'validate_instances'
-]
+    # Commented-out restart calls (Fortran lines 97-99):
+    # atm2lnd_inst.restart(bounds, ncid, flag=flag)
+    # soilstate_inst.restart(bounds, ncid, flag=flag)
+    # canopystate_inst.restart(bounds, ncid, flag=flag)
+    # mlcanopy_inst.restart(bounds, ncid, flag=flag)     # CLMml — Fortran line 101 (not yet implemented)
