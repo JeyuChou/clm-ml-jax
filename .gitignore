@@ -1,5 +1,6 @@
 # GitHub specific files and directories
 .github/
+.claude/
 
 # Python
 __pycache__/
