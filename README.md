@@ -1,245 +1,126 @@
-# CLM-ML-JAX: AI-Powered Fortran to JAX Translation System
+# CLM-ML-JAX: Community Land Model with Multi-Layer Canopy in JAX
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![JAX](https://img.shields.io/badge/JAX-latest-orange.svg)](https://github.com/google/jax)
 [![License: BSD-3](https://img.shields.io/badge/License-BSD--3-green.svg)](LICENSE)
 
-> An ambitious project to translate the Community Land Model (CLM) from Fortran to Python/JAX using a multi-agent AI system powered by Claude, maintaining scientific accuracy while enabling modern optimization and enhanced testing.
+> A complete JAX/Python translation of the Community Land Model (CLM) Multi-Layer Canopy physics, enabling  GPU acceleration 
+
+ **Reference CLM-ML in Fortran**: [CLM-ML_v2.CHATS](https://github.com/gbonan/CLM-ml_v2.CHATS)
 
 
-### Key Goals
+### Features
 
-- ✅ Convert Fortran CLM source to JAX Python equivalents
-- ✅ Maintain exact scientific accuracy and physics formulations
-- ✅ Generate comprehensive test suites automatically
-- ✅ Create detailed documentation and translation notes
-- ✅ Enable performance optimization through JAX's JIT compilation
-
-
-## Features
-
-### 🤖 Multi-Agent System
-
-- **TranslatorAgent**: Converts Fortran modules to JAX Python with type hints, docstrings, and functional patterns
-- **TestAgent**: Analyzes Python signatures and generates comprehensive pytest files
-- **RepairAgent**: Debugs failed translations, identifies root causes, and iteratively fixes code
-- **BaseAgent**: Provides Claude API integration, conversation management, and cost tracking
-
-### 🔬 Translation Capabilities
-
-- Fortran 90/95 to Python 3.9+ with JAX
-- Module-level variables → NamedTuples/dataclasses
-- Subroutines → Pure functions with type hints
-- DO loops → JAX vmap or vectorized operations
-- Fortran types → Python dataclasses
-- Parameter modules → Immutable configuration classes
-
----
-## Pipeline
-
-```
-1. Fortran Source → Fortran Analyzer → JSON Analysis
-2. JSON Analysis → TranslatorAgent → JAX Python + Notes
-3. JAX Python → TestAgent → Pytest Files + Test Data
-4. Run Tests → [PASS ✓] Done
-            └─ [FAIL ✗] → RepairAgent → Fixed Code → Repeat
-```
+-  Full Fortran→Python/JAX translation maintaining scientific accuracy
+-  Tower-site offline driver for point-scale simulations with prescribed meteorology
+-  GPU-accelerated physics through JAX JIT compilation
+-  Vectorization with vmap for ensemble and sensitivity analyses
+-  Namelist-driven configuration (mirrors Fortran interface)
+-  Modular architecture 
 
 ---
 
 ## Installation
 
-### Prerequisites
-
-- **Python**: 3.9 or higher
-- **JAX**: Latest version
-- **Anthropic API Key**: Get from [console.anthropic.com](https://console.anthropic.com)
-
-### System Requirements
-
-- **OS**: Linux, macOS, or Windows with WSL
-- **Memory**: 8GB RAM minimum (16GB recommended)
-- **Disk**: 2GB free space
-
-### Step 1: Clone Repository
-
 ```bash
+# 1. Clone and navigate to repository
 git clone https://github.com/AyaLahlou/clm-ml-jax.git
 cd clm-ml-jax
-```
 
-### Step 2: Install JAX Agent System and Main Project Dependencies
-
-```bash
-cd jax-agents
+# 2. Install package and dependencies
 pip install -e .
-pip install jax jaxlib numpy pytest
 
+# 3. Verify installation
+clm-ml-offline --help
 ```
 
-### Step 3: Create `jax-agents/.env`
-
-Configure API key 
-
-```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-xxx
-
-# Optional
-LOG_LEVEL=INFO
-JAX_ENABLE_X64=True
-```
+This installs the `clm-ml-offline` command and all physics modules (`clm_share`, `clm_src_*`, `multilayer_canopy`, etc.).
 
 ---
 
-## Quick Start
+## Run a Simulation
 
-### 1. Translate a Fortran Module
-
-```bash
-cd jax-agents
-./run_translation_workflow.sh --translate --module clm_varctl
-```
-
-This will:
-- Load static analysis JSON for `clm_varctl`
-- Translate each unit iteratively
-- Assemble into complete module
-- Save to `translated_modules/`
-
-### 2. Generate Tests
+Execute a 1-day tower-site simulation with the CHATS7 site:
 
 ```bash
-./run_translation_workflow.sh --test --module clm_varctl
+# Using the installed command (recommended)
+clm-ml-offline < input_files/nl.CHATS7.1day
+
+# Or with explicit namelist argument  
+clm-ml-offline input_files/nl.CHATS7.1day
+
+# Or run directly with Python
+python -m offline_executable.main input_files/nl.CHATS7.1day
 ```
 
-Creates:
-- `test_clm_varctl.py` - Pytest file
-- `test_data_clm_varctl.json` - Synthetic test data
-- `test_documentation_clm_varctl.md` - Test docs
-
-### 3. Auto-Repair Failed Tests
-
-```bash
-./run_translation_workflow.sh --repair --module clm_varctl --max-iterations 5
-```
-
-Automatically:
-- Analyzes test failures
-- Identifies root causes
-- Generates fixes
-- Runs tests again
-- Iterates until passing (or max iterations)
-
-### 4. Complete Workflow
-
-```bash
-./run_translation_workflow.sh --all --module clm_varctl
-```
-Runs: Translate → Test → Repair in sequence.
-
----
-
-## Project Structure
-
-```
-clm-ml-jax/
-├── src/                              # Translated JAX modules 
-│   └── ...
-├── jax-agents/                       # AI Translation System 
-│   ├── src/jax_agents/
-│   │   ├── base_agent.py             # Base agent with Claude API
-│   │   ├── translator.py             # Fortran → JAX translator
-│   │   ├── test_agent.py             # Test generator
-│   │   ├── repair_agent.py           # Auto-repair agent
-│   │   ├── prompts/                  # LLM prompts
-│   │   │   ├── translation_prompts.py
-│   │   │   ├── test_prompts.py
-│   │   │   └── repair_prompts.py
-│   │   └── ...
-│   ├── run_translation_workflow.sh   # Main workflow script
-│   └── ...
-├── tests/                            # Comprehensive test suite (68 files)
-│   ├── conftest.py                   # Pytest fixtures & config
-│   ├── clm_src_main/
-│   │   └── ...
-│   └── ...
-└── ...
-```
-
----
-
-## Testing
-
-### Running Tests
-
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run specific module tests
-pytest tests/clm_src_main/test_clm_varctl.py -v
-
-# Run with coverage
-pytest tests/ --cov=src --cov-report=html
-
-# Run only fast tests
-pytest tests/ -m "not slow"
-
-# Run with markers
-pytest tests/ -m unit          # Unit tests only
-pytest tests/ -m integration   # Integration tests only
-```
+Output files are written to the `output_files/` directory.
 
 ---
 
 ## Development
 
-### Adding a New Agent
+### Adding a New Physics Module
 
-1. Create agent in `src/jax_agents/your_agent.py`:
+1. Create `multilayer_canopy/MyPhysicsMod.py` mirroring Fortran module structure
+2. Include Fortran source reference in docstring:
+   ```python
+   """
+   JAX translation of Fortran module MyPhysics.
+
+   Mirrors Fortran subroutine ``my_physics_sub`` (lines 45-120).
+   """
+   ```
+3. Use module-level globals from `MLclm_varctl.py` for configuration
+4. Add tests in `tests/multilayer_canopy/test_my_physics.py`
+5. Register output variables in `clm_src_main/histFileMod.py`
+
+### Adding a New Tower Site
+
+Edit `offline_driver/TowerDataMod.py`:
 
 ```python
-from jax_agents.base_agent import BaseAgent
+ntower = 16  # Increment from 15
 
-class YourAgent(BaseAgent):
-    def __init__(self, **kwargs):
-        super().__init__(
-            name="YourAgent",
-            role="Your agent's role",
-            **kwargs
-        )
-
-    def your_method(self, input_data):
-        prompt = f"Process this: {input_data}"
-        response = self.query_claude(prompt)
-        return response
+# Extend all arrays by one element
+tower_id[16] = 'MYNEWSITE'
+tower_lon[16] = -120.5
+tower_lat[16] = 38.2
+tower_elev[16] = 500.0
+# ... (add other fields)
 ```
 
-2. Add prompts in `src/jax_agents/prompts/your_prompts.py`
+Then create a namelist file: `src/offline_executable/nl.MYNEWSITE.1day`
 
-3. Add tests in `tests/test_your_agent.py`
+### Configuration & Switches
 
-4. Update configuration in `config.yaml`
+Global physics switches are in `multilayer_canopy/MLclm_varctl.py`—change directly, no config object needed:
+
+```python
+gs_type = 0              # Stomatal model: 0=Medlyn, 1=Ball-Berry, 2=WUE
+flux_profile_type = 1    # Flux-profile: -1=dataset, 0=well-mixed, 1=implicit
+runge_kutta_type = 41    # Time integration: 10=Euler, 21=2nd-order, 41=4th-order
+dtime_ml = 60.0          # Sub-step interval (s); must divide CLM timestep
+```
+### Debug a Single Timestep
+
+Use the provided debug template:
+
+```bash
+python src/offline_executable/debug_physics.py
+```
+
+This script manually initializes model state and calls physics functions directly for inspection.
 
 ---
 
-## How to Contribute
+## Contributing
 
-We welcome contributions! 
+Contributions are welcome! Here's how you can help: 
 
 1. **Report Bugs**: Open an issue with reproduction steps
 2. **Suggest Features**: Open an issue with use case description
 3. **Submit PRs**: Fork, create feature branch, submit PR
 4. **Improve Docs**: Documentation improvements are always welcome
-
-### Development Guidelines
-
-- Follow existing code style (Black, Ruff)
-- Add tests for new features
-- Update documentation
-- Ensure all tests pass
-- Add type hints to all functions
 
 ### Code of Conduct
 
@@ -249,29 +130,28 @@ We welcome contributions!
 
 ---
 
+## Citation
+
+
+```bibtex
+@software{clm_ml_jax,
+  title={CLM-ML-JAX: Community Land Model with Multi-Layer Canopy in JAX},
+  author={Lahlou, Aya},
+  year={2024},
+  url={https://github.com/AyaLahlou/clm-ml-jax},
+  note={JAX translation of CTSM CLM-ML}
+}
+```
+
+---
+
 ## License
 
 This project is licensed under the **BSD-3-Clause License**. See [LICENSE](LICENSE) for details.
 
 ---
 
+⭐ **If this helps your research, please star the repository!**
 
-## Citation
+🐛 **Found a bug?** Please [open an issue](https://github.com/AyaLahlou/clm-ml-jax/issues)
 
-If you use this project in your research, please cite:
-
-```bibtex
-@software{clm_ml_jax,
-  title={CLM-ML-JAX: AI-Powered Fortran to JAX Translation System},
-  author={Aya Lahlou},
-  year={2024},
-  url={https://github.com/AyaLahlou/clm-ml-jax}
-}
-```
-
-
-⭐ **Star this repo** if you find it useful!
-
-🐛 **Report issues** to help us improve!
-
-🤝 **Contribute** to advance scientific computing!
