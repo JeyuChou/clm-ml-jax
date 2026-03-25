@@ -1,592 +1,347 @@
 """
-Plant Hydraulics Module.
+JAX translation of MLPlantHydraulicsMod Fortran module.
 
-Translated from CTSM's MLPlantHydraulicsMod.F90
+Calculate plant hydraulics for the multilayer canopy model.
+Three public routines:
 
-This module calculates plant hydraulic properties including:
-- Whole-plant hydraulic resistance
-- Soil-to-root resistance and water uptake
-- Leaf water potential
+- :func:`PlantResistance`: whole-plant leaf-specific conductance.
+- :func:`SoilResistance`: soil hydraulic resistance and fractional
+  water uptake per soil layer.
+- :func:`LeafWaterPotential`: leaf water potential via analytical
+  ODE integration.
 
-The hydraulic model represents water flow through the soil-plant-atmosphere
-continuum, accounting for resistances in soil, roots, stems, and leaves.
-
-Key physics:
-    Water flow follows Darcy's law analogy:
-    Q = (Ψ_source - Ψ_sink) / R
-    
-Where:
-    - Q: Water flux [kg/m²/s]
-    - Ψ: Water potential [MPa]
-    - R: Hydraulic resistance [MPa·s·m²/kg]
-
-The model includes:
-1. Plant resistance: Aboveground hydraulic resistance from stem to leaf
-2. Soil resistance: Belowground resistance from soil to root
-3. Leaf water potential: Dynamic leaf water status with capacitance
-
-References:
-    Original Fortran: MLPlantHydraulicsMod.F90 (lines 1-322)
+Original Fortran module: MLPlantHydraulicsMod
+Fortran lines 1-200
 """
 
-from typing import NamedTuple, Tuple
-import jax
+from __future__ import annotations
+
+import math
+from typing import Sequence
+
+import numpy as np
 import jax.numpy as jnp
 
-
-# =============================================================================
-# Physical Constants
-# =============================================================================
-
-# Water properties
-DENH2O = 1000.0  # Water density [kg/m³]
-GRAV = 9.80616   # Gravitational acceleration [m/s²]
-MMOL_H2O = 18.0  # Molar mass of water [g/mol]
-
-# Mathematical constants
-PI = jnp.pi
-
-# Conversion factors
-HEAD = DENH2O * GRAV * 1.0e-6  # Converts mm to MPa
+from clm_src_main.abortutils import endrun                               # noqa: F401
+from clm_src_main.clm_varctl import iulog                               # noqa: F401
+from clm_src_main.clm_varcon import rpi as pi, denh2o, grav             # noqa: F401
+from clm_src_main.clm_varpar import nlevsoi                             # noqa: F401
+from clm_src_main.ColumnType import col                                  # noqa: F401
+from clm_src_main.PatchType import patch                                 # noqa: F401
+from multilayer_canopy.MLpftconMod import MLpftcon                           # noqa: F401
+from multilayer_canopy.MLclm_varcon import mmh2o                             # noqa: F401
+from multilayer_canopy.MLclm_varctl import dtime_ml                          # noqa: F401
+from clm_src_biogeophys.SoilStateType import soilstate_type                   # noqa: F401
+from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type         # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type               # noqa: F401
 
 
-# =============================================================================
-# Type Definitions
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Public: whole-plant leaf-specific conductance
+# ---------------------------------------------------------------------------
 
-class PlantHydraulicsParams(NamedTuple):
-    """Parameters for plant hydraulics calculations.
-    
-    Attributes:
-        gplant_SPA: Stem hydraulic conductance [mmol H₂O/m²/s/MPa] [n_pfts]
-        capac_SPA: Plant capacitance [mmol H₂O/m² leaf area/MPa] [n_pfts]
-        root_radius: Fine root radius [m] [n_pfts]
-        root_density: Fine root density [g biomass/m³ root] [n_pfts]
-        root_resist: Root tissue resistivity [MPa·s·g/mmol H₂O] [n_pfts]
-        minlwp_SPA: Minimum leaf water potential [MPa] (scalar, typically -2.0)
+def PlantResistance(
+    num_filter: int,
+    filter_patch: Sequence[int],
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
     """
-    gplant_SPA: jnp.ndarray
-    capac_SPA: jnp.ndarray
-    root_radius: jnp.ndarray
-    root_density: jnp.ndarray
-    root_resist: jnp.ndarray
-    minlwp_SPA: float = -2.0
+    Calculate whole-plant leaf-specific conductance (soil-to-leaf).
 
+    Mirrors Fortran subroutine ``PlantResistance`` (lines 23-75).
 
-class PlantResistanceInput(NamedTuple):
-    """Input state for plant resistance calculation.
-    
-    Attributes:
-        gplant_SPA: Stem hydraulic conductance [mmol H₂O/m²/s/MPa] [n_pfts]
-        ncan: Number of aboveground layers [n_patches]
-        rsoil: Soil hydraulic resistance [MPa·s·m²/mmol H₂O] [n_patches]
-        dpai: Canopy layer plant area index [m²/m²] [n_patches, n_levcan]
-        zs: Canopy layer height for scalar concentration [m] [n_patches, n_levcan]
-        itype: Patch vegetation type (PFT index) [n_patches]
-    """
-    gplant_SPA: jnp.ndarray
-    ncan: jnp.ndarray
-    rsoil: jnp.ndarray
-    dpai: jnp.ndarray
-    zs: jnp.ndarray
-    itype: jnp.ndarray
+    Reference: Bonan et al. (2014) *Geosci. Model Dev.*, 7, 2193-2222,
+    doi:10.5194/gmd-7-2193-2014, eqs. (A21)-(A22).
 
+    For each layer ``ic`` with ``dpai > 0``:
 
-class PlantResistanceOutput(NamedTuple):
-    """Output state for plant resistance calculation.
-    
-    Attributes:
-        lsc: Leaf-specific conductance (soil-to-leaf) [mmol H₂O/m² leaf/s/MPa] 
-             [n_patches, n_levcan]
-    """
-    lsc: jnp.ndarray
+    .. code-block:: none
 
+        rplant = 1 / gplant_SPA(pft)        [MPa.s.m2/mmol H2O]
+        lsc(p,ic) = 1 / (rsoil(p) + rplant) [mmol H2O/m2/s/MPa]
 
-class SoilResistanceInputs(NamedTuple):
-    """Input state for soil resistance calculations.
-    
-    Attributes:
-        root_radius: Fine root radius [m] [n_pfts]
-        root_density: Fine root density [g biomass/m³ root] [n_pfts]
-        root_resist: Root tissue resistivity [MPa·s·g/mmol H₂O] [n_pfts]
-        dz: Soil layer thickness [m] [n_columns, n_layers]
-        nbedrock: Depth to bedrock index [-] [n_columns]
-        smp_l: Soil matric potential [mm] [n_columns, n_layers]
-        hk_l: Soil hydraulic conductivity [mm H₂O/s] [n_columns, n_layers]
-        rootfr: Fraction of roots in each layer [-] [n_patches, n_layers]
-        h2osoi_ice: Soil ice content [kg H₂O/m²] [n_columns, n_layers]
-        root_biomass: Fine root biomass [g biomass/m²] [n_patches]
-        lai: Leaf area index [m²/m²] [n_patches]
-        itype: Patch vegetation type (PFT index) [n_patches]
-        patch_to_column: Mapping from patch to column index [n_patches]
-        minlwp_SPA: Minimum leaf water potential [MPa] (scalar)
-    """
-    root_radius: jnp.ndarray
-    root_density: jnp.ndarray
-    root_resist: jnp.ndarray
-    dz: jnp.ndarray
-    nbedrock: jnp.ndarray
-    smp_l: jnp.ndarray
-    hk_l: jnp.ndarray
-    rootfr: jnp.ndarray
-    h2osoi_ice: jnp.ndarray
-    root_biomass: jnp.ndarray
-    lai: jnp.ndarray
-    itype: jnp.ndarray
-    patch_to_column: jnp.ndarray
-    minlwp_SPA: float
+    The commented-out height-dependent alternative
+    (``rplant = zs / gplant_SPA``) is preserved as a comment.
+    Layers with ``dpai == 0`` receive ``lsc = 0``.
 
-
-class SoilResistanceOutputs(NamedTuple):
-    """Output state from soil resistance calculations.
-    
-    Attributes:
-        rsoil: Soil hydraulic resistance [MPa·s·m² leaf/mmol H₂O] [n_patches]
-        psis: Weighted soil water potential [MPa] [n_patches]
-        soil_et_loss: Fractional uptake from each layer [-] [n_patches, n_layers]
-    """
-    rsoil: jnp.ndarray
-    psis: jnp.ndarray
-    soil_et_loss: jnp.ndarray
-
-
-class LeafWaterPotentialInputs(NamedTuple):
-    """Inputs for leaf water potential calculation.
-    
-    Attributes:
-        capac_SPA: Plant capacitance [mmol H₂O/m² leaf area/MPa] [n_pfts]
-        ncan: Number of aboveground layers [n_patches]
-        psis: Weighted soil water potential [MPa] [n_patches]
-        dpai: Canopy layer plant area index [m²/m²] [n_patches, n_canopy_layers]
-        zs: Canopy layer height for scalar concentration [m] [n_patches, n_canopy_layers]
-        lsc: Canopy layer leaf-specific conductance [mmol H₂O/m² leaf/s/MPa] 
-             [n_patches, n_canopy_layers]
-        trleaf: Leaf transpiration flux [mol H₂O/m² leaf/s] 
-                [n_patches, n_canopy_layers, 2]
-        lwp: Leaf water potential [MPa] [n_patches, n_canopy_layers, 2]
-        itype: Patch vegetation type [n_patches]
-        dtime_substep: Model time step [s]
-    """
-    capac_SPA: jnp.ndarray
-    ncan: jnp.ndarray
-    psis: jnp.ndarray
-    dpai: jnp.ndarray
-    zs: jnp.ndarray
-    lsc: jnp.ndarray
-    trleaf: jnp.ndarray
-    lwp: jnp.ndarray
-    itype: jnp.ndarray
-    dtime_substep: float
-
-
-class LeafWaterPotentialOutputs(NamedTuple):
-    """Outputs from leaf water potential calculation.
-    
-    Attributes:
-        lwp: Updated leaf water potential [MPa] [n_patches, n_canopy_layers, 2]
-    """
-    lwp: jnp.ndarray
-
-
-# =============================================================================
-# Plant Resistance Functions
-# =============================================================================
-
-def plant_resistance(
-    inputs: PlantResistanceInput,
-) -> PlantResistanceOutput:
-    """Calculate whole-plant leaf-specific conductance (soil-to-leaf).
-    
-    This function computes the hydraulic conductance from soil to leaf for each
-    canopy layer. The conductance is the inverse of total resistance, which is
-    the sum of soil resistance and aboveground plant resistance.
-    
-    Key equations (lines 62-66):
-        rplant = 1 / gplant_SPA                    [MPa·s·m²/mmol H₂O]
-        lsc = 1 / (rsoil + rplant)                 [mmol H₂O/m² leaf/s/MPa]
-    
-    Fortran reference: MLPlantHydraulicsMod.F90, lines 23-82
-    
     Args:
-        inputs: Input state containing hydraulic parameters and canopy structure
-        
+        num_filter: Number of patches in the filter.
+        filter_patch: Patch index filter (1-based values).
+        mlcanopy_inst: Canopy container; ``lsc_profile`` is updated.
+
     Returns:
-        Output state containing leaf-specific conductance for each canopy layer
-        
-    Note:
-        - Conductance is only calculated for layers with dpai > 0 (line 58)
-        - For layers without vegetation (dpai = 0), lsc is set to 0 (line 72)
-        - The aboveground resistance uses gplant_SPA as conductance, not conductivity
+        Updated :class:`mlcanopy_type`.
     """
-    n_patches = inputs.dpai.shape[0]
-    n_levcan = inputs.dpai.shape[1]
-    
-    # Get PFT-specific conductance for each patch (line 63)
-    gplant_patch = inputs.gplant_SPA[inputs.itype]  # [n_patches]
-    
-    # Broadcast rsoil and gplant_patch to match canopy layer dimensions
-    rsoil_broadcast = inputs.rsoil[:, jnp.newaxis]  # [n_patches, 1]
-    gplant_broadcast = gplant_patch[:, jnp.newaxis]  # [n_patches, 1]
-    
-    # Calculate aboveground plant resistance (line 63)
-    # rplant = 1 / gplant_SPA [MPa·s·m²/mmol H₂O]
-    rplant = 1.0 / gplant_broadcast
-    
-    # Calculate leaf-specific conductance (line 66)
-    # lsc = 1 / (rsoil + rplant) [mmol H₂O/m² leaf/s/MPa]
-    lsc_calculated = 1.0 / (rsoil_broadcast + rplant)
-    
-    # Only apply to layers with vegetation (dpai > 0) (lines 58, 72)
-    has_vegetation = inputs.dpai > 0.0
-    lsc = jnp.where(has_vegetation, lsc_calculated, 0.0)
-    
-    return PlantResistanceOutput(lsc=lsc)
+    gplant_SPA = MLpftcon.gplant_SPA
+
+    ncan  = mlcanopy_inst.ncan_canopy
+    rsoil = mlcanopy_inst.rsoil_soil
+    dpai  = mlcanopy_inst.dpai_profile
+    zs    = mlcanopy_inst.zs_profile
+    lsc   = mlcanopy_inst.lsc_profile
+
+    for fp in range(1, num_filter + 1):                # Fortran: do fp = 1, num_filter
+        p   = int(filter_patch[fp - 1])
+        pft = int(patch.itype[p])
+
+        for ic in range(1, int(ncan[p]) + 1):          # Fortran: do ic = 1, ncan(p)
+            if float(dpai[p, ic]) > 0.0:
+
+                # Aboveground plant resistance (MPa.s.m2/mmol H2O) — Fortran lines 57-60
+                # rplant = zs(p,ic) / gplant_SPA(pft)  # conductivity form (commented out)
+                rplant = 1.0 / float(gplant_SPA[pft])   # conductance form
+
+                # Leaf-specific conductance soil-to-leaf — Fortran line 63
+                lsc = lsc.at[p, ic].set(1.0 / (float(rsoil[p]) + rplant))
+
+            else:
+                lsc = lsc.at[p, ic].set(0.0)           # Fortran line 67
+
+    return mlcanopy_inst._replace(lsc_profile = lsc)
 
 
-# =============================================================================
-# Soil Resistance Functions
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Public: soil hydraulic resistance and fractional water uptake
+# ---------------------------------------------------------------------------
 
-def _calculate_soil_resistance_per_layer(
-    root_radius: jnp.ndarray,
-    root_density: jnp.ndarray,
-    root_resist: jnp.ndarray,
-    dz: jnp.ndarray,
-    nbedrock: jnp.ndarray,
-    smp_l: jnp.ndarray,
-    hk_l: jnp.ndarray,
-    rootfr: jnp.ndarray,
-    h2osoi_ice: jnp.ndarray,
-    root_biomass: jnp.ndarray,
-    minlwp_SPA: float,
-    n_layers: int,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Calculate soil hydraulic resistance for each layer.
-    
-    This function implements the core loop over soil layers (lines 92-218),
-    calculating hydraulic properties and maximum transpiration rates.
-    
-    Key equations:
-        - Root length density: RLD = root_biomass / (root_density * cross_section)
-        - Root distance: d = sqrt(1 / (RLD * π))
-        - Soil-to-root resistance: R1 = ln(d/r) / (2π * RLD * dz * K)
-        - Root-to-stem resistance: R2 = root_resist / (root_biomass_density * dz)
-        - Total resistance: R = R1 + R2
-        - Maximum transpiration: E = (ψ_soil - ψ_min) / R
-    
-    Fortran reference: MLPlantHydraulicsMod.F90, lines 92-218
-    
+def SoilResistance(
+    num_filter: int,
+    filter_patch: Sequence[int],
+    soilstate_inst: soilstate_type,
+    waterstatebulk_inst: waterstatebulk_type,
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """
+    Calculate soil hydraulic resistance and fractional water uptake
+    from each soil layer.
+
+    Mirrors Fortran subroutine ``SoilResistance`` (lines 77-165).
+
+    Reference: Bonan et al. (2014) *Geosci. Model Dev.*, 7, 2193-2222,
+    doi:10.5194/gmd-7-2193-2014, eqs. (A23)-(A28).
+
+    Per-layer calculations (Fortran lines 118-146):
+
+    .. code-block:: none
+
+        hk [mmol/m/s/MPa] = hk_l [mm/s] * (1e-3/head) * denh2o/mmh2o * 1000
+        smp_mpa [MPa]      = smp_l [mm] * 1e-3 * head
+        root_biomass_density [g/m3] = root_biomass * rootfr / dz    (≥ 1e-10)
+        root_length_density  [m/m3] = root_biomass_density / (root_density * pi*r^2)
+        root_dist [m]               = sqrt(1 / (root_length_density * pi))
+        soilr1 = log(root_dist/r) / (2*pi * rld * dz * hk)         (A23)
+        soilr2 = root_resist / (root_biomass_density * dz)          (A24)
+        soilr  = soilr1 + soilr2
+        rsoil  += 1/soilr    (sum conductances across layers)
+        evap[j] = max((smp_mpa - minlwp_SPA) / soilr, 0)           (A26)
+        evap[j] = 0 if frozen
+
+    After the layer loop (Fortran lines 149-168):
+
+    .. code-block:: none
+
+        rsoil(p) = lai(p) / rsoil(p)           (A25, resistance form)
+        psis(p)  = sum(smp_mpa*evap) / totevap  (A27-A28)
+        soil_et_loss(p,j) = evap(j) / totevap
+
     Args:
-        root_radius: Fine root radius [m] [n_patches]
-        root_density: Fine root density [g biomass/m³ root] [n_patches]
-        root_resist: Root tissue resistivity [MPa·s·g/mmol H₂O] [n_patches]
-        dz: Soil layer thickness [m] [n_columns, n_layers]
-        nbedrock: Depth to bedrock index [-] [n_columns]
-        smp_l: Soil matric potential [mm] [n_columns, n_layers]
-        hk_l: Soil hydraulic conductivity [mm H₂O/s] [n_columns, n_layers]
-        rootfr: Fraction of roots in each layer [-] [n_patches, n_layers]
-        h2osoi_ice: Soil ice content [kg H₂O/m²] [n_columns, n_layers]
-        root_biomass: Fine root biomass [g biomass/m²] [n_patches]
-        minlwp_SPA: Minimum leaf water potential [MPa]
-        n_layers: Maximum number of soil layers
-        
+        num_filter: Number of patches in the filter.
+        filter_patch: Patch index filter (1-based values).
+        soilstate_inst: Soil state container (read-only).
+        waterstatebulk_inst: Bulk water state container (read-only).
+        mlcanopy_inst: Canopy container; ``psis_soil``,
+            ``rsoil_soil``, and ``soil_et_loss_soil`` are updated.
+
     Returns:
-        Tuple containing:
-        - rsoil_conductance: Soil conductance sum [mmol H₂O/m² ground/s/MPa] [n_patches]
-        - smp_mpa: Soil matric potential [MPa] [n_patches, n_layers]
-        - evap: Potential evaporation from each layer [mmol H₂O/m² ground/s] 
-                [n_patches, n_layers]
-        - totevap: Total potential evaporation [mmol H₂O/m² ground/s] [n_patches]
+        Updated :class:`mlcanopy_type`.
     """
-    n_patches = root_radius.shape[0]
-    
-    # Root cross-sectional area [m²] (line 158)
-    root_cross_sec_area = PI * root_radius**2
-    
-    # Layer mask based on bedrock depth (line 155)
-    layer_indices = jnp.arange(n_layers)
-    layer_mask = layer_indices[None, :] < nbedrock[:, None]  # [n_columns, n_layers]
-    
-    # Convert hydraulic conductivity (lines 168-170)
-    # mm/s -> m/s -> m²/s/MPa -> mmol/m/s/MPa
-    hk = hk_l * (1.0e-3 / HEAD)  # mm/s -> m²/s/MPa
-    hk = hk * DENH2O / MMOL_H2O * 1000.0  # m²/s/MPa -> mmol/m/s/MPa
-    
-    # Convert matric potential (line 171)
-    # mm -> m -> MPa
-    smp_mpa = smp_l * 1.0e-3 * HEAD
-    
-    # Root biomass density [g biomass/m³ soil] (lines 173-175)
-    root_biomass_expanded = root_biomass[:, None]  # [n_patches, 1]
-    root_biomass_density = root_biomass_expanded * rootfr / dz
-    root_biomass_density = jnp.maximum(root_biomass_density, 1.0e-10)
-    
-    # Root length density [m root/m³ soil] (lines 177-178)
-    root_density_expanded = root_density[:, None]
-    root_cross_sec_expanded = root_cross_sec_area[:, None]
-    root_length_density = root_biomass_density / (
-        root_density_expanded * root_cross_sec_expanded
-    )
-    
-    # Distance between roots [m] (lines 180-181)
-    root_dist = jnp.sqrt(1.0 / (root_length_density * PI))
-    
-    # Soil-to-root resistance [MPa·s·m²/mmol H₂O] (lines 183-184)
-    root_radius_expanded = root_radius[:, None]
-    soilr1 = jnp.log(root_dist / root_radius_expanded) / (
-        2.0 * PI * root_length_density * dz * hk
-    )
-    
-    # Root-to-stem resistance [MPa·s·m²/mmol H₂O] (lines 186-187)
-    root_resist_expanded = root_resist[:, None]
-    soilr2 = root_resist_expanded / (root_biomass_density * dz)
-    
-    # Total belowground resistance per layer [MPa·s·m²/mmol H₂O] (line 189)
-    soilr = soilr1 + soilr2
-    
-    # Sum conductances (1/resistance) across layers (lines 191-194)
-    conductance = jnp.where(layer_mask, 1.0 / soilr, 0.0)
-    rsoil_conductance = jnp.sum(conductance, axis=1)
-    
-    # Maximum transpiration per layer [mmol H₂O/m²/s] (lines 196-200)
-    evap = (smp_mpa - minlwp_SPA) / soilr
-    evap = jnp.maximum(evap, 0.0)  # No negative transpiration
-    
-    # Zero out frozen soil (line 199)
-    evap = jnp.where(h2osoi_ice > 0.0, 0.0, evap)
-    
-    # Zero out layers below bedrock
-    evap = jnp.where(layer_mask, evap, 0.0)
-    
-    # Total maximum transpiration (line 200)
-    totevap = jnp.sum(evap, axis=1)
-    
-    return rsoil_conductance, smp_mpa, evap, totevap
+    minlwp_SPA: float = -2.0    # Fortran local parameter (line 95)
 
+    head: float = denh2o * grav * 1.0e-6    # MPa/m
 
-def _finalize_soil_resistance(
-    rsoil_conductance: jnp.ndarray,
-    lai: jnp.ndarray,
-    smp_mpa: jnp.ndarray,
-    evap: jnp.ndarray,
-    totevap: jnp.ndarray,
-    minlwp_SPA: float,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Finalize soil resistance and compute weighted soil water potential.
-    
-    Converts soil conductance to resistance and calculates the weighted
-    soil water potential based on potential evaporation from each layer.
-    
-    Key equations (lines 221-239):
-        rsoil = LAI / conductance_sum
-        psis = sum(smp_mpa[j] * evap[j]) / totevap
-        soil_et_loss[j] = evap[j] / totevap
-    
-    Fortran reference: MLPlantHydraulicsMod.F90, lines 219-247
-    
-    Args:
-        rsoil_conductance: Soil conductance sum [mmol H₂O/m² ground/s/MPa] [n_patches]
-        lai: Leaf area index [m²/m²] [n_patches]
-        smp_mpa: Soil matric potential [MPa] [n_patches, nlayers]
-        evap: Potential evaporation from each layer [mmol H₂O/m² ground/s] 
-              [n_patches, nlayers]
-        totevap: Total potential evaporation [mmol H₂O/m² ground/s] [n_patches]
-        minlwp_SPA: Minimum leaf water potential [MPa]
-        
-    Returns:
-        Tuple containing:
-        - rsoil: Soil hydraulic resistance [MPa·s·m² leaf/mmol H₂O] [n_patches]
-        - psis: Weighted soil water potential [MPa] [n_patches]
-        - soil_et_loss: Fractional uptake from each layer [-] [n_patches, nlayers]
-    """
-    nlayers = evap.shape[1]
-    
-    # Line 221: Belowground resistance = LAI / conductance
-    rsoil = lai / rsoil_conductance
-    
-    # Lines 226-233: Weighted soil water potential and fractional uptake
-    psis_numerator = jnp.sum(smp_mpa * evap, axis=1)
-    
-    # Fractional uptake from each layer
-    totevap_safe = jnp.where(totevap > 0.0, totevap, 1.0)
-    soil_et_loss = evap / totevap_safe[:, None]
-    
-    # When totevap <= 0, set uniform distribution
-    uniform_fraction = 1.0 / nlayers
-    soil_et_loss = jnp.where(
-        totevap[:, None] > 0.0,
-        soil_et_loss,
-        uniform_fraction
-    )
-    
-    # Lines 235-239: Finalize weighted soil water potential
-    psis = jnp.where(
-        totevap > 0.0,
-        psis_numerator / totevap,
-        minlwp_SPA
-    )
-    
-    return rsoil, psis, soil_et_loss
+    root_radius_SPA  = MLpftcon.root_radius_SPA
+    root_density_SPA = MLpftcon.root_density_SPA
+    root_resist_SPA  = MLpftcon.root_resist_SPA
 
+    dz_col      = col.dz
+    nbedrock    = col.nbedrock
+    smp_l       = soilstate_inst.smp_l_col
+    hk_l        = soilstate_inst.hk_l_col
+    rootfr      = soilstate_inst.rootfr_patch
+    h2osoi_ice  = waterstatebulk_inst.h2osoi_ice_col
 
-def soil_resistance(
-    inputs: SoilResistanceInputs,
-) -> SoilResistanceOutputs:
-    """Calculate soil hydraulic resistance and water uptake.
-    
-    This function orchestrates the calculation of soil resistance to water flow
-    and the resulting water uptake from each soil layer. It combines the
-    per-layer resistance calculations with the final weighted potential.
-    
-    Fortran reference: MLPlantHydraulicsMod.F90, lines 85-247
-    
-    Args:
-        inputs: Input state containing soil properties and root distribution
-        
-    Returns:
-        SoilResistanceOutputs containing:
-            - rsoil: Soil hydraulic resistance [MPa·s·m² leaf/mmol H₂O] [n_patches]
-            - psis: Weighted soil water potential [MPa] [n_patches]
-            - soil_et_loss: Fractional uptake from each layer [-] [n_patches, n_layers]
-    """
-    n_layers = inputs.smp_l.shape[1]
-    
-    # Get PFT-specific parameters for each patch
-    root_radius_patch = inputs.root_radius[inputs.itype]
-    root_density_patch = inputs.root_density[inputs.itype]
-    root_resist_patch = inputs.root_resist[inputs.itype]
-    
-    # Map column-level arrays to patch level
-    patch_to_col = inputs.patch_to_column
-    dz_patch = inputs.dz[patch_to_col]
-    nbedrock_patch = inputs.nbedrock[patch_to_col]
-    smp_l_patch = inputs.smp_l[patch_to_col]
-    hk_l_patch = inputs.hk_l[patch_to_col]
-    h2osoi_ice_patch = inputs.h2osoi_ice[patch_to_col]
-    
-    # Calculate per-layer resistance and potential evaporation
-    rsoil_conductance, smp_mpa, evap, totevap = _calculate_soil_resistance_per_layer(
-        root_radius=root_radius_patch,
-        root_density=root_density_patch,
-        root_resist=root_resist_patch,
-        dz=dz_patch,
-        nbedrock=nbedrock_patch,
-        smp_l=smp_l_patch,
-        hk_l=hk_l_patch,
-        rootfr=inputs.rootfr,
-        h2osoi_ice=h2osoi_ice_patch,
-        root_biomass=inputs.root_biomass,
-        minlwp_SPA=inputs.minlwp_SPA,
-        n_layers=n_layers,
-    )
-    
-    # Finalize resistance and compute weighted potential
-    rsoil, psis, soil_et_loss = _finalize_soil_resistance(
-        rsoil_conductance=rsoil_conductance,
-        lai=inputs.lai,
-        smp_mpa=smp_mpa,
-        evap=evap,
-        totevap=totevap,
-        minlwp_SPA=inputs.minlwp_SPA,
-    )
-    
-    return SoilResistanceOutputs(
-        rsoil=rsoil,
-        psis=psis,
-        soil_et_loss=soil_et_loss,
+    lai          = mlcanopy_inst.lai_canopy
+    root_biomass = mlcanopy_inst.root_biomass_canopy
+    psis         = mlcanopy_inst.psis_soil
+    rsoil        = mlcanopy_inst.rsoil_soil
+    soil_et_loss = mlcanopy_inst.soil_et_loss_soil
+
+    for fp in range(1, num_filter + 1):                # Fortran: do fp = 1, num_filter
+        p = int(filter_patch[fp - 1])
+        c = int(patch.column[p])
+        pft = int(patch.itype[p])
+
+        nlayers = int(nbedrock[c])                     # Fortran: nlayers = nbedrock(c)
+
+        # Root cross-sectional area (m2 root) — Fortran line 111
+        rr = float(root_radius_SPA[pft])
+        root_cross_sec_area = pi * rr * rr
+
+        rsoil_sum: float = 0.0
+        totevap:   float = 0.0
+        smp_mpa  = [0.0] * (nlayers + 1)     # 1-based local
+        evap_arr = [0.0] * (nlayers + 1)     # 1-based local
+
+        for j in range(1, nlayers + 1):                # Fortran: do j = 1, nlayers
+
+            # Hydraulic conductivity and matric potential — Fortran lines 116-118
+            hk = float(hk_l[c, j]) * (1.0e-3 / head)         # mm/s → m2/s/MPa
+            hk = hk * denh2o / mmh2o * 1000.0                 # → mmol/m/s/MPa
+            smp_mpa[j] = float(smp_l[c, j]) * 1.0e-3 * head  # mm → MPa
+
+            # Root biomass density (g biomass/m3 soil) — Fortran lines 120-122
+            dz_j = float(dz_col[c, j])
+            rbd  = float(root_biomass[p]) * float(rootfr[p, j]) / dz_j
+            rbd  = max(rbd, 1.0e-10)                           # Fortran: max(..., 1e-10)
+
+            # Root length density (m root/m3 soil) — Fortran line 125
+            rld = rbd / (float(root_density_SPA[pft]) * root_cross_sec_area)
+
+            # Mean distance between roots (m) — Fortran line 128
+            root_dist = math.sqrt(1.0 / (rld * pi))
+
+            # Soil-to-root resistance (A23) — Fortran line 131
+            soilr1 = math.log(root_dist / rr) / (2.0 * pi * rld * dz_j * hk)
+
+            # Root-to-stem resistance (A24) — Fortran line 134
+            soilr2 = float(root_resist_SPA[pft]) / (rbd * dz_j)
+
+            # Belowground resistance — Fortran line 137
+            soilr_j = soilr1 + soilr2
+
+            # Sum conductances — Fortran line 141
+            rsoil_sum += 1.0 / soilr_j
+
+            # Maximum transpiration per layer (A26) — Fortran lines 145-148
+            evap_j = (smp_mpa[j] - minlwp_SPA) / soilr_j
+            evap_j = max(evap_j, 0.0)
+            if float(h2osoi_ice[c, j]) > 0.0:
+                evap_j = 0.0
+            evap_arr[j] = evap_j
+            totevap += evap_j
+
+        # Total belowground resistance (A25) — Fortran line 151
+        rsoil = rsoil.at[p].set(float(lai[p]) / rsoil_sum)
+
+        # Weighted soil water potential and fractional uptake — Fortran lines 153-168
+        psis_p: float = 0.0
+        for j in range(1, nlayers + 1):
+            psis_p += smp_mpa[j] * evap_arr[j]
+            if totevap > 0.0:
+                soil_et_loss = soil_et_loss.at[p, j].set(evap_arr[j] / totevap)
+            else:
+                soil_et_loss = soil_et_loss.at[p, j].set(1.0 / nlayers)
+
+        psis_p = psis_p / totevap if totevap > 0.0 else minlwp_SPA
+        psis = psis.at[p].set(psis_p)
+
+    return mlcanopy_inst._replace(
+        psis_soil         = psis,
+        rsoil_soil        = rsoil,
+        soil_et_loss_soil = soil_et_loss,
     )
 
 
-# =============================================================================
-# Leaf Water Potential Functions
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Public: leaf water potential
+# ---------------------------------------------------------------------------
 
-def leaf_water_potential(
-    inputs: LeafWaterPotentialInputs,
+def LeafWaterPotential(
+    num_filter: int,
+    filter_patch: Sequence[int],
     il: int,
-) -> LeafWaterPotentialOutputs:
-    """Calculate leaf water potential for sunlit or shaded leaves.
-    
-    This function implements a capacitance-based model for leaf water potential.
-    The leaf acts as a capacitor that buffers changes in water potential between
-    the soil water supply and transpiration demand.
-    
-    Key equation (lines 280-284):
-        dy/dt = (a - y) / b
-        
-    Where:
-        - y: Leaf water potential [MPa]
-        - a: Equilibrium potential [MPa]
-        - b: Time constant [s]
-        
-    The integrated solution over timestep dt is:
-        dy = (a - y0) * (1 - exp(-dt/b))
-    
-    Fortran reference: MLPlantHydraulicsMod.F90, lines 250-320
-    
-    Args:
-        inputs: Input data structure containing all required fields
-        il: Leaf index (0 for sunlit, 1 for shaded)
-        
-    Returns:
-        Updated leaf water potential
-        
-    Note:
-        - For layers with no plant area (dpai=0), lwp is set to 0
-        - The exponential decay prevents numerical instability
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
     """
-    # Extract current leaf water potential for this leaf type (line 280)
-    y0 = inputs.lwp[:, :, il]
-    
-    # Broadcast PFT-specific capacitance to patch dimension (line 282)
-    capac_patch = inputs.capac_SPA[inputs.itype]  # [n_patches]
-    capac_broadcast = capac_patch[:, jnp.newaxis]  # [n_patches, 1]
-    
-    # Calculate equilibrium potential (line 281)
-    # a = soil potential - gravitational head - transpiration/conductance
-    a = (inputs.psis[:, jnp.newaxis] 
-         - HEAD * inputs.zs 
-         - 1000.0 * inputs.trleaf[:, :, il] / inputs.lsc)
-    
-    # Calculate time constant (line 282)
-    # b = capacitance / conductance
-    b = capac_broadcast / inputs.lsc
-    
-    # Calculate change in leaf water potential (line 283)
-    # dy = (a - y0) * (1 - exp(-dt/b))
-    dy = (a - y0) * (1.0 - jnp.exp(-inputs.dtime_substep / b))
-    
-    # Update leaf water potential (line 284)
-    lwp_updated = y0 + dy
-    
-    # Set to zero where no vegetation (lines 279, 286)
-    has_vegetation = inputs.dpai > 0.0
-    lwp_updated = jnp.where(has_vegetation, lwp_updated, 0.0)
-    
-    # Update the full array
-    lwp_new = inputs.lwp.at[:, :, il].set(lwp_updated)
-    
-    return LeafWaterPotentialOutputs(lwp=lwp_new)
+    Calculate leaf water potential by analytically integrating the
+    first-order ODE over one multilayer canopy timestep.
 
+    Mirrors Fortran subroutine ``LeafWaterPotential`` (lines 167-200).
 
-# =============================================================================
-# Public API
-# =============================================================================
+    Reference: Bonan et al. (2014) *Geosci. Model Dev.*, 7, 2193-2222,
+    doi:10.5194/gmd-7-2193-2014, eqs. (A19)-(A20).
 
-__all__ = [
-    # Parameters
-    'PlantHydraulicsParams',
-    
-    # Input/Output types
-    'PlantResistanceInput',
-    'PlantResistanceOutput',
-    'SoilResistanceInputs',
-    'SoilResistanceOutputs',
-    'LeafWaterPotentialInputs',
-    'LeafWaterPotentialOutputs',
-    
-    # Functions
-    'plant_resistance',
-    'soil_resistance',
-    'leaf_water_potential',
-]
+    The ODE ``dy/dt = (a - y) / b`` has the analytical solution over
+    a full timestep ``dtime``:
+
+    .. code-block:: none
+
+        a  = psis(p) - head*zs(p,ic) - 1000*trleaf(p,ic,il)/lsc(p,ic)
+        b  = capac_SPA(pft) / lsc(p,ic)
+        dy = (a - y0) * (1 - exp(-dtime/b))
+        lwp(p,ic,il) = y0 + dy
+
+    where ``y0 = lwp_bef(p,ic,il)`` is the leaf water potential from
+    the previous timestep.  Layers with ``dpai == 0`` receive
+    ``lwp = 0``.
+
+    Args:
+        num_filter: Number of patches in the filter.
+        filter_patch: Patch index filter (1-based values).
+        il: Sunlit (``isun``) or shaded (``isha``) leaf index.
+        mlcanopy_inst: Canopy container; ``lwp_leaf`` is updated for
+            leaf type ``il``.
+
+    Returns:
+        Updated :class:`mlcanopy_type`.
+    """
+    head: float = denh2o * grav * 1.0e-6    # MPa/m
+
+    dtime = float(dtime_ml)                 # Multilayer canopy timestep (s)
+
+    capac_SPA = MLpftcon.capac_SPA
+
+    ncan    = mlcanopy_inst.ncan_canopy
+    psis    = mlcanopy_inst.psis_soil
+    dpai    = mlcanopy_inst.dpai_profile
+    zs      = mlcanopy_inst.zs_profile
+    lsc     = mlcanopy_inst.lsc_profile
+    trleaf  = mlcanopy_inst.trleaf_leaf
+    lwp_bef = mlcanopy_inst.lwp_bef_leaf
+    lwp     = mlcanopy_inst.lwp_leaf
+
+    for fp in range(1, num_filter + 1):                # Fortran: do fp = 1, num_filter
+        p   = int(filter_patch[fp - 1])
+        pft = int(patch.itype[p])
+        _ncan = int(ncan[p])
+
+        # Pre-extract patch scalars and layer profiles as numpy (one sync each)
+        _psis_p  = float(psis[p])
+        _capac_p = float(capac_SPA[pft])
+        _dpai    = np.asarray(dpai[p])
+        _zs      = np.asarray(zs[p])
+        _lsc     = np.asarray(lsc[p])
+        _trleaf  = np.asarray(trleaf[p, :, il])
+        _lwp_bef = np.asarray(lwp_bef[p, :, il])
+
+        ics      = np.arange(1, _ncan + 1)
+        dpai_v   = _dpai[ics]
+        has_pai  = dpai_v > 0.0
+
+        lsc_safe = np.where(has_pai, _lsc[ics], 1.0)   # avoid div-by-zero
+        a_v      = np.where(
+            has_pai,
+            _psis_p - head * _zs[ics] - 1000.0 * _trleaf[ics] / lsc_safe,
+            0.0,
+        )
+        b_v      = np.where(has_pai, _capac_p / lsc_safe, 1.0)
+        y0_v     = _lwp_bef[ics]
+        dy_v     = np.where(has_pai, (a_v - y0_v) * (1.0 - np.exp(-dtime / b_v)), 0.0)
+
+        _lwp_new      = np.zeros(_ncan + 2)
+        _lwp_new[ics] = np.where(has_pai, y0_v + dy_v, 0.0)
+
+        _sl = slice(1, _ncan + 1)
+        lwp = lwp.at[p, _sl, il].set(jnp.array(_lwp_new[_sl]))
+
+    return mlcanopy_inst._replace(lwp_leaf = lwp)

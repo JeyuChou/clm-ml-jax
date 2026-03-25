@@ -1,1538 +1,1900 @@
 """
-Multilayer Canopy Fluxes Module.
+JAX translation of MLCanopyFluxesMod Fortran module.
 
-Translated from CTSM's MLCanopyFluxesMod.F90 (lines 1-1082)
+Orchestrator for all multilayer canopy physics within a single CLM
+timestep.  Manages the filter of vegetated patches, initialisation,
+atmospheric-forcing interpolation, the Runge-Kutta loop, and the
+pass-back to CLM output variables.
 
-This module calculates multilayer canopy fluxes including turbulent exchange,
-photosynthesis, and energy balance for multiple canopy layers.
+Public routine
+--------------
+- :func:`MLCanopyFluxes`: main driver.
 
-Key features:
-    - Multi-layer canopy representation with sunlit/shaded leaf classes
-    - Sub-timestep integration for numerical stability
-    - Coupled leaf energy balance and photosynthesis
-    - Turbulent transfer within and above canopy
-    - Energy conservation checks at multiple levels
+Private helpers
+---------------
+- :func:`_GetCLMVar`: stub — copy CLM variables to mlcanopy container.
+- :func:`_MLTimeStepFluxIntegration`: stub — accumulate ML-step fluxes.
+- :func:`_CanopyFluxesDiagnostics`: stub — canopy-wide diagnostics.
 
-Physics:
-    The multilayer canopy model divides the canopy into vertical layers and
-    computes fluxes for sunlit and shaded leaves separately. This accounts for
-    vertical gradients in radiation, temperature, humidity, and CO2 that are
-    not captured by big-leaf models.
-    
-    Key equations:
-        Net radiation: Rn = SW↓ + LW↓ - SW↑ - LW↑
-        Energy balance: Rn = H + λE + G + S
-        Photosynthesis: A = f(PAR, T, CO2, H2O)
-        
-    Where:
-        H = sensible heat flux [W/m2]
-        λE = latent heat flux [W/m2]
-        G = ground heat flux [W/m2]
-        S = storage flux [W/m2]
-
-Constants:
-    NVAR1D = 12: Number of single-level fluxes to accumulate
-    NVAR2D = 4: Number of multi-level profile fluxes to accumulate
-    NVAR3D = 10: Number of multi-level leaf fluxes to accumulate
-
-Public functions:
-    - ml_canopy_fluxes: Main driver for canopy flux calculations
-    - sub_time_step_flux_integration: Integrate fluxes over sub-time steps
-    - canopy_fluxes_diagnostics: Sum leaf and soil fluxes and diagnostics
-
-Reference:
-    MLCanopyFluxesMod.F90 in CTSM source code
+Original Fortran module: MLCanopyFluxesMod
+Fortran lines 1-400
 """
 
-from typing import NamedTuple, Tuple, Callable
-import jax
+from __future__ import annotations
+
+from typing import Any, List, Sequence, Tuple
 import jax.numpy as jnp
+import numpy as np
 
-# ============================================================================
-# Module Constants (lines 34-36)
-# ============================================================================
+from clm_src_main.abortutils import endrun                           # noqa: F401
+from clm_src_main.clm_varctl import iulog                           # noqa: F401
+from clm_src_main.clm_varcon import grav, spval                    # noqa: F401
+from clm_src_main.clm_varpar import ivis, inir                     # noqa: F401
+from clm_src_utils.spmdMod import masterproc                        # noqa: F401
+from multilayer_canopy.MLclm_varcon import mmh2o, rgas                  # noqa: F401
+from multilayer_canopy.MLclm_varctl import (                            # noqa: F401
+    mlcan_to_clm, dtime_ml, ml_vert_init,
+    runge_kutta_type, nrk, met_type,
+)
+from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan, nleaf  # noqa: F401
+from clm_src_main.PatchType import patch                           # noqa: F401
 
-NVAR1D: int = 12  # Number of single-level fluxes to accumulate
-NVAR2D: int = 4   # Number of multi-level profile fluxes to accumulate
-NVAR3D: int = 10  # Number of multi-level leaf fluxes to accumulate
-
-# Leaf type indices
-ISUN: int = 0  # Sunlit leaf index
-ISHA: int = 1  # Shaded leaf index
-
-# Radiation band indices
-IVIS: int = 0  # Visible band index
-INIR: int = 1  # Near-infrared band index
-
-# Physical constants (from MLclm_varcon)
-MMH2O: float = 18.016e-3  # Molecular weight of water [kg/mol]
-MMDRY: float = 28.966e-3  # Molecular weight of dry air [kg/mol]
-CPD: float = 1005.0       # Specific heat of dry air [J/kg/K]
-CPW: float = 1846.0       # Specific heat of water vapor [J/kg/K]
-RGAS: float = 8.314       # Universal gas constant [J/K/mol]
-WIND_FORC_MIN: float = 0.1  # Minimum wind forcing [m/s]
-LAPSE_RATE: float = 0.006   # Temperature lapse rate [K/m]
-GRAV: float = 9.80616       # Gravitational acceleration [m/s2]
-PI: float = 3.14159265358979323846  # Pi
-SPVAL: float = 1.0e36       # Special value for uninitialized data
-
-# ============================================================================
-# Type Definitions
-# ============================================================================
-
-class Bounds(NamedTuple):
-    """Subgrid bounds structure.
-    
-    Attributes:
-        begp: Beginning patch index
-        endp: Ending patch index
-        begc: Beginning column index
-        endc: Ending column index
-        begg: Beginning gridcell index
-        endg: Ending gridcell index
-    """
-    begp: int
-    endp: int
-    begc: int
-    endc: int
-    begg: int
-    endg: int
+# Physics modules (translated elsewhere)
+from multilayer_canopy.MLCanopyNitrogenProfileMod import CanopyNitrogenProfile   # noqa: F401
+from multilayer_canopy.MLCanopyTurbulenceMod import CanopyTurbulence             # noqa: F401
+from multilayer_canopy.MLFluxProfileSolutionMod import FluxProfileSolution       # noqa: F401
+from multilayer_canopy.MLCanopyWaterMod import (                                 # noqa: F401
+    CanopyWettedFraction, CanopyInterception, CanopyEvaporation,
+)
+from multilayer_canopy.MLinitVerticalMod import (                               # noqa: F401
+    initVerticalProfiles, initVerticalStructure, getPADparameters,
+)
+from multilayer_canopy.MLLeafBoundaryLayerMod import LeafBoundaryLayer           # noqa: F401
+from multilayer_canopy.MLLeafHeatCapacityMod import LeafHeatCapacity             # noqa: F401
+from multilayer_canopy.MLLeafPhotosynthesisMod import LeafPhotosynthesis         # noqa: F401
+from multilayer_canopy.MLLongwaveRadiationMod import LongwaveRadiation           # noqa: F401
+from multilayer_canopy.MLPlantHydraulicsMod import (                            # noqa: F401
+    SoilResistance, PlantResistance, LeafWaterPotential,
+)
+from multilayer_canopy.MLSolarRadiationMod import SolarRadiation                 # noqa: F401
+from multilayer_canopy.MLWaterVaporMod import LatVap                             # noqa: F401
+from multilayer_canopy.MLGetAtmForcingMod import GetAtmForcing                   # noqa: F401
+from multilayer_canopy.MLRungeKuttaMod import RungeKuttaIni, RungeKuttaUpdate    # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type                   # noqa: F401
 
 
-class AtmosphericForcing(NamedTuple):
-    """Atmospheric forcing variables mapped to patch level.
-    
-    All arrays have shape [n_patches] unless otherwise noted.
-    """
-    tref: jnp.ndarray  # Reference height temperature [K]
-    qref: jnp.ndarray  # Reference height specific humidity [kg/kg]
-    pref: jnp.ndarray  # Reference height pressure [Pa]
-    lwsky: jnp.ndarray  # Downward longwave radiation [W/m2]
-    qflx_rain: jnp.ndarray  # Rain flux [mm/s]
-    qflx_snow: jnp.ndarray  # Snow flux [mm/s]
-    co2ref: jnp.ndarray  # CO2 concentration [umol/mol]
-    o2ref: jnp.ndarray  # O2 concentration [mmol/mol]
-    tacclim: jnp.ndarray  # 10-day running mean temperature [K]
-    uref: jnp.ndarray  # Reference wind speed [m/s]
-    swskyb_vis: jnp.ndarray  # Direct beam visible radiation [W/m2]
-    swskyd_vis: jnp.ndarray  # Diffuse visible radiation [W/m2]
-    swskyb_nir: jnp.ndarray  # Direct beam near-infrared radiation [W/m2]
-    swskyd_nir: jnp.ndarray  # Diffuse near-infrared radiation [W/m2]
+# ---------------------------------------------------------------------------
+# Module-level cache for Runge-Kutta coefficients (computed once on first
+# call, reused on all subsequent calls — mirrors Fortran module state).
+# ---------------------------------------------------------------------------
+_rk_ark = None
+_rk_brk = None
+_rk_crk = None
 
 
-class DerivedAtmosphericState(NamedTuple):
-    """Derived atmospheric properties at reference height.
-    
-    Attributes:
-        eref: Vapor pressure at reference height [Pa] [n_patches]
-        rhomol: Molar density of air [mol/m3] [n_patches]
-        rhoair: Mass density of air [kg/m3] [n_patches]
-        mmair: Molecular mass of air [kg/mol] [n_patches]
-        cpair: Specific heat of air [J/kg/K] [n_patches]
-        thref: Potential temperature at reference height [K] [n_patches]
-        thvref: Virtual potential temperature at reference height [K] [n_patches]
-    """
-    eref: jnp.ndarray
-    rhomol: jnp.ndarray
-    rhoair: jnp.ndarray
-    mmair: jnp.ndarray
-    cpair: jnp.ndarray
-    thref: jnp.ndarray
-    thvref: jnp.ndarray
+# ---------------------------------------------------------------------------
+# Public: MLCanopyFluxes
+# ---------------------------------------------------------------------------
 
-
-class CanopyProfileState(NamedTuple):
-    """Updated canopy profile variables.
-    
-    Attributes:
-        lai: Total leaf area index [m2/m2] [n_patches]
-        sai: Total stem area index [m2/m2] [n_patches]
-        dlai: Leaf area index by layer [m2/m2] [n_patches, n_canopy_layers]
-        dsai: Stem area index by layer [m2/m2] [n_patches, n_canopy_layers]
-        dpai: Plant area index by layer [m2/m2] [n_patches, n_canopy_layers]
-    """
-    lai: jnp.ndarray
-    sai: jnp.ndarray
-    dlai: jnp.ndarray
-    dsai: jnp.ndarray
-    dpai: jnp.ndarray
-
-
-class SubStepState(NamedTuple):
-    """Saved state variables for sub-stepping.
-    
-    Attributes:
-        tg_bef: Ground temperature before sub-step [K] [n_patches]
-        tleaf_bef: Leaf temperature before sub-step [K] [n_patches, n_canopy_layers, 2]
-        tair_bef: Air temperature before sub-step [K] [n_patches, n_canopy_layers]
-        eair_bef: Air vapor pressure before sub-step [Pa] [n_patches, n_canopy_layers]
-        cair_bef: Air CO2 concentration before sub-step [umol/mol] [n_patches, n_canopy_layers]
-    """
-    tg_bef: jnp.ndarray
-    tleaf_bef: jnp.ndarray
-    tair_bef: jnp.ndarray
-    eair_bef: jnp.ndarray
-    cair_bef: jnp.ndarray
-
-
-class MLCanopyFluxesState(NamedTuple):
-    """State for multilayer canopy flux calculations.
-    
-    Attributes:
-        rnleaf_sun: Sunlit leaf net radiation [W/m2] [n_patches, n_canopy_layers]
-        rnleaf_shade: Shaded leaf net radiation [W/m2] [n_patches, n_canopy_layers]
-        rnsoi: Soil net radiation [W/m2] [n_patches]
-        rhg: Relative humidity in soil airspace [-] [n_patches]
-        flux_accumulator: Accumulated fluxes [n_patches, n_flux_vars]
-        flux_accumulator_profile: Accumulated profile fluxes [n_patches, n_canopy_layers, n_profile_vars]
-        flux_accumulator_leaf: Accumulated leaf fluxes [n_patches, n_canopy_layers, n_leaf_vars]
-    """
-    rnleaf_sun: jnp.ndarray
-    rnleaf_shade: jnp.ndarray
-    rnsoi: jnp.ndarray
-    rhg: jnp.ndarray
-    flux_accumulator: jnp.ndarray
-    flux_accumulator_profile: jnp.ndarray
-    flux_accumulator_leaf: jnp.ndarray
-
-
-class FluxAccumulators(NamedTuple):
-    """Container for flux accumulator arrays.
-    
-    Attributes:
-        flux_1d: Single-level flux accumulator [n_patches, nvar1d]
-        flux_2d: Multi-level profile flux accumulator [n_patches, n_levels, nvar2d]
-        flux_3d: Multi-level leaf flux accumulator [n_patches, n_levels, n_leaf_types, nvar3d]
-    """
-    flux_1d: jnp.ndarray
-    flux_2d: jnp.ndarray
-    flux_3d: jnp.ndarray
-
-
-class CanopyFluxes(NamedTuple):
-    """Current canopy flux values to be accumulated.
-    
-    Attributes:
-        # Scalar fluxes (1D)
-        ustar: Friction velocity [m/s] [n_patches]
-        lwup: Upward longwave radiation above canopy [W/m2] [n_patches]
-        lwsoi: Absorbed longwave radiation at ground [W/m2] [n_patches]
-        rnsoi: Net radiation at ground [W/m2] [n_patches]
-        shsoi: Sensible heat flux at ground [W/m2] [n_patches]
-        lhsoi: Latent heat flux at ground [W/m2] [n_patches]
-        etsoi: Water vapor flux at ground [mol H2O/m2/s] [n_patches]
-        gsoi: Soil heat flux [W/m2] [n_patches]
-        gac0: Aerodynamic conductance for soil [mol/m2/s] [n_patches]
-        qflx_intr: Intercepted precipitation [kg H2O/m2/s] [n_patches]
-        qflx_tflrain: Rain throughfall [kg H2O/m2/s] [n_patches]
-        qflx_tflsnow: Snow throughfall [kg H2O/m2/s] [n_patches]
-        
-        # Profile fluxes (2D)
-        shair: Air sensible heat flux [W/m2] [n_patches, n_levels]
-        etair: Air water vapor flux [mol H2O/m2/s] [n_patches, n_levels]
-        stair: Air storage heat flux [W/m2] [n_patches, n_levels]
-        gac: Aerodynamic conductance [mol/m2/s] [n_patches, n_levels]
-        
-        # Leaf fluxes (3D)
-        lwleaf: Leaf absorbed longwave [W/m2 leaf] [n_patches, n_levels, n_leaf_types]
-        rnleaf: Leaf net radiation [W/m2 leaf] [n_patches, n_levels, n_leaf_types]
-        shleaf: Leaf sensible heat [W/m2 leaf] [n_patches, n_levels, n_leaf_types]
-        lhleaf: Leaf latent heat [W/m2 leaf] [n_patches, n_levels, n_leaf_types]
-        trleaf: Leaf transpiration [mol H2O/m2 leaf/s] [n_patches, n_levels, n_leaf_types]
-        evleaf: Leaf evaporation [mol H2O/m2 leaf/s] [n_patches, n_levels, n_leaf_types]
-        stleaf: Leaf storage heat [W/m2 leaf] [n_patches, n_levels, n_leaf_types]
-        anet: Leaf net photosynthesis [umol CO2/m2 leaf/s] [n_patches, n_levels, n_leaf_types]
-        agross: Leaf gross photosynthesis [umol CO2/m2 leaf/s] [n_patches, n_levels, n_leaf_types]
-        gs: Leaf stomatal conductance [mol H2O/m2 leaf/s] [n_patches, n_levels, n_leaf_types]
-    """
-    # Scalar fluxes
-    ustar: jnp.ndarray
-    lwup: jnp.ndarray
-    lwsoi: jnp.ndarray
-    rnsoi: jnp.ndarray
-    shsoi: jnp.ndarray
-    lhsoi: jnp.ndarray
-    etsoi: jnp.ndarray
-    gsoi: jnp.ndarray
-    gac0: jnp.ndarray
-    qflx_intr: jnp.ndarray
-    qflx_tflrain: jnp.ndarray
-    qflx_tflsnow: jnp.ndarray
-    
-    # Profile fluxes
-    shair: jnp.ndarray
-    etair: jnp.ndarray
-    stair: jnp.ndarray
-    gac: jnp.ndarray
-    
-    # Leaf fluxes
-    lwleaf: jnp.ndarray
-    rnleaf: jnp.ndarray
-    shleaf: jnp.ndarray
-    lhleaf: jnp.ndarray
-    trleaf: jnp.ndarray
-    evleaf: jnp.ndarray
-    stleaf: jnp.ndarray
-    anet: jnp.ndarray
-    agross: jnp.ndarray
-    gs: jnp.ndarray
-
-
-class LeafFluxProfiles(NamedTuple):
-    """Weighted mean leaf fluxes and source/sink fluxes.
-    
-    All arrays have shape [n_patches, n_canopy_layers].
-    """
-    # Weighted mean leaf fluxes (per unit leaf area)
-    lwleaf_mean: jnp.ndarray  # Absorbed longwave radiation [W/m2 leaf]
-    swleaf_mean_vis: jnp.ndarray  # Absorbed solar radiation VIS [W/m2 leaf]
-    swleaf_mean_nir: jnp.ndarray  # Absorbed solar radiation NIR [W/m2 leaf]
-    rnleaf_mean: jnp.ndarray  # Net radiation [W/m2 leaf]
-    stleaf_mean: jnp.ndarray  # Storage heat flux [W/m2 leaf]
-    shleaf_mean: jnp.ndarray  # Sensible heat flux [W/m2 leaf]
-    lhleaf_mean: jnp.ndarray  # Latent heat flux [W/m2 leaf]
-    etleaf_mean: jnp.ndarray  # Water vapor flux [mol H2O/m2 leaf/s]
-    fco2_mean: jnp.ndarray  # Net photosynthesis [umol CO2/m2 leaf/s]
-    apar_mean: jnp.ndarray  # Absorbed PAR [umol photon/m2 leaf/s]
-    gs_mean: jnp.ndarray  # Stomatal conductance [mol H2O/m2 leaf/s]
-    tleaf_mean: jnp.ndarray  # Leaf temperature [K]
-    lwp_mean: jnp.ndarray  # Leaf water potential [MPa]
-    
-    # Source/sink fluxes (per unit ground area)
-    lwsrc: jnp.ndarray  # Absorbed longwave radiation [W/m2]
-    swsrc_vis: jnp.ndarray  # Absorbed solar radiation VIS [W/m2]
-    swsrc_nir: jnp.ndarray  # Absorbed solar radiation NIR [W/m2]
-    rnsrc: jnp.ndarray  # Net radiation [W/m2]
-    stsrc: jnp.ndarray  # Storage heat flux [W/m2]
-    shsrc: jnp.ndarray  # Sensible heat flux [W/m2]
-    lhsrc: jnp.ndarray  # Latent heat flux [W/m2]
-    etsrc: jnp.ndarray  # Water vapor flux [mol H2O/m2/s]
-    fco2src: jnp.ndarray  # CO2 flux [umol CO2/m2/s]
-
-
-class EnergyBalanceState(NamedTuple):
-    """State after energy balance checks and turbulent flux calculation.
-    
-    Attributes:
-        vcmax25veg: Canopy-integrated vcmax25 [umol/m2/s] [n_patches]
-        shflx: Total sensible heat flux [W/m2] [n_patches]
-        etflx: Total evapotranspiration flux [kg/m2/s] [n_patches]
-        lhflx: Total latent heat flux [W/m2] [n_patches]
-        stflx: Total storage flux including air [W/m2] [n_patches]
-        rnet: Net radiation [W/m2] [n_patches]
-    """
-    vcmax25veg: jnp.ndarray
-    shflx: jnp.ndarray
-    etflx: jnp.ndarray
-    lhflx: jnp.ndarray
-    stflx: jnp.ndarray
-    rnet: jnp.ndarray
-
-
-class SunShadeFluxes(NamedTuple):
-    """Aggregated sunlit and shaded canopy fluxes.
-    
-    Attributes:
-        laisun: Sunlit leaf area index [m2/m2]
-        laisha: Shaded leaf area index [m2/m2]
-        lwvegsun: Sunlit longwave radiation [W/m2]
-        lwvegsha: Shaded longwave radiation [W/m2]
-        shvegsun: Sunlit sensible heat flux [W/m2]
-        shvegsha: Shaded sensible heat flux [W/m2]
-        lhvegsun: Sunlit latent heat flux [W/m2]
-        lhvegsha: Shaded latent heat flux [W/m2]
-        etvegsun: Sunlit evapotranspiration [mm/s]
-        etvegsha: Shaded evapotranspiration [mm/s]
-        gppvegsun: Sunlit gross primary production [umol CO2/m2/s]
-        gppvegsha: Shaded gross primary production [umol CO2/m2/s]
-        vcmax25sun: Sunlit Vcmax at 25C [umol/m2/s]
-        vcmax25sha: Shaded Vcmax at 25C [umol/m2/s]
-        gsvegsun: Sunlit stomatal conductance [mol/m2/s]
-        gsvegsha: Shaded stomatal conductance [mol/m2/s]
-        windveg: Mean canopy wind speed [m/s]
-        windvegsun: Sunlit canopy wind speed [m/s]
-        windvegsha: Shaded canopy wind speed [m/s]
-        tlveg: Mean leaf temperature [K]
-        tlvegsun: Sunlit leaf temperature [K]
-        tlvegsha: Shaded leaf temperature [K]
-        taveg: Mean air temperature [K]
-        tavegsun: Sunlit air temperature [K]
-        tavegsha: Shaded air temperature [K]
-    """
-    laisun: jnp.ndarray
-    laisha: jnp.ndarray
-    lwvegsun: jnp.ndarray
-    lwvegsha: jnp.ndarray
-    shvegsun: jnp.ndarray
-    shvegsha: jnp.ndarray
-    lhvegsun: jnp.ndarray
-    lhvegsha: jnp.ndarray
-    etvegsun: jnp.ndarray
-    etvegsha: jnp.ndarray
-    gppvegsun: jnp.ndarray
-    gppvegsha: jnp.ndarray
-    vcmax25sun: jnp.ndarray
-    vcmax25sha: jnp.ndarray
-    gsvegsun: jnp.ndarray
-    gsvegsha: jnp.ndarray
-    windveg: jnp.ndarray
-    windvegsun: jnp.ndarray
-    windvegsha: jnp.ndarray
-    tlveg: jnp.ndarray
-    tlvegsun: jnp.ndarray
-    tlvegsha: jnp.ndarray
-    taveg: jnp.ndarray
-    tavegsun: jnp.ndarray
-    tavegsha: jnp.ndarray
-
-
-class WaterStressDiagnostics(NamedTuple):
-    """Water stress diagnostic outputs.
-    
-    Attributes:
-        fracminlwp: Fraction of canopy water stressed [-] [n_patches]
-    """
-    fracminlwp: jnp.ndarray
-
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
-def calculate_derived_atmospheric_properties(
-    qref: jnp.ndarray,
-    pref: jnp.ndarray,
-    tref: jnp.ndarray,
-    zref: jnp.ndarray,
-    mmh2o: float = MMH2O,
-    mmdry: float = MMDRY,
-    rgas: float = RGAS,
-    cpd: float = CPD,
-    cpw: float = CPW,
-    lapse_rate: float = LAPSE_RATE,
-) -> DerivedAtmosphericState:
-    """Calculate derived atmospheric properties from reference values.
-    
-    Fortran source: lines 372-379
-    
-    Args:
-        qref: Specific humidity at reference height [kg/kg] [n_patches]
-        pref: Pressure at reference height [Pa] [n_patches]
-        tref: Temperature at reference height [K] [n_patches]
-        zref: Reference height [m] [n_patches]
-        mmh2o: Molecular mass of water [kg/mol]
-        mmdry: Molecular mass of dry air [kg/mol]
-        rgas: Universal gas constant [J/K/mol]
-        cpd: Specific heat of dry air [J/kg/K]
-        cpw: Specific heat of water vapor [J/kg/K]
-        lapse_rate: Temperature lapse rate [K/m]
-        
-    Returns:
-        DerivedAtmosphericState with all derived properties
-    """
-    # Vapor pressure at reference height
-    eref = qref * pref / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * qref)
-    
-    # Molar density of air
-    rhomol = pref / (rgas * tref)
-    
-    # Mass density of air
-    rhoair = rhomol * mmdry * (1.0 - (1.0 - mmh2o / mmdry) * eref / pref)
-    
-    # Molecular mass of moist air
-    mmair = rhoair / rhomol
-    
-    # Specific heat of moist air
-    cpair = cpd * (1.0 + (cpw / cpd - 1.0) * qref) * mmair
-    
-    # Potential temperature at reference height
-    thref = tref + lapse_rate * zref
-    
-    # Virtual potential temperature
-    thvref = thref * (1.0 + 0.61 * qref)
-    
-    return DerivedAtmosphericState(
-        eref=eref,
-        rhomol=rhomol,
-        rhoair=rhoair,
-        mmair=mmair,
-        cpair=cpair,
-        thref=thref,
-        thvref=thvref,
-    )
-
-
-def update_canopy_profile(
-    elai: jnp.ndarray,
-    esai: jnp.ndarray,
-    dlai_frac: jnp.ndarray,
-    dsai_frac: jnp.ndarray,
-    ncan: jnp.ndarray,
-) -> CanopyProfileState:
-    """Update leaf and stem area profiles for current time step.
-    
-    Fortran source: lines 383-403
-    
-    Args:
-        elai: Exposed leaf area index from CLM [m2/m2] [n_patches]
-        esai: Exposed stem area index from CLM [m2/m2] [n_patches]
-        dlai_frac: Fraction of LAI in each layer [fraction] [n_patches, n_canopy_layers]
-        dsai_frac: Fraction of SAI in each layer [fraction] [n_patches, n_canopy_layers]
-        ncan: Number of canopy layers [integer] [n_patches]
-        
-    Returns:
-        CanopyProfileState with updated profiles
-    """
-    # Get values for current time step from CLM
-    lai = elai
-    sai = esai
-    
-    # Vertical profiles
-    dlai = dlai_frac * lai[:, jnp.newaxis]
-    dsai = dsai_frac * sai[:, jnp.newaxis]
-    dpai = dlai + dsai
-    
-    return CanopyProfileState(
-        lai=lai,
-        sai=sai,
-        dlai=dlai,
-        dsai=dsai,
-        dpai=dpai,
-    )
-
-
-def initialize_substep_state(
-    tg: jnp.ndarray,
-    tleaf: jnp.ndarray,
-    tair: jnp.ndarray,
-    eair: jnp.ndarray,
-    cair: jnp.ndarray,
-) -> SubStepState:
-    """Save current state variables before sub-stepping.
-    
-    Fortran source: lines 420-428
-    
-    Args:
-        tg: Ground temperature [K] [n_patches]
-        tleaf: Leaf temperature [K] [n_patches, n_canopy_layers, 2]
-        tair: Air temperature [K] [n_patches, n_canopy_layers]
-        eair: Air vapor pressure [Pa] [n_patches, n_canopy_layers]
-        cair: Air CO2 concentration [umol/mol] [n_patches, n_canopy_layers]
-        
-    Returns:
-        SubStepState with saved values
-    """
-    return SubStepState(
-        tg_bef=tg,
-        tleaf_bef=tleaf,
-        tair_bef=tair,
-        eair_bef=eair,
-        cair_bef=cair,
-    )
-
-
-def compute_net_radiation(
-    swleaf_sun_vis: jnp.ndarray,
-    swleaf_sun_nir: jnp.ndarray,
-    swleaf_shade_vis: jnp.ndarray,
-    swleaf_shade_nir: jnp.ndarray,
-    lwleaf_sun: jnp.ndarray,
-    lwleaf_shade: jnp.ndarray,
-    swsoi_vis: jnp.ndarray,
-    swsoi_nir: jnp.ndarray,
-    lwsoi: jnp.ndarray,
-    ncan: jnp.ndarray,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Compute net radiation at each canopy layer and ground.
-    
-    From lines 451-458 of MLCanopyFluxesMod.F90.
-    
-    Args:
-        swleaf_sun_vis: Sunlit leaf absorbed SW visible [W/m2] [n_patches, n_canopy_layers]
-        swleaf_sun_nir: Sunlit leaf absorbed SW near-IR [W/m2] [n_patches, n_canopy_layers]
-        swleaf_shade_vis: Shaded leaf absorbed SW visible [W/m2] [n_patches, n_canopy_layers]
-        swleaf_shade_nir: Shaded leaf absorbed SW near-IR [W/m2] [n_patches, n_canopy_layers]
-        lwleaf_sun: Sunlit leaf absorbed LW [W/m2] [n_patches, n_canopy_layers]
-        lwleaf_shade: Shaded leaf absorbed LW [W/m2] [n_patches, n_canopy_layers]
-        swsoi_vis: Soil absorbed SW visible [W/m2] [n_patches]
-        swsoi_nir: Soil absorbed SW near-IR [W/m2] [n_patches]
-        lwsoi: Soil absorbed LW [W/m2] [n_patches]
-        ncan: Number of canopy layers per patch [n_patches]
-        
-    Returns:
-        rnleaf_sun: Sunlit leaf net radiation [W/m2] [n_patches, n_canopy_layers]
-        rnleaf_shade: Shaded leaf net radiation [W/m2] [n_patches, n_canopy_layers]
-        rnsoi: Soil net radiation [W/m2] [n_patches]
-    """
-    # Net radiation for sunlit leaves
-    rnleaf_sun = swleaf_sun_vis + swleaf_sun_nir + lwleaf_sun
-    
-    # Net radiation for shaded leaves
-    rnleaf_shade = swleaf_shade_vis + swleaf_shade_nir + lwleaf_shade
-    
-    # Net radiation for soil
-    rnsoi = swsoi_vis + swsoi_nir + lwsoi
-    
-    return rnleaf_sun, rnleaf_shade, rnsoi
-
-
-def compute_soil_relative_humidity(
-    smp_l: jnp.ndarray,
-    t_soisno: jnp.ndarray,
-    patch_to_column: jnp.ndarray,
-    grav: float = GRAV,
-    mmh2o: float = MMH2O,
-    rgas: float = RGAS,
-) -> jnp.ndarray:
-    """Compute relative humidity in soil airspace.
-    
-    From lines 477-480 of MLCanopyFluxesMod.F90.
-    
-    Args:
-        smp_l: Soil matric potential [mm] [n_columns]
-        t_soisno: Soil temperature [K] [n_columns]
-        patch_to_column: Mapping from patch to column index [n_patches]
-        grav: Gravitational acceleration [m/s2]
-        mmh2o: Molecular weight of water [kg/mol]
-        rgas: Universal gas constant [J/K/mol]
-        
-    Returns:
-        rhg: Relative humidity in soil airspace [-] [n_patches]
-    """
-    # Map column variables to patches
-    smp_l_patch = smp_l[patch_to_column, 0]  # First soil layer
-    t_soisno_patch = t_soisno[patch_to_column, 0]  # First soil layer
-    
-    # Convert smp_l from mm to m
-    smp_l_m = smp_l_patch * 1.0e-3
-    
-    # Compute relative humidity using Kelvin equation
-    exponent = (grav * mmh2o * smp_l_m) / (rgas * t_soisno_patch)
-    rhg = jnp.exp(exponent)
-    
-    return rhg
-
-
-# ============================================================================
-# Sub-Time Step Flux Integration
-# ============================================================================
-
-def accumulate_fluxes(
-    accumulators: FluxAccumulators,
-    fluxes: CanopyFluxes,
-    niter: int,
-    nvar1d: int = NVAR1D,
-    nvar2d: int = NVAR2D,
-    nvar3d: int = NVAR3D,
-) -> FluxAccumulators:
-    """Accumulate fluxes over sub-time steps.
-    
-    Fortran source: lines 594-669
-    
-    Args:
-        accumulators: Current flux accumulator arrays
-        fluxes: Current flux values to accumulate
-        niter: Current iteration number (1-based)
-        nvar1d: Expected number of 1D flux variables
-        nvar2d: Expected number of 2D flux variables
-        nvar3d: Expected number of 3D flux variables
-        
-    Returns:
-        Updated flux accumulator arrays
-    """
-    # Initialize accumulators on first iteration
-    is_first_iter = (niter == 1)
-    
-    # Pack 1D fluxes into array [n_patches, nvar1d]
-    flux_1d_current = jnp.stack([
-        fluxes.ustar,
-        fluxes.lwup,
-        fluxes.lwsoi,
-        fluxes.rnsoi,
-        fluxes.shsoi,
-        fluxes.lhsoi,
-        fluxes.etsoi,
-        fluxes.gsoi,
-        fluxes.gac0,
-        fluxes.qflx_intr,
-        fluxes.qflx_tflrain,
-        fluxes.qflx_tflsnow,
-    ], axis=-1)
-    
-    # Pack 2D profile fluxes
-    flux_2d_current = jnp.stack([
-        fluxes.shair,
-        fluxes.etair,
-        fluxes.stair,
-        fluxes.gac,
-    ], axis=-1)
-    
-    # Pack 3D leaf fluxes
-    flux_3d_current = jnp.stack([
-        fluxes.lwleaf,
-        fluxes.rnleaf,
-        fluxes.shleaf,
-        fluxes.lhleaf,
-        fluxes.trleaf,
-        fluxes.evleaf,
-        fluxes.stleaf,
-        fluxes.anet,
-        fluxes.agross,
-        fluxes.gs,
-    ], axis=-1)
-    
-    # Initialize or accumulate
-    flux_1d_new = jnp.where(
-        is_first_iter,
-        flux_1d_current,
-        accumulators.flux_1d + flux_1d_current
-    )
-    
-    flux_2d_new = jnp.where(
-        is_first_iter,
-        flux_2d_current,
-        accumulators.flux_2d + flux_2d_current
-    )
-    
-    flux_3d_new = jnp.where(
-        is_first_iter,
-        flux_3d_current,
-        accumulators.flux_3d + flux_3d_current
-    )
-    
-    return FluxAccumulators(
-        flux_1d=flux_1d_new,
-        flux_2d=flux_2d_new,
-        flux_3d=flux_3d_new,
-    )
-
-
-def sub_time_step_flux_integration(
-    niter: int,
-    num_sub_steps: int,
-    num_filter: int,
-    filter_indices: jnp.ndarray,
-    flux_accumulator: jnp.ndarray,
-    flux_accumulator_profile: jnp.ndarray,
-    flux_accumulator_leaf: jnp.ndarray,
-    current_fluxes: CanopyFluxes,
-) -> FluxAccumulators:
-    """Integrate fluxes over model sub-time steps.
-    
-    Fortran source: lines 568-724
-    
-    Args:
-        niter: Current sub-time step iteration [scalar]
-        num_sub_steps: Total number of sub-time steps [scalar]
-        num_filter: Number of patches in filter [scalar]
-        filter_indices: Patch filter indices [n_filter]
-        flux_accumulator: Single-level flux accumulator [n_patches, n_fluxes]
-        flux_accumulator_profile: Multi-level profile flux accumulator 
-            [n_patches, n_levels, n_fluxes]
-        flux_accumulator_leaf: Multi-level leaf flux accumulator 
-            [n_patches, n_levels, n_leaf_types, n_fluxes]
-        current_fluxes: Current flux values to accumulate
-        
-    Returns:
-        FluxAccumulators containing updated accumulator arrays
-    """
-    accumulators = FluxAccumulators(
-        flux_1d=flux_accumulator,
-        flux_2d=flux_accumulator_profile,
-        flux_3d=flux_accumulator_leaf,
-    )
-    
-    # Accumulate current fluxes
-    updated_accumulators = accumulate_fluxes(
-        accumulators=accumulators,
-        fluxes=current_fluxes,
-        niter=niter,
-    )
-    
-    # Average on final iteration
-    if niter == num_sub_steps:
-        divisor = float(num_sub_steps)
-        updated_accumulators = FluxAccumulators(
-            flux_1d=updated_accumulators.flux_1d / divisor,
-            flux_2d=updated_accumulators.flux_2d / divisor,
-            flux_3d=updated_accumulators.flux_3d / divisor,
-        )
-    
-    return updated_accumulators
-
-
-# ============================================================================
-# Canopy Fluxes Diagnostics
-# ============================================================================
-
-def calculate_leaf_flux_profiles(
-    dpai: jnp.ndarray,
-    fracsun: jnp.ndarray,
-    fwet: jnp.ndarray,
-    fdry: jnp.ndarray,
-    lwleaf: jnp.ndarray,
-    swleaf_vis: jnp.ndarray,
-    swleaf_nir: jnp.ndarray,
-    rnleaf: jnp.ndarray,
-    stleaf: jnp.ndarray,
-    shleaf: jnp.ndarray,
-    lhleaf: jnp.ndarray,
-    evleaf: jnp.ndarray,
-    trleaf: jnp.ndarray,
-    anet: jnp.ndarray,
-    apar: jnp.ndarray,
-    gs: jnp.ndarray,
-    tleaf_mean: jnp.ndarray,
-    tleaf: jnp.ndarray,
-    lwp: jnp.ndarray,
-    isun: int = ISUN,
-    isha: int = ISHA,
-) -> LeafFluxProfiles:
-    """Calculate weighted mean leaf fluxes and source/sink fluxes.
-    
-    Fortran source: lines 760-902
-    
-    Args:
-        dpai: Layer plant area index [n_patches, n_layers]
-        fracsun: Sunlit fraction of layer [n_patches, n_layers]
-        fwet: Wet fraction [n_patches, n_layers]
-        fdry: Dry fraction [n_patches, n_layers]
-        lwleaf: Leaf longwave radiation [n_patches, n_layers, 2]
-        swleaf_vis: Leaf SW visible [n_patches, n_layers, 2]
-        swleaf_nir: Leaf SW near-IR [n_patches, n_layers, 2]
-        rnleaf: Leaf net radiation [n_patches, n_layers, 2]
-        stleaf: Leaf storage heat [n_patches, n_layers, 2]
-        shleaf: Leaf sensible heat [n_patches, n_layers, 2]
-        lhleaf: Leaf latent heat [n_patches, n_layers, 2]
-        evleaf: Leaf evaporation [n_patches, n_layers, 2]
-        trleaf: Leaf transpiration [n_patches, n_layers, 2]
-        anet: Net photosynthesis [n_patches, n_layers, 2]
-        apar: Absorbed PAR [n_patches, n_layers, 2]
-        gs: Stomatal conductance [n_patches, n_layers, 2]
-        tleaf_mean: Mean leaf temperature [n_patches, n_layers]
-        tleaf: Leaf temperature [n_patches, n_layers, 2]
-        lwp: Leaf water potential [n_patches, n_layers, 2]
-        isun: Index for sunlit
-        isha: Index for shaded
-        
-    Returns:
-        LeafFluxProfiles containing weighted means and source fluxes
-    """
-    # Extract sunlit and shaded components
-    lwleaf_sun = lwleaf[:, :, isun]
-    lwleaf_sha = lwleaf[:, :, isha]
-    swleaf_vis_sun = swleaf_vis[:, :, isun]
-    swleaf_vis_sha = swleaf_vis[:, :, isha]
-    swleaf_nir_sun = swleaf_nir[:, :, isun]
-    swleaf_nir_sha = swleaf_nir[:, :, isha]
-    rnleaf_sun = rnleaf[:, :, isun]
-    rnleaf_sha = rnleaf[:, :, isha]
-    stleaf_sun = stleaf[:, :, isun]
-    stleaf_sha = stleaf[:, :, isha]
-    shleaf_sun = shleaf[:, :, isun]
-    shleaf_sha = shleaf[:, :, isha]
-    lhleaf_sun = lhleaf[:, :, isun]
-    lhleaf_sha = lhleaf[:, :, isha]
-    trleaf_sun = trleaf[:, :, isun]
-    trleaf_sha = trleaf[:, :, isha]
-    evleaf_sun = evleaf[:, :, isun]
-    evleaf_sha = evleaf[:, :, isha]
-    anet_sun = anet[:, :, isun]
-    anet_sha = anet[:, :, isha]
-    apar_sun = apar[:, :, isun]
-    apar_sha = apar[:, :, isha]
-    gs_sun = gs[:, :, isun]
-    gs_sha = gs[:, :, isha]
-    tleaf_sun = tleaf[:, :, isun]
-    tleaf_sha = tleaf[:, :, isha]
-    lwp_sun = lwp[:, :, isun]
-    lwp_sha = lwp[:, :, isha]
-    
-    # Compute fraction shaded
-    fracsha = 1.0 - fracsun
-    
-    # Calculate weighted mean leaf fluxes
-    lwleaf_mean = lwleaf_sun * fracsun + lwleaf_sha * fracsha
-    swleaf_mean_vis = swleaf_vis_sun * fracsun + swleaf_vis_sha * fracsha
-    swleaf_mean_nir = swleaf_nir_sun * fracsun + swleaf_nir_sha * fracsha
-    rnleaf_mean = rnleaf_sun * fracsun + rnleaf_sha * fracsha
-    stleaf_mean = stleaf_sun * fracsun + stleaf_sha * fracsha
-    shleaf_mean = shleaf_sun * fracsun + shleaf_sha * fracsha
-    lhleaf_mean = lhleaf_sun * fracsun + lhleaf_sha * fracsha
-    
-    # Total evapotranspiration
-    etleaf_mean = ((evleaf_sun + trleaf_sun) * fracsun + 
-                   (evleaf_sha + trleaf_sha) * fracsha)
-    
-    # Net photosynthesis
-    fco2_mean = anet_sun * fracsun + anet_sha * fracsha
-    
-    # Other leaf state variables
-    apar_mean = apar_sun * fracsun + apar_sha * fracsha
-    gs_mean = gs_sun * fracsun + gs_sha * fracsha
-    tleaf_mean_out = tleaf_sun * fracsun + tleaf_sha * fracsha
-    lwp_mean = lwp_sun * fracsun + lwp_sha * fracsha
-    
-    # Calculate source fluxes (scale by PAI)
-    lwsrc = lwleaf_mean * dpai
-    swsrc_vis = swleaf_mean_vis * dpai
-    swsrc_nir = swleaf_mean_nir * dpai
-    rnsrc = rnleaf_mean * dpai
-    stsrc = stleaf_mean * dpai
-    shsrc = shleaf_mean * dpai
-    lhsrc = lhleaf_mean * dpai
-    etsrc = etleaf_mean * dpai
-    
-    # CO2 source flux with green fraction correction
-    fracgreen = jnp.where(
-        fwet < 1.0,
-        fdry / (1.0 - fwet),
-        0.0
-    )
-    fco2src = ((anet_sun * fracsun + anet_sha * fracsha) * 
-               dpai * fracgreen)
-    
-    # Zero out fluxes where dpai <= 0
-    has_vegetation = dpai > 0.0
-    
-    lwleaf_mean = jnp.where(has_vegetation, lwleaf_mean, 0.0)
-    swleaf_mean_vis = jnp.where(has_vegetation, swleaf_mean_vis, 0.0)
-    swleaf_mean_nir = jnp.where(has_vegetation, swleaf_mean_nir, 0.0)
-    rnleaf_mean = jnp.where(has_vegetation, rnleaf_mean, 0.0)
-    stleaf_mean = jnp.where(has_vegetation, stleaf_mean, 0.0)
-    shleaf_mean = jnp.where(has_vegetation, shleaf_mean, 0.0)
-    lhleaf_mean = jnp.where(has_vegetation, lhleaf_mean, 0.0)
-    etleaf_mean = jnp.where(has_vegetation, etleaf_mean, 0.0)
-    fco2_mean = jnp.where(has_vegetation, fco2_mean, 0.0)
-    apar_mean = jnp.where(has_vegetation, apar_mean, 0.0)
-    gs_mean = jnp.where(has_vegetation, gs_mean, 0.0)
-    tleaf_mean_out = jnp.where(has_vegetation, tleaf_mean_out, 0.0)
-    lwp_mean = jnp.where(has_vegetation, lwp_mean, 0.0)
-    
-    lwsrc = jnp.where(has_vegetation, lwsrc, 0.0)
-    swsrc_vis = jnp.where(has_vegetation, swsrc_vis, 0.0)
-    swsrc_nir = jnp.where(has_vegetation, swsrc_nir, 0.0)
-    rnsrc = jnp.where(has_vegetation, rnsrc, 0.0)
-    stsrc = jnp.where(has_vegetation, stsrc, 0.0)
-    shsrc = jnp.where(has_vegetation, shsrc, 0.0)
-    lhsrc = jnp.where(has_vegetation, lhsrc, 0.0)
-    etsrc = jnp.where(has_vegetation, etsrc, 0.0)
-    fco2src = jnp.where(has_vegetation, fco2src, 0.0)
-    
-    return LeafFluxProfiles(
-        lwleaf_mean=lwleaf_mean,
-        swleaf_mean_vis=swleaf_mean_vis,
-        swleaf_mean_nir=swleaf_mean_nir,
-        rnleaf_mean=rnleaf_mean,
-        stleaf_mean=stleaf_mean,
-        shleaf_mean=shleaf_mean,
-        lhleaf_mean=lhleaf_mean,
-        etleaf_mean=etleaf_mean,
-        fco2_mean=fco2_mean,
-        apar_mean=apar_mean,
-        gs_mean=gs_mean,
-        tleaf_mean=tleaf_mean_out,
-        lwp_mean=lwp_mean,
-        lwsrc=lwsrc,
-        swsrc_vis=swsrc_vis,
-        swsrc_nir=swsrc_nir,
-        rnsrc=rnsrc,
-        stsrc=stsrc,
-        shsrc=shsrc,
-        lhsrc=lhsrc,
-        etsrc=etsrc,
-        fco2src=fco2src,
-    )
-
-
-def accumulate_vcmax25_and_check_energy_balance(
-    vcmax25veg: jnp.ndarray,
-    vcmax25_profile: jnp.ndarray,
-    dpai: jnp.ndarray,
-    swveg_vis: jnp.ndarray,
-    swveg_nir: jnp.ndarray,
-    lwveg: jnp.ndarray,
-    shveg: jnp.ndarray,
-    lhveg: jnp.ndarray,
-    stflx: jnp.ndarray,
-    shsoi: jnp.ndarray,
-    etsoi: jnp.ndarray,
-    lhsoi: jnp.ndarray,
-    shair: jnp.ndarray,
-    etair: jnp.ndarray,
-    stair: jnp.ndarray,
-    swsoi_vis: jnp.ndarray,
-    swsoi_nir: jnp.ndarray,
-    lwsoi: jnp.ndarray,
-    swskyb_vis: jnp.ndarray,
-    swskyd_vis: jnp.ndarray,
-    swskyb_nir: jnp.ndarray,
-    swskyd_nir: jnp.ndarray,
-    lwsky: jnp.ndarray,
-    albcan_vis: jnp.ndarray,
-    albcan_nir: jnp.ndarray,
-    lwup: jnp.ndarray,
-    gsoi: jnp.ndarray,
-    ntop: jnp.ndarray,
-    turb_type: int,
-    tref: jnp.ndarray,
-    latvap_func: Callable,
-    nlevcan: int,
-) -> EnergyBalanceState:
-    """Accumulate vcmax25 profile and perform energy balance checks.
-    
-    Fortran source: lines 954-1004
-    
-    Args:
-        vcmax25veg: Initial canopy vcmax25 [umol/m2/s] [n_patches]
-        vcmax25_profile: Vcmax25 by layer [umol/m2 leaf/s] [n_patches, nlevcan]
-        dpai: Layer plant area increment [m2/m2] [n_patches, nlevcan]
-        (... many more flux arguments ...)
-        turb_type: Turbulence type (0, -1, or 1)
-        tref: Reference temperature [K] [n_patches]
-        latvap_func: Function to compute latent heat of vaporization
-        nlevcan: Number of canopy layers
-        
-    Returns:
-        EnergyBalanceState with updated fluxes and energy balance checks
-    """
-    n_patches = vcmax25veg.shape[0]
-    
-    # Accumulate vcmax25 over canopy layers
-    vcmax25_increment = jnp.sum(vcmax25_profile * dpai, axis=1)
-    vcmax25veg_updated = vcmax25veg + vcmax25_increment
-    
-    # Check energy balance for vegetation
-    energy_balance_veg = (swveg_vis + swveg_nir + lwveg - 
-                          shveg - lhveg - stflx)
-    
-    # Compute latent heat of vaporization
-    latvap = latvap_func(tref)
-    
-    # Turbulent fluxes based on turbulence type
-    # For turb_type 0 or -1: sum of vegetation and soil
-    shflx_type0 = shveg + shsoi
-    etflx_type0 = etsoi
-    lhflx_type0 = lhveg + lhsoi
-    
-    # For turb_type 1: fluxes at top of canopy
-    patch_indices = jnp.arange(n_patches)
-    ntop_clamped = jnp.clip(ntop, 0, nlevcan - 1)
-    
-    shflx_type1 = shair[patch_indices, ntop_clamped]
-    etflx_type1 = etair[patch_indices, ntop_clamped]
-    lhflx_type1 = etair[patch_indices, ntop_clamped] * latvap
-    
-    # Select based on turb_type
-    is_type1 = (turb_type == 1)
-    shflx = jnp.where(is_type1, shflx_type1, shflx_type0)
-    etflx = jnp.where(is_type1, etflx_type1, etflx_type0)
-    lhflx = jnp.where(is_type1, lhflx_type1, lhflx_type0)
-    
-    # Add canopy air heat storage to storage flux
-    layer_indices = jnp.arange(nlevcan)[None, :]
-    ntop_expanded = ntop[:, None]
-    layer_mask = layer_indices < ntop_expanded
-    
-    stair_sum = jnp.sum(stair * layer_mask, axis=1)
-    stflx_total = stflx + stair_sum
-    
-    # Overall energy balance checks
-    rnet = (swveg_vis + swveg_nir + swsoi_vis + swsoi_nir + 
-            lwveg + lwsoi)
-    
-    radin = (swskyb_vis + swskyd_vis + swskyb_nir + swskyd_nir + lwsky)
-    
-    radout = (albcan_vis * (swskyb_vis + swskyd_vis) + 
-              albcan_nir * (swskyb_nir + swskyd_nir) + lwup)
-    
-    energy_balance_rad = rnet - (radin - radout)
-    
-    avail = radin - radout - gsoi
-    flux = shflx + lhflx + stflx_total
-    energy_balance_total = avail - flux
-    
-    return EnergyBalanceState(
-        vcmax25veg=vcmax25veg_updated,
-        shflx=shflx,
-        etflx=etflx,
-        lhflx=lhflx,
-        stflx=stflx_total,
-        rnet=rnet,
-    )
-
-
-def aggregate_sunshade_fluxes(
-    ncan: jnp.ndarray,
-    dpai: jnp.ndarray,
-    fracsun: jnp.ndarray,
-    lwleaf: jnp.ndarray,
-    shleaf: jnp.ndarray,
-    lhleaf: jnp.ndarray,
-    evleaf: jnp.ndarray,
-    trleaf: jnp.ndarray,
-    agross: jnp.ndarray,
-    vcmax25_leaf: jnp.ndarray,
-    gs: jnp.ndarray,
-    fdry: jnp.ndarray,
-    fwet: jnp.ndarray,
-    wind: jnp.ndarray,
-    tleaf_mean: jnp.ndarray,
-    tleaf: jnp.ndarray,
-    tair: jnp.ndarray,
-    isun: int = ISUN,
-    isha: int = ISHA,
-) -> SunShadeFluxes:
-    """Aggregate canopy layer fluxes into sunlit and shaded totals.
-    
-    Fortran source: lines 1005-1057
-    
-    Args:
-        ncan: Number of canopy layers [n_patches]
-        dpai: Layer plant area index [n_patches, n_layers]
-        fracsun: Sunlit fraction of layer [n_patches, n_layers]
-        (... many more flux arguments ...)
-        isun: Index for sunlit
-        isha: Index for shaded
-        
-    Returns:
-        SunShadeFluxes: Named tuple with all aggregated fluxes
-    """
-    n_patches = dpai.shape[0]
-    n_layers = dpai.shape[1]
-    
-    # Initialize accumulators
-    laisun = jnp.zeros(n_patches)
-    laisha = jnp.zeros(n_patches)
-    lwvegsun = jnp.zeros(n_patches)
-    lwvegsha = jnp.zeros(n_patches)
-    shvegsun = jnp.zeros(n_patches)
-    shvegsha = jnp.zeros(n_patches)
-    lhvegsun = jnp.zeros(n_patches)
-    lhvegsha = jnp.zeros(n_patches)
-    etvegsun = jnp.zeros(n_patches)
-    etvegsha = jnp.zeros(n_patches)
-    gppvegsun = jnp.zeros(n_patches)
-    gppvegsha = jnp.zeros(n_patches)
-    vcmax25sun = jnp.zeros(n_patches)
-    vcmax25sha = jnp.zeros(n_patches)
-    gsvegsun = jnp.zeros(n_patches)
-    gsvegsha = jnp.zeros(n_patches)
-    
-    # Loop over canopy layers to accumulate fluxes
-    def accumulate_layer_fluxes(ic, carry):
-        (laisun, laisha, lwvegsun, lwvegsha, shvegsun, shvegsha,
-         lhvegsun, lhvegsha, etvegsun, etvegsha, gppvegsun, gppvegsha,
-         vcmax25sun, vcmax25sha, gsvegsun, gsvegsha) = carry
-        
-        dpai_ic = dpai[:, ic]
-        fracsun_ic = fracsun[:, ic]
-        fracsha_ic = 1.0 - fracsun_ic
-        
-        valid = dpai_ic > 0.0
-        
-        # Accumulate LAI
-        laisun = laisun + jnp.where(valid, fracsun_ic * dpai_ic, 0.0)
-        laisha = laisha + jnp.where(valid, fracsha_ic * dpai_ic, 0.0)
-        
-        # Accumulate fluxes
-        lwvegsun = lwvegsun + jnp.where(valid, lwleaf[:, ic, isun] * fracsun_ic * dpai_ic, 0.0)
-        lwvegsha = lwvegsha + jnp.where(valid, lwleaf[:, ic, isha] * fracsha_ic * dpai_ic, 0.0)
-        
-        shvegsun = shvegsun + jnp.where(valid, shleaf[:, ic, isun] * fracsun_ic * dpai_ic, 0.0)
-        shvegsha = shvegsha + jnp.where(valid, shleaf[:, ic, isha] * fracsha_ic * dpai_ic, 0.0)
-        
-        lhvegsun = lhvegsun + jnp.where(valid, lhleaf[:, ic, isun] * fracsun_ic * dpai_ic, 0.0)
-        lhvegsha = lhvegsha + jnp.where(valid, lhleaf[:, ic, isha] * fracsha_ic * dpai_ic, 0.0)
-        
-        et_sun = (evleaf[:, ic, isun] + trleaf[:, ic, isun]) * fracsun_ic * dpai_ic
-        et_sha = (evleaf[:, ic, isha] + trleaf[:, ic, isha]) * fracsha_ic * dpai_ic
-        etvegsun = etvegsun + jnp.where(valid, et_sun, 0.0)
-        etvegsha = etvegsha + jnp.where(valid, et_sha, 0.0)
-        
-        fracgreen = fdry[:, ic] / jnp.maximum(1.0 - fwet[:, ic], 1e-10)
-        gpp_sun = agross[:, ic, isun] * fracsun_ic * dpai_ic * fracgreen
-        gpp_sha = agross[:, ic, isha] * fracsha_ic * dpai_ic * fracgreen
-        gppvegsun = gppvegsun + jnp.where(valid, gpp_sun, 0.0)
-        gppvegsha = gppvegsha + jnp.where(valid, gpp_sha, 0.0)
-        
-        vcmax25sun = vcmax25sun + jnp.where(valid, vcmax25_leaf[:, ic, isun] * fracsun_ic * dpai_ic, 0.0)
-        vcmax25sha = vcmax25sha + jnp.where(valid, vcmax25_leaf[:, ic, isha] * fracsha_ic * dpai_ic, 0.0)
-        
-        gsvegsun = gsvegsun + jnp.where(valid, gs[:, ic, isun] * fracsun_ic * dpai_ic, 0.0)
-        gsvegsha = gsvegsha + jnp.where(valid, gs[:, ic, isha] * fracsha_ic * dpai_ic, 0.0)
-        
-        return (laisun, laisha, lwvegsun, lwvegsha, shvegsun, shvegsha,
-                lhvegsun, lhvegsha, etvegsun, etvegsha, gppvegsun, gppvegsha,
-                vcmax25sun, vcmax25sha, gsvegsun, gsvegsha)
-    
-    flux_carry = (laisun, laisha, lwvegsun, lwvegsha, shvegsun, shvegsha,
-                  lhvegsun, lhvegsha, etvegsun, etvegsha, gppvegsun, gppvegsha,
-                  vcmax25sun, vcmax25sha, gsvegsun, gsvegsha)
-    
-    flux_carry = jax.lax.fori_loop(0, n_layers, accumulate_layer_fluxes, flux_carry)
-    
-    (laisun, laisha, lwvegsun, lwvegsha, shvegsun, shvegsha,
-     lhvegsun, lhvegsha, etvegsun, etvegsha, gppvegsun, gppvegsha,
-     vcmax25sun, vcmax25sha, gsvegsun, gsvegsha) = flux_carry
-    
-    # Initialize temperature and wind accumulators
-    windveg = jnp.zeros(n_patches)
-    windvegsun = jnp.zeros(n_patches)
-    windvegsha = jnp.zeros(n_patches)
-    tlveg = jnp.zeros(n_patches)
-    tlvegsun = jnp.zeros(n_patches)
-    tlvegsha = jnp.zeros(n_patches)
-    taveg = jnp.zeros(n_patches)
-    tavegsun = jnp.zeros(n_patches)
-    tavegsha = jnp.zeros(n_patches)
-    
-    lai_total = laisun + laisha
-    
-    # Loop over canopy layers to compute LAI-weighted means
-    def accumulate_layer_means(ic, carry):
-        (windveg, windvegsun, windvegsha, tlveg, tlvegsun, tlvegsha,
-         taveg, tavegsun, tavegsha) = carry
-        
-        dpai_ic = dpai[:, ic]
-        fracsun_ic = fracsun[:, ic]
-        fracsha_ic = 1.0 - fracsun_ic
-        
-        valid = dpai_ic > 0.0
-        
-        # Wind speed weighted by LAI
-        wind_total = wind[:, ic] * dpai_ic / jnp.maximum(lai_total, 1e-10)
-        wind_sun = wind[:, ic] * fracsun_ic * dpai_ic / jnp.maximum(laisun, 1e-10)
-        wind_sha = wind[:, ic] * fracsha_ic * dpai_ic / jnp.maximum(laisha, 1e-10)
-        windveg = windveg + jnp.where(valid, wind_total, 0.0)
-        windvegsun = windvegsun + jnp.where(valid, wind_sun, 0.0)
-        windvegsha = windvegsha + jnp.where(valid, wind_sha, 0.0)
-        
-        # Leaf temperature weighted by LAI
-        tl_total = tleaf_mean[:, ic] * dpai_ic / jnp.maximum(lai_total, 1e-10)
-        tl_sun = tleaf[:, ic, isun] * fracsun_ic * dpai_ic / jnp.maximum(laisun, 1e-10)
-        tl_sha = tleaf[:, ic, isha] * fracsha_ic * dpai_ic / jnp.maximum(laisha, 1e-10)
-        tlveg = tlveg + jnp.where(valid, tl_total, 0.0)
-        tlvegsun = tlvegsun + jnp.where(valid, tl_sun, 0.0)
-        tlvegsha = tlvegsha + jnp.where(valid, tl_sha, 0.0)
-        
-        # Air temperature weighted by LAI
-        ta_total = tair[:, ic] * dpai_ic / jnp.maximum(lai_total, 1e-10)
-        ta_sun = tair[:, ic] * fracsun_ic * dpai_ic / jnp.maximum(laisun, 1e-10)
-        ta_sha = tair[:, ic] * fracsha_ic * dpai_ic / jnp.maximum(laisha, 1e-10)
-        taveg = taveg + jnp.where(valid, ta_total, 0.0)
-        tavegsun = tavegsun + jnp.where(valid, ta_sun, 0.0)
-        tavegsha = tavegsha + jnp.where(valid, ta_sha, 0.0)
-        
-        return (windveg, windvegsun, windvegsha, tlveg, tlvegsun, tlvegsha,
-                taveg, tavegsun, tavegsha)
-    
-    mean_carry = (windveg, windvegsun, windvegsha, tlveg, tlvegsun, tlvegsha,
-                  taveg, tavegsun, tavegsha)
-    
-    mean_carry = jax.lax.fori_loop(0, n_layers, accumulate_layer_means, mean_carry)
-    
-    (windveg, windvegsun, windvegsha, tlveg, tlvegsun, tlvegsha,
-     taveg, tavegsun, tavegsha) = mean_carry
-    
-    return SunShadeFluxes(
-        laisun=laisun,
-        laisha=laisha,
-        lwvegsun=lwvegsun,
-        lwvegsha=lwvegsha,
-        shvegsun=shvegsun,
-        shvegsha=shvegsha,
-        lhvegsun=lhvegsun,
-        lhvegsha=lhvegsha,
-        etvegsun=etvegsun,
-        etvegsha=etvegsha,
-        gppvegsun=gppvegsun,
-        gppvegsha=gppvegsha,
-        vcmax25sun=vcmax25sun,
-        vcmax25sha=vcmax25sha,
-        gsvegsun=gsvegsun,
-        gsvegsha=gsvegsha,
-        windveg=windveg,
-        windvegsun=windvegsun,
-        windvegsha=windvegsha,
-        tlveg=tlveg,
-        tlvegsun=tlvegsun,
-        tlvegsha=tlvegsha,
-        taveg=taveg,
-        tavegsun=tavegsun,
-        tavegsha=tavegsha,
-    )
-
-
-def calculate_water_stress_fraction(
-    dpai: jnp.ndarray,
-    lwp_mean: jnp.ndarray,
-    lai: jnp.ndarray,
-    sai: jnp.ndarray,
-    ncan: jnp.ndarray,
-) -> WaterStressDiagnostics:
-    """Calculate fraction of canopy that is water stressed.
-    
-    Fortran source: lines 1058-1080
-    
-    Args:
-        dpai: Incremental plant area index [m2/m2] [n_patches, n_canopy_layers]
-        lwp_mean: Mean leaf water potential [MPa] [n_patches, n_canopy_layers]
-        lai: Leaf area index [m2/m2] [n_patches]
-        sai: Stem area index [m2/m2] [n_patches]
-        ncan: Number of canopy layers [-] [n_patches]
-        
-    Returns:
-        WaterStressDiagnostics containing fracminlwp
-    """
-    # Water stress threshold
-    minlwp = -2.0
-    
-    # Identify stressed canopy layers
-    is_stressed = (dpai > 0.0) & (lwp_mean <= minlwp)
-    
-    # Sum stressed plant area index
-    stressed_pai = jnp.sum(jnp.where(is_stressed, dpai, 0.0), axis=1)
-    
-    # Total plant area index
-    total_pai = lai + sai
-    
-    # Calculate fraction
-    fracminlwp = jnp.where(
-        total_pai > 0.0,
-        stressed_pai / total_pai,
-        0.0
-    )
-    
-    return WaterStressDiagnostics(fracminlwp=fracminlwp)
-
-
-def canopy_fluxes_diagnostics(
-    num_filter: int,
-    filter_indices: jnp.ndarray,
-    dpai: jnp.ndarray,
-    fracsun: jnp.ndarray,
-    fwet: jnp.ndarray,
-    fdry: jnp.ndarray,
-    lwleaf: jnp.ndarray,
-    swleaf_vis: jnp.ndarray,
-    swleaf_nir: jnp.ndarray,
-    rnleaf: jnp.ndarray,
-    stleaf: jnp.ndarray,
-    shleaf: jnp.ndarray,
-    lhleaf: jnp.ndarray,
-    evleaf: jnp.ndarray,
-    trleaf: jnp.ndarray,
-    anet: jnp.ndarray,
-    agross: jnp.ndarray,
-    apar: jnp.ndarray,
-    gs: jnp.ndarray,
-    vcmax25_leaf: jnp.ndarray,
-    vcmax25_profile: jnp.ndarray,
-    tleaf_mean: jnp.ndarray,
-    tleaf: jnp.ndarray,
-    tair: jnp.ndarray,
-    wind: jnp.ndarray,
-    lwp: jnp.ndarray,
-    lwp_mean: jnp.ndarray,
-    lai: jnp.ndarray,
-    sai: jnp.ndarray,
-    ncan: jnp.ndarray,
-) -> Tuple[LeafFluxProfiles, SunShadeFluxes, WaterStressDiagnostics]:
-    """Calculate canopy flux diagnostics by summing leaf and soil fluxes.
-    
-    Fortran source: lines 727-1080
-    
-    Args:
-        num_filter: Number of patches in filter
-        filter_indices: Patch filter indices
-        (... many flux and state arguments ...)
-        
-    Returns:
-        Tuple of (LeafFluxProfiles, SunShadeFluxes, WaterStressDiagnostics)
-    """
-    # Calculate weighted mean leaf fluxes and source fluxes
-    leaf_profiles = calculate_leaf_flux_profiles(
-        dpai=dpai,
-        fracsun=fracsun,
-        fwet=fwet,
-        fdry=fdry,
-        lwleaf=lwleaf,
-        swleaf_vis=swleaf_vis,
-        swleaf_nir=swleaf_nir,
-        rnleaf=rnleaf,
-        stleaf=stleaf,
-        shleaf=shleaf,
-        lhleaf=lhleaf,
-        evleaf=evleaf,
-        trleaf=trleaf,
-        anet=anet,
-        apar=apar,
-        gs=gs,
-        tleaf_mean=tleaf_mean,
-        tleaf=tleaf,
-        lwp=lwp,
-    )
-    
-    # Aggregate sunlit and shaded fluxes
-    sunshade_fluxes = aggregate_sunshade_fluxes(
-        ncan=ncan,
-        dpai=dpai,
-        fracsun=fracsun,
-        lwleaf=lwleaf,
-        shleaf=shleaf,
-        lhleaf=lhleaf,
-        evleaf=evleaf,
-        trleaf=trleaf,
-        agross=agross,
-        vcmax25_leaf=vcmax25_leaf,
-        gs=gs,
-        fdry=fdry,
-        fwet=fwet,
-        wind=wind,
-        tleaf_mean=tleaf_mean,
-        tleaf=tleaf,
-        tair=tair,
-    )
-    
-    # Calculate water stress fraction
-    water_stress = calculate_water_stress_fraction(
-        dpai=dpai,
-        lwp_mean=lwp_mean,
-        lai=lai,
-        sai=sai,
-        ncan=ncan,
-    )
-    
-    return leaf_profiles, sunshade_fluxes, water_stress
-
-
-# ============================================================================
-# Main Driver Function
-# ============================================================================
-
-def ml_canopy_fluxes(
-    bounds: Bounds,
+def MLCanopyFluxes(
+    bounds: Any,
     num_exposedvegp: int,
-    filter_exposedvegp: jnp.ndarray,
-    atmospheric_forcing: AtmosphericForcing,
-    canopy_state: CanopyProfileState,
-    nstep: int,
-    dtime: float,
-    dtime_substep: float,
-    num_sub_steps: int,
-) -> Tuple[MLCanopyFluxesState, FluxAccumulators]:
-    """Compute fluxes for sunlit and shaded leaves at each level and for soil surface.
-    
-    This is the main driver routine for multilayer canopy flux calculations.
-    It coordinates the various sub-calculations needed to compute energy,
-    water, and carbon fluxes through a multi-layer canopy representation.
-    
-    Fortran source: lines 47-565
-    
-    Args:
-        bounds: Subgrid bounds structure
-        num_exposedvegp: Number of exposed vegetation patches
-        filter_exposedvegp: Filter for exposed vegetation patches
-        atmospheric_forcing: Atmospheric forcing variables
-        canopy_state: Canopy state variables
-        nstep: Current time step number
-        dtime: Time step size [s]
-        dtime_substep: Sub-timestep for iterative calculations [s]
-        num_sub_steps: Number of sub-time steps
-        
-    Returns:
-        Tuple of (MLCanopyFluxesState, FluxAccumulators)
-        
-    Note:
-        This is a simplified interface. The full implementation would include
-        all the state variables and call the various physics subroutines
-        (radiation, turbulence, photosynthesis, etc.) that are translated
-        in separate modules.
+    filter_exposedvegp: Sequence[int],
+    atm2lnd_inst: Any,
+    canopystate_inst: Any,
+    soilstate_inst: Any,
+    temperature_inst: Any,
+    waterstatebulk_inst: Any,
+    waterfluxbulk_inst: Any,
+    energyflux_inst: Any,
+    frictionvel_inst: Any,
+    surfalb_inst: Any,
+    solarabs_inst: Any,
+    mlcanopy_inst: mlcanopy_type,
+    wateratm2lndbulk_inst: Any,
+    waterdiagnosticbulk_inst: Any,
+) -> mlcanopy_type:
     """
-    n_patches = bounds.endp - bounds.begp + 1
-    
-    # Initialize flux accumulators
-    flux_accumulator = jnp.zeros((n_patches, NVAR1D))
-    flux_accumulator_profile = jnp.zeros((n_patches, 20, NVAR2D))  # Assuming 20 layers
-    flux_accumulator_leaf = jnp.zeros((n_patches, 20, 2, NVAR3D))
-    
-    # Calculate derived atmospheric properties
-    derived_atm = calculate_derived_atmospheric_properties(
-        qref=atmospheric_forcing.qref,
-        pref=atmospheric_forcing.pref,
-        tref=atmospheric_forcing.tref,
-        zref=jnp.ones(n_patches) * 30.0,  # Example reference height
+    Compute all multilayer canopy fluxes for one CLM timestep.
+
+    Mirrors Fortran subroutine ``MLCanopyFluxes`` (lines 48-400).
+
+    This is the top-level driver.  It:
+
+    1. Resolves CLM time information (``nstep``, ``dtime_clm``,
+       calendar days).
+    2. Builds the ``filter_mlcan`` patch filter from the exposed-veg
+       filter (Fortran lines 152-160).
+    3. On the first CLM timestep (``zref == spval``), initialises PAD
+       parameters, vertical structure, vertical profiles, and
+       Runge-Kutta coefficients (Fortran lines 162-198).
+    4. Copies CLM state into ``mlcanopy_inst`` via ``_GetCLMVar``
+       (Fortran line 201).
+    5. Seeds the ``*_bef`` forcing fields on the first timestep
+       (Fortran lines 204-218).
+    6. Updates the leaf/stem area profiles for current LAI/SAI and
+       checks total PAI conservation (Fortran lines 220-243).
+    7. Computes soil hydraulic resistance, plant resistance, leaf heat
+       capacity, and soil relative humidity (Fortran lines 245-258).
+    8. Loops over ``num_ml_steps`` sub-steps (Fortran lines 261-330):
+
+       a. Saves previous-step state variables.
+       b. Interpolates atmospheric forcing to the ML timestep.
+       c. Calls physics in order:
+
+          - :func:`SolarRadiation`
+          - :func:`CanopyNitrogenProfile`
+          - Inner Runge-Kutta loop (``irk = 1, nrk_steps+1``):
+
+            - :func:`CanopyWettedFraction`
+            - :func:`LongwaveRadiation`
+            - Net radiation (inline, Fortran lines 301-307)
+            - :func:`CanopyTurbulence`
+            - :func:`LeafBoundaryLayer` (sun + shade)
+            - :func:`LeafPhotosynthesis` (sun + shade)
+            - :func:`FluxProfileSolution`
+            - :func:`LeafWaterPotential` (sun + shade)
+            - :func:`CanopyInterception` + :func:`CanopyEvaporation`
+            - :func:`RungeKuttaUpdate` (for non-Euler steps)
+
+       d. Accumulates fluxes over ML sub-steps.
+
+    9. Saves current forcing as ``*_bef`` for next CLM timestep
+       (Fortran lines 332-343).
+    10. Calls :func:`_CanopyFluxesDiagnostics`.
+    11. Merges sun/shade leaf temperature and water potential to a
+        layer-mean prognostic state (Fortran lines 355-375).
+    12. Copies selected fields back to CLM output variables when
+        ``mlcan_to_clm == 1`` (Fortran lines 378-396).
+
+    **Atmospheric forcing interpolation** (Fortran lines 105-130):
+
+    .. code-block:: none
+
+        met_type == 0: no interpolation; calday = 0
+        met_type == 2: 2-point (end of interval); NOT VALID in this
+                       implementation (endrun)
+        met_type == 3: 3-point (centred); calday_cur = 0.5*(end+beg)
+
+    **Runge-Kutta sub-stepping** (Fortran lines 265-271):
+
+    .. code-block:: none
+
+        runge_kutta_type == 10: Euler, nrk_steps = 0
+        runge_kutta_type >= 20: nrk_steps = runge_kutta_type // 10
+
+    **Sun/shade merge** (Fortran lines 361-375):
+
+    .. code-block:: none
+
+        if dpai(ic) > 0:
+            tleaf_sun_merged = tleaf_sun*fracsun + tleaf_sha*(1-fracsun)
+            tleaf_sha        = tleaf_sun_merged
+            lwp_sun_merged   = lwp_sun*fracsun  + lwp_sha*(1-fracsun)
+            lwp_sha          = lwp_sun_merged
+
+    Args:
+        bounds: CLM decomposition bounds (``begp``, ``endp``).
+        num_exposedvegp: Number of non-snow-covered veg patches.
+        filter_exposedvegp: CLM patch filter (1-based values).
+        atm2lnd_inst: CLM atmosphere-to-land instance.
+        canopystate_inst: CLM canopy state instance (LAI/SAI).
+        soilstate_inst: CLM soil state instance.
+        temperature_inst: CLM temperature instance.
+        waterstatebulk_inst: CLM bulk water state instance.
+        waterfluxbulk_inst: CLM bulk water flux instance.
+        energyflux_inst: CLM energy flux instance (output receiver).
+        frictionvel_inst: CLM friction velocity instance (output receiver).
+        surfalb_inst: CLM surface albedo instance.
+        solarabs_inst: CLM solar absorbed instance (output receiver).
+        mlcanopy_inst: Multilayer canopy container; updated in-place
+            over the timestep and returned.
+        wateratm2lndbulk_inst: CLM water forcing instance.
+        waterdiagnosticbulk_inst: CLM water diagnostic instance
+            (output receiver).
+
+    Returns:
+        Updated :class:`mlcanopy_type` holding end-of-timestep state
+        and CLM-timestep-mean fluxes.
+    """
+    from clm_src_utils.clm_time_manager import get_nstep, get_step_size, get_curr_calday  # noqa: F401
+    import multilayer_canopy.MLclm_varctl as _ml_ctl   # for ml_vert_init mutation
+
+    # Declare module-level RK coefficient cache as global so assignments
+    # inside the if-block persist across calls.
+    global _rk_ark, _rk_brk, _rk_crk
+
+    # ------------------------------------------------------------------
+    # CLM time information — Fortran lines 155-165
+    # ------------------------------------------------------------------
+    nstep      = get_nstep()
+    dtime_clm  = float(get_step_size())
+
+    curr_calday_end = float(get_curr_calday(offset=0))
+    curr_calday_beg = float(get_curr_calday(offset=-int(dtime_clm)))
+
+    # Interpolation calendar days — Fortran lines 105-130
+    if met_type == 0:
+        calday_interp_cur  = 0.0
+        calday_interp_bef  = 0.0
+        calday_interp_next = 0.0
+    elif met_type == 2:
+        endrun(msg=' ERROR: met_type not valid')
+        calday_interp_cur  = curr_calday_end
+        calday_interp_bef  = calday_interp_cur - dtime_clm / 86400.0
+        calday_interp_next = 0.0
+    elif met_type == 3:
+        calday_interp_cur  = 0.5 * (curr_calday_end + curr_calday_beg)
+        calday_interp_bef  = calday_interp_cur - dtime_clm / 86400.0
+        calday_interp_next = calday_interp_cur + dtime_clm / 86400.0
+    else:
+        endrun(msg=' ERROR: MLCanopyFluxes: met_type not valid')
+        calday_interp_cur = calday_interp_bef = calday_interp_next = 0.0
+
+    # Number of ML sub-steps — Fortran line 132
+    num_ml_steps: int = int(dtime_clm / dtime_ml)
+
+    # ------------------------------------------------------------------
+    # Build filter for patches to process — Fortran lines 152-160
+    # ------------------------------------------------------------------
+    num_mlcan: int = 0
+    filter_mlcan: List[int] = []
+    for fp in range(1, num_exposedvegp + 1):
+        p = int(filter_exposedvegp[fp - 1])
+        num_mlcan  += 1
+        filter_mlcan.append(p)
+
+    # ------------------------------------------------------------------
+    # First-timestep initialisation — Fortran lines 162-198
+    # Triggered when any zref == spval (unset sentinel)
+    # ------------------------------------------------------------------
+    _ml_vert_init = 0
+    for p in filter_mlcan:
+        if float(mlcanopy_inst.zref_forcing[p]) == spval:
+            _ml_vert_init = 1
+            break
+    _ml_ctl.ml_vert_init = _ml_vert_init        # expose to other modules
+
+    if _ml_vert_init == 1:
+
+        if masterproc:
+            print('Attempting to initialize multilayer canopy pad parameters .....')
+        mlcanopy_inst = getPADparameters(num_mlcan, filter_mlcan, mlcanopy_inst)
+        if masterproc:
+            print('Successfuly initialized multilayer canopy pad parameters')
+
+        if masterproc:
+            print('Attempting to initialize multilayer canopy vertical structure .....')
+        mlcanopy_inst = initVerticalStructure(
+            bounds, num_mlcan, filter_mlcan,
+            canopystate_inst, frictionvel_inst, mlcanopy_inst
+        )
+        mlcanopy_inst = initVerticalProfiles(
+            num_mlcan, filter_mlcan,
+            atm2lnd_inst, wateratm2lndbulk_inst, mlcanopy_inst
+        )
+        if masterproc:
+            print('Successfully initialized multilayer canopy vertical structure')
+
+        # Runge-Kutta coefficients — Fortran line 197
+        _rk_ark, _rk_brk, _rk_crk = RungeKuttaIni()
+
+    # Retrieve cached Runge-Kutta coefficients (valid after first call)
+    ark, brk, crk = _rk_ark, _rk_brk, _rk_crk
+
+    # ------------------------------------------------------------------
+    # Copy CLM variables to mlcanopy container — Fortran line 201
+    # ------------------------------------------------------------------
+    mlcanopy_inst = _GetCLMVar(
+        nstep, dtime_clm, num_mlcan, filter_mlcan,
+        atm2lnd_inst, soilstate_inst, temperature_inst,
+        surfalb_inst, wateratm2lndbulk_inst, mlcanopy_inst
+    )
+    # ------------------------------------------------------------------
+    # Seed *_bef forcing on first timestep — Fortran lines 204-218
+    # ------------------------------------------------------------------
+    if _ml_vert_init == 1:
+        uref_bef  = mlcanopy_inst.uref_bef_forcing
+        tref_bef  = mlcanopy_inst.tref_bef_forcing
+        qref_bef  = mlcanopy_inst.qref_bef_forcing
+        pref_bef  = mlcanopy_inst.pref_bef_forcing
+        co2ref_bef = mlcanopy_inst.co2ref_bef_forcing
+        swskyb_bef = mlcanopy_inst.swskyb_bef_forcing
+        swskyd_bef = mlcanopy_inst.swskyd_bef_forcing
+        lwsky_bef  = mlcanopy_inst.lwsky_bef_forcing
+
+        for p in filter_mlcan:
+            uref_bef   = uref_bef.at[p].set(float(mlcanopy_inst.uref_cur_forcing[p]))
+            tref_bef   = tref_bef.at[p].set(float(mlcanopy_inst.tref_cur_forcing[p]))
+            qref_bef   = qref_bef.at[p].set(float(mlcanopy_inst.qref_cur_forcing[p]))
+            pref_bef   = pref_bef.at[p].set(float(mlcanopy_inst.pref_cur_forcing[p]))
+            co2ref_bef = co2ref_bef.at[p].set(float(mlcanopy_inst.co2ref_cur_forcing[p]))
+            for ib in (ivis, inir):
+                swskyb_bef = swskyb_bef.at[p, ib].set(float(mlcanopy_inst.swskyb_cur_forcing[p, ib]))
+                swskyd_bef = swskyd_bef.at[p, ib].set(float(mlcanopy_inst.swskyd_cur_forcing[p, ib]))
+            lwsky_bef = lwsky_bef.at[p].set(float(mlcanopy_inst.lwsky_cur_forcing[p]))
+
+        mlcanopy_inst = mlcanopy_inst._replace(
+            uref_bef_forcing   = uref_bef,
+            tref_bef_forcing   = tref_bef,
+            qref_bef_forcing   = qref_bef,
+            pref_bef_forcing   = pref_bef,
+            co2ref_bef_forcing = co2ref_bef,
+            swskyb_bef_forcing = swskyb_bef,
+            swskyd_bef_forcing = swskyd_bef,
+            lwsky_bef_forcing  = lwsky_bef,
+        )
+
+    # ------------------------------------------------------------------
+    # Update leaf/stem area profiles for current LAI/SAI — Fortran lines 220-243
+    # ------------------------------------------------------------------
+    lai   = mlcanopy_inst.lai_canopy
+    sai   = mlcanopy_inst.sai_canopy
+    dlai  = mlcanopy_inst.dlai_profile
+    dsai  = mlcanopy_inst.dsai_profile
+    dpai  = mlcanopy_inst.dpai_profile
+
+    for p in filter_mlcan:
+        lai_val = float(canopystate_inst.elai_patch[p])
+        sai_val = float(canopystate_inst.esai_patch[p])
+        lai = lai.at[p].set(lai_val)
+        sai = sai.at[p].set(sai_val)
+
+        _ncan = int(mlcanopy_inst.ncan_canopy[p])
+        for ic in range(1, _ncan + 1):
+            dlai_val = float(mlcanopy_inst.dlai_frac_profile[p, ic]) * lai_val
+            dsai_val = float(mlcanopy_inst.dsai_frac_profile[p, ic]) * sai_val
+            dpai_val = dlai_val + dsai_val
+            dlai = dlai.at[p, ic].set(dlai_val)
+            dsai = dsai.at[p, ic].set(dsai_val)
+            dpai = dpai.at[p, ic].set(dpai_val)
+
+        # PAI conservation check — Fortran lines 239-242
+        totpai = sum(
+            float(dpai[p, ic]) for ic in range(1, _ncan + 1)
+        )
+        if abs(totpai - (lai_val + sai_val)) > 1.0e-6:
+            endrun(msg=' ERROR: MLCanopyFluxes: plant area index not updated correctly')
+
+    mlcanopy_inst = mlcanopy_inst._replace(
+        lai_canopy    = lai,
+        sai_canopy    = sai,
+        dlai_profile  = dlai,
+        dsai_profile  = dsai,
+        dpai_profile  = dpai,
+    )
+
+    # ------------------------------------------------------------------
+    # Plant hydraulics and leaf heat capacity — Fortran lines 245-257
+    # ------------------------------------------------------------------
+    mlcanopy_inst = SoilResistance(
+        num_mlcan, filter_mlcan, soilstate_inst, waterstatebulk_inst, mlcanopy_inst
+    )
+    mlcanopy_inst = PlantResistance(num_mlcan, filter_mlcan, mlcanopy_inst)
+    mlcanopy_inst = LeafHeatCapacity(num_mlcan, filter_mlcan, mlcanopy_inst)
+
+    # Soil surface relative humidity — Fortran lines 259-262
+    rhg = mlcanopy_inst.rhg_soil
+    for p in filter_mlcan:
+        c = int(patch.column[p])
+        smp1  = float(soilstate_inst.smp_l_col[c, 1])      # mm
+        tsoi1 = float(temperature_inst.t_soisno_col[c, 1])  # K
+        rhg_val = float(jnp.exp(
+            grav * mmh2o * smp1 * 1.0e-3 / (rgas * tsoi1)
+        ))
+        rhg = rhg.at[p].set(rhg_val)
+    mlcanopy_inst = mlcanopy_inst._replace(rhg_soil = rhg)
+
+    # ------------------------------------------------------------------
+    # Flux accumulators — Fortran lines 57-64 (local arrays)
+    # ------------------------------------------------------------------
+    nvar1d = 23
+    nvar2d = 14
+    nvar3d = 12
+    begp   = bounds.begp
+    endp   = bounds.endp
+    import numpy as np
+    flux_accumulator         = np.zeros((endp + 1, nvar1d))
+    flux_accumulator_profile = np.zeros((endp + 1, nlevmlcan + 2, nvar2d))
+    flux_accumulator_leaf    = np.zeros((endp + 1, nlevmlcan + 1, nleaf + 1, nvar3d))
+
+    # ------------------------------------------------------------------
+    # Runge-Kutta configuration — Fortran lines 265-271
+    # ------------------------------------------------------------------
+    if runge_kutta_type == 10:
+        nrk_steps = 0
+    elif runge_kutta_type >= 20:
+        nrk_steps = runge_kutta_type // 10
+    else:
+        nrk_steps = 0
+
+    if masterproc and nstep == 1:
+        print(
+            f'MLCanopyFluxes: starting ML sub-steps (num_ml_steps={num_ml_steps}, '
+            f'nrk_steps={nrk_steps}, num_mlcan={num_mlcan})',
+            flush=True,
+        )
+
+    # Keep heartbeat output bounded while still proving forward progress.
+    progress_stride = max(1, num_ml_steps // 10)
+
+    # ==================================================================
+    # Multilayer canopy time-stepping loop — Fortran lines 261-330
+    # ==================================================================
+    for nstep_ml in range(1, num_ml_steps + 1):
+        if masterproc and nstep == 1 and (
+            nstep_ml == 1 or nstep_ml == num_ml_steps or (nstep_ml % progress_stride == 0)
+        ):
+            print(
+                f'MLCanopyFluxes: sub-step {nstep_ml}/{num_ml_steps}',
+                flush=True,
+            )
+
+        # Calendar day for this ML sub-step — Fortran lines 263-270
+        if met_type in (0, 2):
+            calday_interp_ml = curr_calday_beg + float(nstep_ml) * (dtime_ml / 86400.0)
+        else:  # met_type == 3
+            calday_interp_ml = (curr_calday_beg
+                                + (float(nstep_ml) - 0.5) * (dtime_ml / 86400.0))
+
+        # Save previous-step state — Fortran lines 272-285
+        tg_bef     = mlcanopy_inst.tg_bef_soil
+        tair_bef   = mlcanopy_inst.tair_bef_profile
+        eair_bef   = mlcanopy_inst.eair_bef_profile
+        cair_bef   = mlcanopy_inst.cair_bef_profile
+        h2ocan_bef = mlcanopy_inst.h2ocan_bef_profile
+        tleaf_bef  = mlcanopy_inst.tleaf_bef_leaf
+        lwp_bef    = mlcanopy_inst.lwp_bef_leaf
+
+        # Vectorized bef-state save — bulk slice writes instead of per-element
+        for p in filter_mlcan:
+            _ncan = int(mlcanopy_inst.ncan_canopy[p])
+            _sl   = slice(1, _ncan + 1)
+            tg_bef     = tg_bef.at[p].set(mlcanopy_inst.tg_soil[p])
+            tair_bef   = tair_bef.at[p, _sl].set(mlcanopy_inst.tair_profile[p, _sl])
+            eair_bef   = eair_bef.at[p, _sl].set(mlcanopy_inst.eair_profile[p, _sl])
+            cair_bef   = cair_bef.at[p, _sl].set(mlcanopy_inst.cair_profile[p, _sl])
+            h2ocan_bef = h2ocan_bef.at[p, _sl].set(mlcanopy_inst.h2ocan_profile[p, _sl])
+            tleaf_bef  = tleaf_bef.at[p, _sl, :].set(mlcanopy_inst.tleaf_leaf[p, _sl, :])
+            lwp_bef    = lwp_bef.at[p, _sl, :].set(mlcanopy_inst.lwp_leaf[p, _sl, :])
+
+        mlcanopy_inst = mlcanopy_inst._replace(
+            tg_bef_soil          = tg_bef,
+            tair_bef_profile     = tair_bef,
+            eair_bef_profile     = eair_bef,
+            cair_bef_profile     = cair_bef,
+            h2ocan_bef_profile   = h2ocan_bef,
+            tleaf_bef_leaf       = tleaf_bef,
+            lwp_bef_leaf         = lwp_bef,
+        )
+
+        # Atmospheric forcing for this ML timestep — Fortran line 287
+        mlcanopy_inst = GetAtmForcing(
+            calday_interp_bef, calday_interp_cur, calday_interp_next,
+            calday_interp_ml, num_mlcan, filter_mlcan, mlcanopy_inst
+        )
+
+        # Solar radiation — Fortran line 290
+        mlcanopy_inst = SolarRadiation(bounds, num_mlcan, filter_mlcan, mlcanopy_inst)
+
+        # Nitrogen profile (requires fracsun) — Fortran line 293
+        mlcanopy_inst = CanopyNitrogenProfile(num_mlcan, filter_mlcan, mlcanopy_inst)
+
+        # --------------------------------------------------------------
+        # Runge-Kutta inner loop — Fortran lines 310-328
+        # irk runs from 1 to nrk_steps+1 (inclusive)
+        # --------------------------------------------------------------
+        for irk in range(1, nrk_steps + 2):
+
+            # Wetted fraction — Fortran line 299
+            mlcanopy_inst = CanopyWettedFraction(num_mlcan, filter_mlcan, mlcanopy_inst)
+
+            # Longwave radiation — Fortran line 303
+            mlcanopy_inst = LongwaveRadiation(bounds, num_mlcan, filter_mlcan, mlcanopy_inst)
+
+            # Net radiation — Fortran lines 305-311 (vectorized)
+            mlcanopy_inst = mlcanopy_inst._replace(
+                rnleaf_leaf = (mlcanopy_inst.swleaf_leaf[..., ivis]
+                               + mlcanopy_inst.swleaf_leaf[..., inir]
+                               + mlcanopy_inst.lwleaf_leaf),
+                rnsoi_soil  = (mlcanopy_inst.swsoi_soil[:, ivis]
+                               + mlcanopy_inst.swsoi_soil[:, inir]
+                               + mlcanopy_inst.lwsoi_soil),
+            )
+
+            # Canopy turbulence — Fortran line 320
+            mlcanopy_inst = CanopyTurbulence(nstep_ml, num_mlcan, filter_mlcan, mlcanopy_inst)
+
+            # Leaf boundary layer conductance — Fortran lines 326-327
+            mlcanopy_inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isun, mlcanopy_inst)
+            mlcanopy_inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isha, mlcanopy_inst)
+
+            # Photosynthesis and stomatal conductance — Fortran lines 334-335
+            mlcanopy_inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isun, mlcanopy_inst)
+            mlcanopy_inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isha, mlcanopy_inst)
+
+            # Flux-profile solution — Fortran line 344
+            mlcanopy_inst = FluxProfileSolution(num_mlcan, filter_mlcan, mlcanopy_inst)
+
+            # Leaf water potential — Fortran lines 350-351
+            mlcanopy_inst = LeafWaterPotential(num_mlcan, filter_mlcan, isun, mlcanopy_inst)
+            mlcanopy_inst = LeafWaterPotential(num_mlcan, filter_mlcan, isha, mlcanopy_inst)
+
+            # Canopy water — Fortran lines 356-357
+            mlcanopy_inst = CanopyInterception(num_mlcan, filter_mlcan, mlcanopy_inst)
+            mlcanopy_inst = CanopyEvaporation(num_mlcan, filter_mlcan, mlcanopy_inst)
+
+            # Runge-Kutta state update (not on the final step) — Fortran lines 359-361
+            if nrk_steps > 0 and irk <= nrk_steps:
+                mlcanopy_inst = RungeKuttaUpdate(irk, ark, brk, crk, num_mlcan, filter_mlcan, mlcanopy_inst)
+
+        # Accumulate fluxes over ML sub-steps — Fortran line 372
+        flux_accumulator, flux_accumulator_profile, flux_accumulator_leaf, mlcanopy_inst = \
+            _MLTimeStepFluxIntegration(
+                nstep_ml, num_ml_steps, num_mlcan, filter_mlcan,
+                flux_accumulator, flux_accumulator_profile,
+                flux_accumulator_leaf, mlcanopy_inst
+            )
+
+    # End multilayer time-stepping loop
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Save current forcing as *_bef for next CLM timestep — Fortran lines 332-343
+    # ------------------------------------------------------------------
+    uref_bef   = mlcanopy_inst.uref_bef_forcing
+    tref_bef   = mlcanopy_inst.tref_bef_forcing
+    qref_bef   = mlcanopy_inst.qref_bef_forcing
+    pref_bef   = mlcanopy_inst.pref_bef_forcing
+    co2ref_bef = mlcanopy_inst.co2ref_bef_forcing
+    swskyb_bef = mlcanopy_inst.swskyb_bef_forcing
+    swskyd_bef = mlcanopy_inst.swskyd_bef_forcing
+    lwsky_bef  = mlcanopy_inst.lwsky_bef_forcing
+
+    for p in filter_mlcan:
+        uref_bef   = uref_bef.at[p].set(mlcanopy_inst.uref_cur_forcing[p])
+        tref_bef   = tref_bef.at[p].set(mlcanopy_inst.tref_cur_forcing[p])
+        qref_bef   = qref_bef.at[p].set(mlcanopy_inst.qref_cur_forcing[p])
+        pref_bef   = pref_bef.at[p].set(mlcanopy_inst.pref_cur_forcing[p])
+        co2ref_bef = co2ref_bef.at[p].set(mlcanopy_inst.co2ref_cur_forcing[p])
+        for ib in (ivis, inir):
+            swskyb_bef = swskyb_bef.at[p, ib].set(mlcanopy_inst.swskyb_cur_forcing[p, ib])
+            swskyd_bef = swskyd_bef.at[p, ib].set(mlcanopy_inst.swskyd_cur_forcing[p, ib])
+        lwsky_bef = lwsky_bef.at[p].set(mlcanopy_inst.lwsky_cur_forcing[p])
+
+    mlcanopy_inst = mlcanopy_inst._replace(
+        uref_bef_forcing   = uref_bef,
+        tref_bef_forcing   = tref_bef,
+        qref_bef_forcing   = qref_bef,
+        pref_bef_forcing   = pref_bef,
+        co2ref_bef_forcing = co2ref_bef,
+        swskyb_bef_forcing = swskyb_bef,
+        swskyd_bef_forcing = swskyd_bef,
+        lwsky_bef_forcing  = lwsky_bef,
+    )
+
+    # ------------------------------------------------------------------
+    # Canopy-level diagnostics — Fortran line 346
+    # ------------------------------------------------------------------
+    mlcanopy_inst = _CanopyFluxesDiagnostics(num_mlcan, filter_mlcan, mlcanopy_inst)
+
+    # ------------------------------------------------------------------
+    # Merge sun/shade leaf temperature and water potential — Fortran lines 355-375
+    # State is prognostic; sun/shade fraction changes between CLM steps,
+    # so merge to a layer-mean before the next timestep.
+    # ------------------------------------------------------------------
+    tleaf = mlcanopy_inst.tleaf_leaf
+    tleaf_hist = mlcanopy_inst.tleaf_hist_leaf
+    lwp   = mlcanopy_inst.lwp_leaf
+    lwp_hist = mlcanopy_inst.lwp_hist_leaf
+
+    for p in filter_mlcan:
+        _ncan = int(mlcanopy_inst.ncan_canopy[p])
+        _sl   = slice(1, _ncan + 1)
+
+        # Save sun/shade values for history files (bulk copy)
+        tleaf_hist = tleaf_hist.at[p, _sl, :].set(tleaf[p, _sl, :])
+        lwp_hist   = lwp_hist.at[p, _sl, :].set(lwp[p, _sl, :])
+
+        # Vectorized merge to layer mean — Fortran lines 367-374
+        _dpai    = np.asarray(mlcanopy_inst.dpai_profile[p])
+        _fracsun = np.asarray(mlcanopy_inst.fracsun_profile[p])
+        _tleaf_p = np.asarray(tleaf[p])   # shape (nlevmlcan+1, nleaf+1)
+        _lwp_p   = np.asarray(lwp[p])
+
+        ics     = np.arange(1, _ncan + 1)
+        has_pai = _dpai[ics] > 0.0
+        fs_v    = _fracsun[ics]
+
+        t_sun = _tleaf_p[ics, isun]
+        t_sha = _tleaf_p[ics, isha]
+        t_mean = t_sun * fs_v + t_sha * (1.0 - fs_v)
+        _tleaf_new = _tleaf_p.copy()
+        _tleaf_new[ics, isun] = np.where(has_pai, t_mean, t_sun)
+        _tleaf_new[ics, isha] = np.where(has_pai, t_mean, t_sha)
+
+        l_sun = _lwp_p[ics, isun]
+        l_sha = _lwp_p[ics, isha]
+        l_mean = l_sun * fs_v + l_sha * (1.0 - fs_v)
+        _lwp_new = _lwp_p.copy()
+        _lwp_new[ics, isun] = np.where(has_pai, l_mean, l_sun)
+        _lwp_new[ics, isha] = np.where(has_pai, l_mean, l_sha)
+
+        tleaf = tleaf.at[p, _sl, :].set(jnp.array(_tleaf_new[_sl, :]))
+        lwp   = lwp.at[p, _sl, :].set(jnp.array(_lwp_new[_sl, :]))
+
+    mlcanopy_inst = mlcanopy_inst._replace(
+        tleaf_leaf      = tleaf,
+        tleaf_hist_leaf = tleaf_hist,
+        lwp_leaf        = lwp,
+        lwp_hist_leaf   = lwp_hist,
+    )
+
+    # ------------------------------------------------------------------
+    # Copy to CLM output variables (when mlcan_to_clm == 1) — Fortran lines 378-396
+    # ------------------------------------------------------------------
+    if mlcan_to_clm == 1:
+        for p in filter_mlcan:
+            for ib in (ivis, inir):
+                surfalb_inst.albd_patch[p, ib] = 0.0
+                surfalb_inst.albi_patch[p, ib] = 0.0
+            energyflux_inst.taux_patch[p]             = 0.0
+            energyflux_inst.tauy_patch[p]             = 0.0
+            energyflux_inst.eflx_lh_tot_patch[p]      = float(mlcanopy_inst.lhflx_canopy[p])
+            energyflux_inst.eflx_sh_tot_patch[p]      = float(mlcanopy_inst.shflx_canopy[p])
+            energyflux_inst.eflx_lwrad_out_patch[p]   = float(mlcanopy_inst.lwup_canopy[p])
+            waterfluxbulk_inst.qflx_evap_tot_patch[p] = float(mlcanopy_inst.etflx_canopy[p]) * mmh2o
+            frictionvel_inst.fv_patch[p]               = float(mlcanopy_inst.ustar_canopy[p])
+            frictionvel_inst.u10_clm_patch[p]          = 0.0
+            temperature_inst.t_ref2m_patch[p]          = 0.0
+            waterdiagnosticbulk_inst.q_ref2m_patch[p]  = 0.0
+            solarabs_inst.fsa_patch[p] = (
+                float(mlcanopy_inst.swveg_canopy[p, ivis])
+                + float(mlcanopy_inst.swveg_canopy[p, inir])
+                + float(mlcanopy_inst.swsoi_soil[p, ivis])
+                + float(mlcanopy_inst.swsoi_soil[p, inir])
+            )
+
+    return mlcanopy_inst
+
+def _GetCLMVar(
+    nstep: int,
+    dtime_clm: float,
+    num_filter: int,
+    filter: List[int],
+    atm2lnd_inst: Any,
+    soilstate_inst: Any,
+    temperature_inst: Any,
+    surfalb_inst: Any,
+    wateratm2lndbulk_inst: Any,
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """
+    Copy CLM variables into the multilayer canopy container.
+
+    Mirrors Fortran subroutine ``GetCLMVar`` (lines 1-120).
+
+    All CLM variables are copied verbatim into the corresponding
+    ``mlcanopy_inst`` fields.  The only arithmetic beyond indexing is:
+
+    - Wind speed: ``uref_cur(p) = sqrt(forc_u(g)^2 + forc_v(g)^2)``
+      (resultant from east and north components).
+    - CO2 unit conversion:
+      ``co2ref_cur(p) = forc_pco2(g) / forc_pbot(c) * 1e6``
+      (Pa → umol/mol).
+    - O2 unit conversion:
+      ``o2ref(p) = forc_po2(g) / forc_pbot(c) * 1e3``
+      (Pa → mmol/mol).
+    - First snow/soil layer depth:
+      ``soil_dz(p) = z(c, snl(c)+1) - zi(c, snl(c))``
+      (layer mid-point depth minus interface depth above it).
+
+    Solar zenith angle (Fortran lines 92-110):
+
+    The zenith angle is computed for the *beginning* of the CLM
+    timestep, i.e. at calendar day ``caldaym1 = calday(nstep-1)``.
+    The call chain is::
+
+        caldaym1  → shr_orb_decl  → declinm1
+        (caldaym1, lat, lon, declinm1) → shr_orb_cosz → coszen
+        solar_zen(p) = acos(max(0.01, coszen))
+
+    The ``max(0.01, coszen)`` floor prevents ``acos`` from returning
+    values beyond ``pi/2`` (i.e. clamps the sun no lower than ~89.4°
+    below horizontal), matching the Fortran exactly.
+
+    .. warning::
+        ``soil_t``, ``soil_dz``, and ``soil_tk`` (Fortran lines 84-88)
+        are required for the soil heat flux calculation.  When run
+        **coupled to CLM**, ``t_soisno`` is updated by CLM's own
+        ``SoilTemperatureMod``, *not* by the multilayer canopy's
+        ``MLSoilTemperatureMod``.  Therefore the soil temperature seen
+        here is independent of the multilayer canopy soil energy
+        balance.
+
+    Args:
+        nstep: Current CLM timestep number.
+        dtime_clm: CLM timestep duration (s).
+        num_filter: Number of patches in filter.
+        filter: Patch index filter (1-based values).
+        atm2lnd_inst: CLM atmosphere-to-land instance.  Required
+            fields:
+
+            - ``forc_u_grc[g]``, ``forc_v_grc[g]`` — wind components (m/s)
+            - ``forc_pco2_grc[g]`` — CO2 partial pressure (Pa)
+            - ``forc_po2_grc[g]`` — O2 partial pressure (Pa)
+            - ``forc_solai_grc[g, ib]`` — diffuse SW by waveband (W/m2)
+            - ``forc_solad_downscaled_col[c, ib]`` — direct SW (W/m2)
+            - ``forc_t_downscaled_col[c]`` — air temperature (K)
+            - ``forc_pbot_downscaled_col[c]`` — air pressure (Pa)
+            - ``forc_lwrad_downscaled_col[c]`` — longwave (W/m2)
+
+        soilstate_inst: CLM soil state instance.  Required fields:
+
+            - ``soilresis_col[c]`` — soil evaporative resistance (s/m)
+            - ``thk_col[c, j]`` — thermal conductivity (W/m/K)
+
+        temperature_inst: CLM temperature instance.  Required fields:
+
+            - ``t_a10_patch[p]`` — 10-day mean 2-m air temperature (K)
+            - ``t_soisno_col[c, j]`` — soil/snow temperature (K)
+
+        surfalb_inst: CLM surface albedo instance.  Required fields:
+
+            - ``albgrd_col[c, ib]`` — direct beam ground albedo (-)
+            - ``albgri_col[c, ib]`` — diffuse ground albedo (-)
+
+        wateratm2lndbulk_inst: CLM water forcing instance.  Required
+            fields:
+
+            - ``forc_q_downscaled_col[c]`` — specific humidity (kg/kg)
+            - ``forc_rain_downscaled_col[c]`` — rainfall (mm/s)
+            - ``forc_snow_downscaled_col[c]`` — snowfall (mm/s)
+
+        mlcanopy_inst: Canopy container to update.
+
+    Returns:
+        Updated :class:`mlcanopy_type` with all ``*_cur_forcing``,
+        ``*_soil``, and ``solar_zen_forcing`` fields set for the
+        current CLM timestep.
+    """
+    import math
+    from clm_src_main.clm_varpar import ivis, inir                              # noqa: F401
+    from clm_src_main.clm_varpar import nlevsno                                 # noqa: F401
+    from clm_src_main.clm_varcon import pi                                      # noqa: F401 (pi = rpi)
+    from clm_src_utils.clm_time_manager import get_curr_calday                   # noqa: F401
+    from clm_src_utils.clm_varorb import eccen, obliqr, lambm0, mvelpp           # noqa: F401
+    from clm_share.shr_orb_mod import shr_orb_decl, shr_orb_cosz            # noqa: F401
+    from clm_src_main.ColumnType import col                                     # noqa: F401
+    from clm_src_main.GridcellType import grc                                   # noqa: F401
+    from clm_src_main.PatchType import patch                                    # noqa: F401
+
+    # ------------------------------------------------------------------
+    # Unpack CLM inputs (mirrors Fortran associate block)
+    # ------------------------------------------------------------------
+    forc_u          = atm2lnd_inst.forc_u_grc
+    forc_v          = atm2lnd_inst.forc_v_grc
+    forc_pco2       = atm2lnd_inst.forc_pco2_grc
+    forc_po2        = atm2lnd_inst.forc_po2_grc
+    forc_solad_col  = atm2lnd_inst.forc_solad_downscaled_col
+    forc_solai      = atm2lnd_inst.forc_solai_grc
+    forc_t          = atm2lnd_inst.forc_t_downscaled_col
+    forc_pbot       = atm2lnd_inst.forc_pbot_downscaled_col
+    forc_lwrad      = atm2lnd_inst.forc_lwrad_downscaled_col
+    forc_q          = wateratm2lndbulk_inst.forc_q_downscaled_col
+    forc_rain       = wateratm2lndbulk_inst.forc_rain_downscaled_col
+    forc_snow       = wateratm2lndbulk_inst.forc_snow_downscaled_col
+    albgrd          = surfalb_inst.albgrd_col
+    albgri          = surfalb_inst.albgri_col
+    soilresis       = soilstate_inst.soilresis_col
+    thk             = soilstate_inst.thk_col
+    t_a10_patch     = temperature_inst.t_a10_patch
+    t_soisno        = temperature_inst.t_soisno_col
+    snl             = col.snl
+    z               = col.z
+    zi              = col.zi
+
+    # ------------------------------------------------------------------
+    # Mutable copies of the mlcanopy arrays to update
+    # ------------------------------------------------------------------
+    tref_cur    = mlcanopy_inst.tref_cur_forcing
+    qref_cur    = mlcanopy_inst.qref_cur_forcing
+    uref_cur    = mlcanopy_inst.uref_cur_forcing
+    pref_cur    = mlcanopy_inst.pref_cur_forcing
+    co2ref_cur  = mlcanopy_inst.co2ref_cur_forcing
+    o2ref       = mlcanopy_inst.o2ref_forcing
+    solar_zen   = mlcanopy_inst.solar_zen_forcing
+    swskyb_cur  = mlcanopy_inst.swskyb_cur_forcing
+    swskyd_cur  = mlcanopy_inst.swskyd_cur_forcing
+    lwsky_cur   = mlcanopy_inst.lwsky_cur_forcing
+    qflx_rain   = mlcanopy_inst.qflx_rain_forcing
+    qflx_snow   = mlcanopy_inst.qflx_snow_forcing
+    tacclim     = mlcanopy_inst.tacclim_forcing
+    albsoib     = mlcanopy_inst.albsoib_soil
+    albsoid     = mlcanopy_inst.albsoid_soil
+    soilres     = mlcanopy_inst.soilres_soil
+    soil_t      = mlcanopy_inst.soil_t_soil
+    soil_dz     = mlcanopy_inst.soil_dz_soil
+    soil_tk     = mlcanopy_inst.soil_tk_soil
+
+    # ------------------------------------------------------------------
+    # Copy CLM variables to multilayer canopy — Fortran lines 63-90
+    # ------------------------------------------------------------------
+    for fp in range(1, num_filter + 1):        # Fortran: do fp = 1, num_filter
+        p = int(filter[fp - 1])
+        c = int(patch.column[p])
+        g = int(patch.gridcell[p])
+
+        # Wind: resultant from east/north components — Fortran line 67
+        uref_cur = uref_cur.at[p].set(
+            math.sqrt(float(forc_u[g])**2 + float(forc_v[g])**2)
+        )
+
+        # Diffuse solar (grid cell g → patch p) — Fortran lines 68-69
+        swskyd_cur = swskyd_cur.at[p, ivis].set(float(forc_solai[g, ivis]))
+        swskyd_cur = swskyd_cur.at[p, inir].set(float(forc_solai[g, inir]))
+
+        # Column (c) → patch (p) scalars — Fortran lines 72-80
+        tref_cur  = tref_cur.at[p].set(float(forc_t[c]))
+        qref_cur  = qref_cur.at[p].set(float(forc_q[c]))
+        pref_cur  = pref_cur.at[p].set(float(forc_pbot[c]))
+        lwsky_cur = lwsky_cur.at[p].set(float(forc_lwrad[c]))
+        qflx_rain = qflx_rain.at[p].set(float(forc_rain[c]))
+        qflx_snow = qflx_snow.at[p].set(float(forc_snow[c]))
+        swskyb_cur = swskyb_cur.at[p, ivis].set(float(forc_solad_col[c, ivis]))
+        swskyb_cur = swskyb_cur.at[p, inir].set(float(forc_solad_col[c, inir]))
+
+        # CO2 and O2 unit conversions — Fortran lines 83-84
+        pbot_val = float(forc_pbot[c])
+        co2ref_cur = co2ref_cur.at[p].set(float(forc_pco2[g]) / pbot_val * 1.0e6)  # Pa -> umol/mol
+        o2ref      = o2ref.at[p].set(float(forc_po2[g]) / pbot_val * 1.0e3)        # Pa -> mmol/mol
+
+        # Acclimation temperature — Fortran line 87
+        tacclim = tacclim.at[p].set(float(t_a10_patch[p]))
+
+        # Ground albedos: column (c) → patch (p) — Fortran lines 89-90
+        albsoib = albsoib.at[p, ivis].set(float(albgrd[c, ivis]))
+        albsoib = albsoib.at[p, inir].set(float(albgrd[c, inir]))
+        albsoid = albsoid.at[p, ivis].set(float(albgri[c, ivis]))
+        albsoid = albsoid.at[p, inir].set(float(albgri[c, inir]))
+
+        # Soil evaporative resistance — Fortran line 93
+        soilres = soilres.at[p].set(float(soilresis[c]))
+
+        # First snow/soil layer properties — Fortran lines 99-101
+        # snl(c) is the number of snow layers (negative value in CLM);
+        # snl(c)+1 gives the Fortran index of the first snow or soil layer.
+        # In standalone mode snl=0, so j=1 (first soil layer).
+        # All arrays use direct j indexing (1:nlevgrnd), no nlevsno offset.
+        j = int(snl[c]) + 1                                  # Fortran index = Python index
+
+        soil_t_val  = float(t_soisno[c, j])                              # K
+        soil_dz_val = float(z[c, j]) - float(zi[c, int(snl[c])])         # m
+        soil_tk_val = float(thk[c, j])                                    # W/m/K
+
+        soil_t  = soil_t.at[p].set(soil_t_val)
+        soil_dz = soil_dz.at[p].set(soil_dz_val)
+        soil_tk = soil_tk.at[p].set(soil_tk_val)
+
+    # ------------------------------------------------------------------
+    # Solar zenith angle — Fortran lines 92-110
+    #
+    # Computed for the beginning of the CLM timestep, i.e. at
+    # calday(nstep-1):  caldaym1 = get_curr_calday(offset=-dtime_clm)
+    # ------------------------------------------------------------------
+    caldaym1 = float(get_curr_calday(offset=-int(dtime_clm)))
+
+    # Orbital declination for caldaym1 — Fortran line 105
+    declinm1, eccf = shr_orb_decl(caldaym1, eccen, mvelpp, lambm0, obliqr)
+
+    for fp in range(1, num_filter + 1):        # Fortran: do fp = 1, num_filter
+        p = int(filter[fp - 1])
+        g = int(patch.gridcell[p])
+
+        # Latitude and longitude in radians — Fortran lines 107-108
+        lat = float(grc.latdeg[g]) * pi / 180.0
+        lon = float(grc.londeg[g]) * pi / 180.0
+
+        # Cosine of solar zenith angle — Fortran line 109
+        coszen = float(shr_orb_cosz(caldaym1, lat, lon, declinm1))
+
+        # Zenith angle: floor coszen at 0.01 to avoid acos(≤0) — Fortran line 110
+        solar_zen_val = math.acos(max(0.01, coszen))
+        solar_zen = solar_zen.at[p].set(solar_zen_val)
+
+    # ------------------------------------------------------------------
+    # Return updated container
+    # ------------------------------------------------------------------
+    return mlcanopy_inst._replace(
+        tref_cur_forcing   = tref_cur,
+        qref_cur_forcing   = qref_cur,
+        uref_cur_forcing   = uref_cur,
+        pref_cur_forcing   = pref_cur,
+        co2ref_cur_forcing = co2ref_cur,
+        o2ref_forcing      = o2ref,
+        solar_zen_forcing  = solar_zen,
+        swskyb_cur_forcing = swskyb_cur,
+        swskyd_cur_forcing = swskyd_cur,
+        lwsky_cur_forcing  = lwsky_cur,
+        qflx_rain_forcing  = qflx_rain,
+        qflx_snow_forcing  = qflx_snow,
+        tacclim_forcing    = tacclim,
+        albsoib_soil       = albsoib,
+        albsoid_soil       = albsoid,
+        soilres_soil       = soilres,
+        soil_t_soil        = soil_t,
+        soil_dz_soil       = soil_dz,
+        soil_tk_soil       = soil_tk,
     )
     
-    # Initialize state for sub-stepping
-    # (In full implementation, would extract from mlcanopy_inst)
-    tg = jnp.ones(n_patches) * 288.0  # Example ground temperature
-    tleaf = jnp.ones((n_patches, 20, 2)) * 288.0
-    tair = jnp.ones((n_patches, 20)) * 288.0
-    eair = jnp.ones((n_patches, 20)) * 1000.0
-    cair = jnp.ones((n_patches, 20)) * 400.0
     
-    substep_state = initialize_substep_state(
-        tg=tg,
-        tleaf=tleaf,
-        tair=tair,
-        eair=eair,
-        cair=cair,
-    )
-    
-    # Main flux calculation: Net radiation computation
-    # This section computes the net radiation for sunlit/shaded leaves and soil.
-    # In the full model with sub-timestep iteration, this would be called within
-    # a time integration loop to update fluxes at each sub-step.
-    
-    # Net radiation calculation using radiation components
-    swleaf_sun_vis = jnp.zeros((n_patches, 20))
-    swleaf_sun_nir = jnp.zeros((n_patches, 20))
-    swleaf_shade_vis = jnp.zeros((n_patches, 20))
-    swleaf_shade_nir = jnp.zeros((n_patches, 20))
-    lwleaf_sun = jnp.zeros((n_patches, 20))
-    lwleaf_shade = jnp.zeros((n_patches, 20))
-    swsoi_vis = jnp.zeros(n_patches)
-    swsoi_nir = jnp.zeros(n_patches)
-    lwsoi = jnp.zeros(n_patches)
-    
-    rnleaf_sun, rnleaf_shade, rnsoi = compute_net_radiation(
-        swleaf_sun_vis=swleaf_sun_vis,
-        swleaf_sun_nir=swleaf_sun_nir,
-        swleaf_shade_vis=swleaf_shade_vis,
-        swleaf_shade_nir=swleaf_shade_nir,
-        lwleaf_sun=lwleaf_sun,
-        lwleaf_shade=lwleaf_shade,
-        swsoi_vis=swsoi_vis,
-        swsoi_nir=swsoi_nir,
-        lwsoi=lwsoi,
-        ncan=jnp.ones(n_patches, dtype=jnp.int32) * 20,
-    )
-    
-    # Soil relative humidity (from soil moisture and temperature)
-    # Set to 50% as initial estimate; in full implementation would be
-    # computed from soil water potential and temperature
-    rhg = jnp.ones(n_patches) * 0.5
-    
-    mlcanopy_state = MLCanopyFluxesState(
-        rnleaf_sun=rnleaf_sun,
-        rnleaf_shade=rnleaf_shade,
-        rnsoi=rnsoi,
-        rhg=rhg,
-        flux_accumulator=flux_accumulator,
-        flux_accumulator_profile=flux_accumulator_profile,
-        flux_accumulator_leaf=flux_accumulator_leaf,
-    )
-    
-    final_accumulators = FluxAccumulators(
-        flux_1d=flux_accumulator,
-        flux_2d=flux_accumulator_profile,
-        flux_3d=flux_accumulator_leaf,
-    )
-    
-    return mlcanopy_state, final_accumulators
+def _MLTimeStepFluxIntegration(
+    nstep_ml: int,
+    num_ml_steps: int,
+    num_filter: int,
+    filter: List[int],
+    flux_accumulator: np.ndarray,
+    flux_accumulator_profile: np.ndarray,
+    flux_accumulator_leaf: np.ndarray,
+    mlcanopy_inst: mlcanopy_type,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, mlcanopy_type]:
+    """
+    Accumulate ML-step fluxes and, on the final sub-step, write
+    time-averaged values back into the canopy container.
+
+    Mirrors Fortran subroutine ``MLTimeStepFluxIntegration``
+    (lines 1-175).
+
+    **Algorithm** (Fortran lines 56-175):
+
+    On every call:
+
+    1. If ``nstep_ml == 1`` zero the accumulators for patch ``p``
+       (Fortran lines 60-63).
+    2. Increment 23 single-level, 14 profile, and 12 leaf flux
+       variables in order, using counters ``i``, ``j``, ``k``
+       (Fortran lines 65-117).
+    3. Check that ``i == nvar1d``, ``j == nvar2d``, ``k == nvar3d``
+       (Fortran lines 119-121).
+
+    On the final sub-step only (``nstep_ml == num_ml_steps``):
+
+    4. Divide all three accumulators by ``num_ml_steps`` (time average).
+    5. Write the averaged values back into ``mlcanopy_inst`` in the
+       same ``i``/``j``/``k`` order as the accumulation (Fortran lines
+       135-172).
+
+    **Single-level variable order** (``i = 1 … 23``):
+
+    ``ustar, beta, obu, z0m, zdisp, lwup,``
+    ``swsoi(ivis), swsoi(inir), lwsoi, rnsoi, shsoi, lhsoi, etsoi,``
+    ``gsoi, gac0, qflx_intr, qflx_tflrain, qflx_tflsnow,``
+    ``swskyb(ivis), swskyb(inir), swskyd(ivis), swskyd(inir), lwsky``
+
+    **Profile variable order** (``j = 1 … 14``):
+
+    ``shair, etair, stair, mflx, kc_eddy, gac``
+    (layers ``1:ncan``, stored at accumulator rows ``1:ncan``),
+    then the 8 radiative-flux variables
+    ``swupw(ivis), swupw(inir), swdwn(ivis), swdwn(inir),``
+    ``swbeam(ivis), swbeam(inir), lwupw, lwdwn``
+    (Fortran layers ``0:ncan``, stored at accumulator rows
+    ``1:ncan+1``).
+
+    **Leaf variable order** (``k = 1 … 12``):
+
+    ``swleaf(ivis), swleaf(inir), lwleaf, rnleaf, shleaf, lhleaf,``
+    ``trleaf, evleaf, stleaf, anet, agross, gs``
+
+    **Radiative-flux index remapping** (Fortran comment lines 78-85):
+
+    Fortran radiative arrays are dimensioned ``0:ncan``.  The
+    accumulator uses 1-based storage ``1:ncan+1``.  The mapping is:
+
+    .. code-block:: none
+
+        Fortran array index  :  0,  1, …, ncan
+        Accumulator row      :  1,  2, …, ncan+1
+
+    In Python (0-based JAX arrays) the radiation slice is
+    ``arr[p, 0:ncan+1, ib]``; the corresponding accumulator slice is
+    ``flux_accumulator_profile[p, 1:ncan+2, j]``.
+
+    Args:
+        nstep_ml: Current multilayer sub-step (1-based).
+        num_ml_steps: Total number of ML sub-steps per CLM step.
+        num_filter: Number of patches in filter.
+        filter: Patch index filter (1-based values).
+        flux_accumulator: NumPy array ``(endp+1, nvar1d)`` — running
+            sums of single-level fluxes.  Modified in place.
+        flux_accumulator_profile: NumPy array
+            ``(endp+1, nlevmlcan+2, nvar2d)`` — running sums of
+            profile fluxes.  Modified in place.
+        flux_accumulator_leaf: NumPy array
+            ``(endp+1, nlevmlcan+1, nleaf+1, nvar3d)`` — running sums
+            of leaf fluxes.  Modified in place.
+        mlcanopy_inst: Canopy container (read every sub-step; updated
+            and returned only on the final sub-step).
+
+    Returns:
+        Tuple ``(flux_accumulator, flux_accumulator_profile,
+        flux_accumulator_leaf, mlcanopy_inst)``.  The first three
+        elements are the (possibly updated) accumulator arrays.
+        ``mlcanopy_inst`` is unchanged except on the final sub-step,
+        when it carries the time-averaged flux values.
+    """
+    from clm_src_main.clm_varpar import ivis, inir  # noqa: F401
+    from clm_src_main.abortutils import endrun      # noqa: F401
+
+    # Dimension check constants (must match MLCanopyFluxesMod)
+    nvar1d = 23
+    nvar2d = 14
+    nvar3d = 12
+
+    for fp in range(1, num_filter + 1):   # Fortran: do fp = 1, num_filter
+        p = int(filter[fp - 1])
+        _ncan = int(mlcanopy_inst.ncan_canopy[p])
+
+        # ------------------------------------------------------------------
+        # Initialise accumulators on first ML sub-step — Fortran lines 60-63
+        # ------------------------------------------------------------------
+        if nstep_ml == 1:
+            flux_accumulator[p, :] = 0.0
+            flux_accumulator_profile[p, :, :] = 0.0
+            flux_accumulator_leaf[p, :, :, :] = 0.0
+
+        # ------------------------------------------------------------------
+        # Accumulate single-level (1-D) fluxes — Fortran lines 65-87
+        # Variable order must match write-back block exactly.
+        # ------------------------------------------------------------------
+        i = -1   # incremented before use, reaching 0 on first i+=1; then 0-based
+
+        def _acc1(val):
+            nonlocal i
+            i += 1
+            flux_accumulator[p, i] += float(val)
+
+        _acc1(mlcanopy_inst.ustar_canopy[p])                      # i=0  → Fortran i=1
+        _acc1(mlcanopy_inst.beta_canopy[p])                       # i=1
+        _acc1(mlcanopy_inst.obu_canopy[p])                        # i=2
+        _acc1(mlcanopy_inst.z0m_canopy[p])                        # i=3
+        _acc1(mlcanopy_inst.zdisp_canopy[p])                      # i=4
+        _acc1(mlcanopy_inst.lwup_canopy[p])                       # i=5
+        _acc1(mlcanopy_inst.swsoi_soil[p, ivis])                  # i=6
+        _acc1(mlcanopy_inst.swsoi_soil[p, inir])                  # i=7
+        _acc1(mlcanopy_inst.lwsoi_soil[p])                        # i=8
+        _acc1(mlcanopy_inst.rnsoi_soil[p])                        # i=9
+        _acc1(mlcanopy_inst.shsoi_soil[p])                        # i=10
+        _acc1(mlcanopy_inst.lhsoi_soil[p])                        # i=11
+        _acc1(mlcanopy_inst.etsoi_soil[p])                        # i=12
+        _acc1(mlcanopy_inst.gsoi_soil[p])                         # i=13
+        _acc1(mlcanopy_inst.gac0_soil[p])                         # i=14
+        _acc1(mlcanopy_inst.qflx_intr_canopy[p])                  # i=15
+        _acc1(mlcanopy_inst.qflx_tflrain_canopy[p])               # i=16
+        _acc1(mlcanopy_inst.qflx_tflsnow_canopy[p])               # i=17
+        _acc1(mlcanopy_inst.swskyb_forcing[p, ivis])              # i=18
+        _acc1(mlcanopy_inst.swskyb_forcing[p, inir])              # i=19
+        _acc1(mlcanopy_inst.swskyd_forcing[p, ivis])              # i=20
+        _acc1(mlcanopy_inst.swskyd_forcing[p, inir])              # i=21
+        _acc1(mlcanopy_inst.lwsky_forcing[p])                     # i=22
+
+        if (i + 1) > nvar1d:
+            endrun(msg=' ERROR: MLTimeStepFluxIntegration: nvar error')
+
+        # ------------------------------------------------------------------
+        # Accumulate profile (2-D) fluxes — Fortran lines 89-102
+        #
+        # Non-radiation layers: Fortran 1:ncan  → Python indices 1..ncan
+        #   acc rows 1:ncan  (Python [1:ncan+1])
+        #
+        # Radiation layers: Fortran 0:ncan → Python indices 0..ncan
+        #   acc rows 1:ncan+1 (Python [1:ncan+2])
+        # ------------------------------------------------------------------
+        j = -1
+
+        def _acc2_layers(arr_slice):
+            """Accumulate ncan-length slice (rows 1..ncan of accumulator)."""
+            nonlocal j
+            j += 1
+            flux_accumulator_profile[p, 1:_ncan + 1, j] += np.asarray(arr_slice)
+
+        def _acc2_rad(arr_slice):
+            """Accumulate (ncan+1)-length radiation slice (rows 1..ncan+1 of accumulator)."""
+            nonlocal j
+            j += 1
+            flux_accumulator_profile[p, 1:_ncan + 2, j] += np.asarray(arr_slice)
+
+        # Fortran: shair(p,1:ncan), etair, stair, mflx, kc_eddy, gac
+        _acc2_layers(mlcanopy_inst.shair_profile[p, 1:_ncan + 1])
+        _acc2_layers(mlcanopy_inst.etair_profile[p, 1:_ncan + 1])
+        _acc2_layers(mlcanopy_inst.stair_profile[p, 1:_ncan + 1])
+        _acc2_layers(mlcanopy_inst.mflx_profile[p, 1:_ncan + 1])
+        _acc2_layers(mlcanopy_inst.kc_eddy_profile[p, 1:_ncan + 1])
+        _acc2_layers(mlcanopy_inst.gac_profile[p, 1:_ncan + 1])
+
+        # Fortran: swupw(p,0:ncan,ivis/inir), swdwn, swbeam, lwupw, lwdwn
+        _acc2_rad(mlcanopy_inst.swupw_profile[p, 0:_ncan + 1, ivis])
+        _acc2_rad(mlcanopy_inst.swupw_profile[p, 0:_ncan + 1, inir])
+        _acc2_rad(mlcanopy_inst.swdwn_profile[p, 0:_ncan + 1, ivis])
+        _acc2_rad(mlcanopy_inst.swdwn_profile[p, 0:_ncan + 1, inir])
+        _acc2_rad(mlcanopy_inst.swbeam_profile[p, 0:_ncan + 1, ivis])
+        _acc2_rad(mlcanopy_inst.swbeam_profile[p, 0:_ncan + 1, inir])
+        _acc2_rad(mlcanopy_inst.lwupw_profile[p, 0:_ncan + 1])
+        _acc2_rad(mlcanopy_inst.lwdwn_profile[p, 0:_ncan + 1])
+
+        if (j + 1) > nvar2d:
+            endrun(msg=' ERROR: MLTimeStepFluxIntegration: nvar error')
+
+        # ------------------------------------------------------------------
+        # Accumulate leaf (3-D) fluxes — Fortran lines 104-117
+        # All leaf arrays: full (nlevmlcan+1, nleaf+1) slice
+        # ------------------------------------------------------------------
+        k = -1
+
+        def _acc3(arr_slice):
+            nonlocal k
+            k += 1
+            flux_accumulator_leaf[p, :, :, k] += np.asarray(arr_slice)
+
+        _acc3(mlcanopy_inst.swleaf_leaf[p, :, :, ivis])   # k=0  → Fortran k=1
+        _acc3(mlcanopy_inst.swleaf_leaf[p, :, :, inir])   # k=1
+        _acc3(mlcanopy_inst.lwleaf_leaf[p, :, :])          # k=2
+        _acc3(mlcanopy_inst.rnleaf_leaf[p, :, :])          # k=3
+        _acc3(mlcanopy_inst.shleaf_leaf[p, :, :])          # k=4
+        _acc3(mlcanopy_inst.lhleaf_leaf[p, :, :])          # k=5
+        _acc3(mlcanopy_inst.trleaf_leaf[p, :, :])          # k=6
+        _acc3(mlcanopy_inst.evleaf_leaf[p, :, :])          # k=7
+        _acc3(mlcanopy_inst.stleaf_leaf[p, :, :])          # k=8
+        _acc3(mlcanopy_inst.anet_leaf[p, :, :])            # k=9
+        _acc3(mlcanopy_inst.agross_leaf[p, :, :])          # k=10
+        _acc3(mlcanopy_inst.gs_leaf[p, :, :])              # k=11
+
+        if (k + 1) > nvar3d:
+            endrun(msg=' ERROR: MLTimeStepFluxIntegration: nvar error')
+
+    # ======================================================================
+    # Final sub-step: average and write back — Fortran lines 123-172
+    # ======================================================================
+    if nstep_ml == num_ml_steps:
+
+        scale = 1.0 / float(num_ml_steps)
+
+        for fp in range(1, num_filter + 1):
+            p = int(filter[fp - 1])
+            flux_accumulator[p, :] *= scale
+            flux_accumulator_profile[p, :, :] *= scale
+            flux_accumulator_leaf[p, :, :, :] *= scale
+
+        # Read all arrays we need to update
+        ustar    = mlcanopy_inst.ustar_canopy
+        beta     = mlcanopy_inst.beta_canopy
+        obu      = mlcanopy_inst.obu_canopy
+        z0m      = mlcanopy_inst.z0m_canopy
+        zdisp    = mlcanopy_inst.zdisp_canopy
+        lwup     = mlcanopy_inst.lwup_canopy
+        swsoi    = mlcanopy_inst.swsoi_soil
+        lwsoi    = mlcanopy_inst.lwsoi_soil
+        rnsoi    = mlcanopy_inst.rnsoi_soil
+        shsoi    = mlcanopy_inst.shsoi_soil
+        lhsoi    = mlcanopy_inst.lhsoi_soil
+        etsoi    = mlcanopy_inst.etsoi_soil
+        gsoi     = mlcanopy_inst.gsoi_soil
+        gac0     = mlcanopy_inst.gac0_soil
+        qflx_intr     = mlcanopy_inst.qflx_intr_canopy
+        qflx_tflrain  = mlcanopy_inst.qflx_tflrain_canopy
+        qflx_tflsnow  = mlcanopy_inst.qflx_tflsnow_canopy
+        swskyb   = mlcanopy_inst.swskyb_forcing
+        swskyd   = mlcanopy_inst.swskyd_forcing
+        lwsky    = mlcanopy_inst.lwsky_forcing
+        shair    = mlcanopy_inst.shair_profile
+        etair    = mlcanopy_inst.etair_profile
+        stair    = mlcanopy_inst.stair_profile
+        mflx     = mlcanopy_inst.mflx_profile
+        kc_eddy  = mlcanopy_inst.kc_eddy_profile
+        gac      = mlcanopy_inst.gac_profile
+        swupw    = mlcanopy_inst.swupw_profile
+        swdwn    = mlcanopy_inst.swdwn_profile
+        swbeam   = mlcanopy_inst.swbeam_profile
+        lwupw    = mlcanopy_inst.lwupw_profile
+        lwdwn    = mlcanopy_inst.lwdwn_profile
+        swleaf   = mlcanopy_inst.swleaf_leaf
+        lwleaf   = mlcanopy_inst.lwleaf_leaf
+        rnleaf   = mlcanopy_inst.rnleaf_leaf
+        shleaf   = mlcanopy_inst.shleaf_leaf
+        lhleaf   = mlcanopy_inst.lhleaf_leaf
+        trleaf   = mlcanopy_inst.trleaf_leaf
+        evleaf   = mlcanopy_inst.evleaf_leaf
+        stleaf   = mlcanopy_inst.stleaf_leaf
+        anet     = mlcanopy_inst.anet_leaf
+        agross   = mlcanopy_inst.agross_leaf
+        gs       = mlcanopy_inst.gs_leaf
+
+        for fp in range(1, num_filter + 1):   # Fortran: do fp = 1, num_filter
+            p = int(filter[fp - 1])
+            _ncan = int(mlcanopy_inst.ncan_canopy[p])
+
+            # --------------------------------------------------------------
+            # Map single-level averages back — Fortran lines 135-157
+            # Same i-order as accumulation above.
+            # --------------------------------------------------------------
+            i = -1
+
+            def _wb1():
+                nonlocal i
+                i += 1
+                return float(flux_accumulator[p, i])
+
+            ustar  = ustar.at[p].set(_wb1())
+            beta   = beta.at[p].set(_wb1())
+            obu    = obu.at[p].set(_wb1())
+            z0m    = z0m.at[p].set(_wb1())
+            zdisp  = zdisp.at[p].set(_wb1())
+            lwup   = lwup.at[p].set(_wb1())
+            swsoi  = swsoi.at[p, ivis].set(_wb1())
+            swsoi  = swsoi.at[p, inir].set(_wb1())
+            lwsoi  = lwsoi.at[p].set(_wb1())
+            rnsoi  = rnsoi.at[p].set(_wb1())
+            shsoi  = shsoi.at[p].set(_wb1())
+            lhsoi  = lhsoi.at[p].set(_wb1())
+            etsoi  = etsoi.at[p].set(_wb1())
+            gsoi   = gsoi.at[p].set(_wb1())
+            gac0   = gac0.at[p].set(_wb1())
+            qflx_intr    = qflx_intr.at[p].set(_wb1())
+            qflx_tflrain = qflx_tflrain.at[p].set(_wb1())
+            qflx_tflsnow = qflx_tflsnow.at[p].set(_wb1())
+            swskyb = swskyb.at[p, ivis].set(_wb1())
+            swskyb = swskyb.at[p, inir].set(_wb1())
+            swskyd = swskyd.at[p, ivis].set(_wb1())
+            swskyd = swskyd.at[p, inir].set(_wb1())
+            lwsky  = lwsky.at[p].set(_wb1())
+
+            if (i + 1) > nvar1d:
+                endrun(msg=' ERROR: MLTimeStepFluxIntegration: nvar error')
+
+            # --------------------------------------------------------------
+            # Map profile averages back — Fortran lines 159-170
+            # --------------------------------------------------------------
+            j = -1
+
+            def _wb2_layers():
+                """Read ncan-length slice from accumulator rows 1..ncan."""
+                nonlocal j
+                j += 1
+                return jnp.array(flux_accumulator_profile[p, 1:_ncan + 1, j])
+
+            def _wb2_rad():
+                """Read (ncan+1)-length radiation slice from rows 1..ncan+1."""
+                nonlocal j
+                j += 1
+                return jnp.array(flux_accumulator_profile[p, 1:_ncan + 2, j])
+
+            shair  = shair.at[p, 1:_ncan + 1].set(_wb2_layers())
+            etair  = etair.at[p, 1:_ncan + 1].set(_wb2_layers())
+            stair  = stair.at[p, 1:_ncan + 1].set(_wb2_layers())
+            mflx   = mflx.at[p, 1:_ncan + 1].set(_wb2_layers())
+            kc_eddy = kc_eddy.at[p, 1:_ncan + 1].set(_wb2_layers())
+            gac    = gac.at[p, 1:_ncan + 1].set(_wb2_layers())
+
+            # Radiation: acc rows 1..ncan+1 → array indices 0..ncan
+            swupw  = swupw.at[p, 0:_ncan + 1, ivis].set(_wb2_rad())
+            swupw  = swupw.at[p, 0:_ncan + 1, inir].set(_wb2_rad())
+            swdwn  = swdwn.at[p, 0:_ncan + 1, ivis].set(_wb2_rad())
+            swdwn  = swdwn.at[p, 0:_ncan + 1, inir].set(_wb2_rad())
+            swbeam = swbeam.at[p, 0:_ncan + 1, ivis].set(_wb2_rad())
+            swbeam = swbeam.at[p, 0:_ncan + 1, inir].set(_wb2_rad())
+            lwupw  = lwupw.at[p, 0:_ncan + 1].set(_wb2_rad())
+            lwdwn  = lwdwn.at[p, 0:_ncan + 1].set(_wb2_rad())
+
+            if (j + 1) > nvar2d:
+                endrun(msg=' ERROR: MLTimeStepFluxIntegration: nvar error')
+
+            # --------------------------------------------------------------
+            # Map leaf averages back — Fortran lines 171-182
+            # --------------------------------------------------------------
+            k = -1
+
+            def _wb3():
+                nonlocal k
+                k += 1
+                return jnp.array(flux_accumulator_leaf[p, :, :, k])
+
+            swleaf = swleaf.at[p, :, :, ivis].set(_wb3())
+            swleaf = swleaf.at[p, :, :, inir].set(_wb3())
+            lwleaf = lwleaf.at[p, :, :].set(_wb3())
+            rnleaf = rnleaf.at[p, :, :].set(_wb3())
+            shleaf = shleaf.at[p, :, :].set(_wb3())
+            lhleaf = lhleaf.at[p, :, :].set(_wb3())
+            trleaf = trleaf.at[p, :, :].set(_wb3())
+            evleaf = evleaf.at[p, :, :].set(_wb3())
+            stleaf = stleaf.at[p, :, :].set(_wb3())
+            anet   = anet.at[p, :, :].set(_wb3())
+            agross = agross.at[p, :, :].set(_wb3())
+            gs     = gs.at[p, :, :].set(_wb3())
+
+            if (k + 1) > nvar3d:
+                endrun(msg=' ERROR: MLTimeStepFluxIntegration: nvar error')
+
+        # Commit all updates to the immutable container
+        mlcanopy_inst = mlcanopy_inst._replace(
+            ustar_canopy          = ustar,
+            beta_canopy           = beta,
+            obu_canopy            = obu,
+            z0m_canopy            = z0m,
+            zdisp_canopy          = zdisp,
+            lwup_canopy           = lwup,
+            swsoi_soil            = swsoi,
+            lwsoi_soil            = lwsoi,
+            rnsoi_soil            = rnsoi,
+            shsoi_soil            = shsoi,
+            lhsoi_soil            = lhsoi,
+            etsoi_soil            = etsoi,
+            gsoi_soil             = gsoi,
+            gac0_soil             = gac0,
+            qflx_intr_canopy      = qflx_intr,
+            qflx_tflrain_canopy   = qflx_tflrain,
+            qflx_tflsnow_canopy   = qflx_tflsnow,
+            swskyb_forcing        = swskyb,
+            swskyd_forcing        = swskyd,
+            lwsky_forcing         = lwsky,
+            shair_profile         = shair,
+            etair_profile         = etair,
+            stair_profile         = stair,
+            mflx_profile          = mflx,
+            kc_eddy_profile       = kc_eddy,
+            gac_profile           = gac,
+            swupw_profile         = swupw,
+            swdwn_profile         = swdwn,
+            swbeam_profile        = swbeam,
+            lwupw_profile         = lwupw,
+            lwdwn_profile         = lwdwn,
+            swleaf_leaf           = swleaf,
+            lwleaf_leaf           = lwleaf,
+            rnleaf_leaf           = rnleaf,
+            shleaf_leaf           = shleaf,
+            lhleaf_leaf           = lhleaf,
+            trleaf_leaf           = trleaf,
+            evleaf_leaf           = evleaf,
+            stleaf_leaf           = stleaf,
+            anet_leaf             = anet,
+            agross_leaf           = agross,
+            gs_leaf               = gs,
+        )
+
+    return flux_accumulator, flux_accumulator_profile, flux_accumulator_leaf, mlcanopy_inst
 
 
-# Backward compatibility alias
-MLCanopyFluxes = MLCanopyFluxesState
+def _CanopyFluxesDiagnostics(
+    num_filter: int,
+    filter: List[int],
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """
+    Compute canopy-integrated fluxes, diagnostics, and energy balance checks.
+
+    Mirrors Fortran subroutine ``CanopyFluxesDiagnostics`` (lines 1-270).
+
+    **Algorithm** (one pass per patch ``p``):
+
+    1. **Layer-mean leaf fluxes** (Fortran lines 80-130):
+       For each layer ``ic`` with ``dpai > 0`` compute sun/shade
+       weighted means::
+
+           X_mean(ic) = X(ic,isun)*fracsun(ic) + X(ic,isha)*(1-fracsun(ic))
+
+       and convert to per-ground-area source terms::
+
+           Xsrc(ic) = X_mean(ic) * dpai(ic)
+
+       Layers with ``dpai == 0`` are zeroed.
+
+    2. **Vegetation totals** (Fortran lines 132-158):
+       Sum source terms over all layers to produce ``swveg``, ``lwveg``,
+       ``shveg``, ``lhveg``, ``etveg``, ``trveg``, ``evveg``,
+       ``gppveg``, ``vcmax25veg``, ``gsveg``, ``stflx_veg``.
+
+    3. **Vegetation energy balance check** (Fortran lines 160-163):
+       ``|swveg(vis) + swveg(nir) + lwveg - shveg - lhveg - stflx_veg| < 1e-3 W/m²``
+
+    4. **Albedo** (Fortran lines 165-171):
+       ``albcan(ib) = swupw(ntop, ib) / (swskyb(ib) + swskyd(ib))``
+       (0 when incoming == 0).
+
+    5. **Turbulent fluxes** (Fortran lines 173-182):
+       ``flux_profile_type == 0 or -1``: ``shflx = shveg + shsoi``,
+       ``etflx = etveg + etsoi``, ``lhflx = lhveg + lhsoi``.
+       ``flux_profile_type == 1``: take top-layer air flux directly.
+
+    6. **Air storage flux** (Fortran lines 184-187):
+       ``stflx_air = sum(stair(1:ncan))``.
+
+    7. **Overall energy balance checks** (Fortran lines 189-211):
+       Three independent checks with tolerances 0.001, 0.001, and
+       0.01 W/m².
+
+    8. **Sun/shade canopy totals** (Fortran lines 213-250):
+       Accumulate ``laisun``, ``laisha``, per-population fluxes
+       ``swvegsun/sha``, ``lwvegsun/sha``, ``shvegsun/sha``,
+       ``lhvegsun/sha``, ``etvegsun/sha``, ``gppvegsun/sha``,
+       ``vcmax25sun/sha``, ``gsvegsun/sha``.
+
+    9. **PAI-weighted temperatures and wind** (Fortran lines 252-268):
+       ``windveg``, ``windvegsun``, ``windvegsha``, ``tlveg``,
+       ``tlvegsun``, ``tlvegsha``, ``taveg``, ``tavegsun``,
+       ``tavegsha``.
+
+    10. **Water-stress fraction** (Fortran lines 270-278):
+        ``fracminlwp = sum(dpai where lwp_mean <= -2 MPa) / (lai+sai)``
+
+    Args:
+        num_filter: Number of patches in filter.
+        filter: Patch index filter (1-based values).
+        mlcanopy_inst: Canopy container; all fields read; output fields
+            written and returned.
+
+    Returns:
+        Updated :class:`mlcanopy_type`.
+    """
+    from clm_src_main.clm_varpar import numrad, ivis, inir          # noqa: F401
+    from multilayer_canopy.MLclm_varctl import flux_profile_type         # noqa: F401
+    from multilayer_canopy.MLclm_varpar import isun, isha                # noqa: F401
+    from multilayer_canopy.MLWaterVaporMod import LatVap                 # noqa: F401
+    from clm_src_main.abortutils import endrun                      # noqa: F401
+
+    # ------------------------------------------------------------------
+    # Extract mutable arrays (all output fields)
+    # ------------------------------------------------------------------
+    rnet        = mlcanopy_inst.rnet_canopy
+    stflx_air   = mlcanopy_inst.stflx_air_canopy
+    stflx_veg   = mlcanopy_inst.stflx_veg_canopy
+    shflx       = mlcanopy_inst.shflx_canopy
+    lhflx       = mlcanopy_inst.lhflx_canopy
+    etflx       = mlcanopy_inst.etflx_canopy
+    albcan      = mlcanopy_inst.albcan_canopy
+    swveg       = mlcanopy_inst.swveg_canopy
+    swvegsun    = mlcanopy_inst.swvegsun_canopy
+    swvegsha    = mlcanopy_inst.swvegsha_canopy
+    lwveg       = mlcanopy_inst.lwveg_canopy
+    lwvegsun    = mlcanopy_inst.lwvegsun_canopy
+    lwvegsha    = mlcanopy_inst.lwvegsha_canopy
+    shveg       = mlcanopy_inst.shveg_canopy
+    shvegsun    = mlcanopy_inst.shvegsun_canopy
+    shvegsha    = mlcanopy_inst.shvegsha_canopy
+    lhveg       = mlcanopy_inst.lhveg_canopy
+    lhvegsun    = mlcanopy_inst.lhvegsun_canopy
+    lhvegsha    = mlcanopy_inst.lhvegsha_canopy
+    etveg       = mlcanopy_inst.etveg_canopy
+    etvegsun    = mlcanopy_inst.etvegsun_canopy
+    etvegsha    = mlcanopy_inst.etvegsha_canopy
+    trveg       = mlcanopy_inst.trveg_canopy
+    evveg       = mlcanopy_inst.evveg_canopy
+    gppveg      = mlcanopy_inst.gppveg_canopy
+    gppvegsun   = mlcanopy_inst.gppvegsun_canopy
+    gppvegsha   = mlcanopy_inst.gppvegsha_canopy
+    vcmax25veg  = mlcanopy_inst.vcmax25veg_canopy
+    vcmax25sun  = mlcanopy_inst.vcmax25sun_canopy
+    vcmax25sha  = mlcanopy_inst.vcmax25sha_canopy
+    gsveg       = mlcanopy_inst.gsveg_canopy
+    gsvegsun    = mlcanopy_inst.gsvegsun_canopy
+    gsvegsha    = mlcanopy_inst.gsvegsha_canopy
+    windveg     = mlcanopy_inst.windveg_canopy
+    windvegsun  = mlcanopy_inst.windvegsun_canopy
+    windvegsha  = mlcanopy_inst.windvegsha_canopy
+    tlveg       = mlcanopy_inst.tlveg_canopy
+    tlvegsun    = mlcanopy_inst.tlvegsun_canopy
+    tlvegsha    = mlcanopy_inst.tlvegsha_canopy
+    taveg       = mlcanopy_inst.taveg_canopy
+    tavegsun    = mlcanopy_inst.tavegsun_canopy
+    tavegsha    = mlcanopy_inst.tavegsha_canopy
+    laisun      = mlcanopy_inst.laisun_canopy
+    laisha      = mlcanopy_inst.laisha_canopy
+    fracminlwp  = mlcanopy_inst.fracminlwp_canopy
+    swsrc       = mlcanopy_inst.swsrc_profile
+    lwsrc       = mlcanopy_inst.lwsrc_profile
+    rnsrc       = mlcanopy_inst.rnsrc_profile
+    stsrc       = mlcanopy_inst.stsrc_profile
+    shsrc       = mlcanopy_inst.shsrc_profile
+    lhsrc       = mlcanopy_inst.lhsrc_profile
+    etsrc       = mlcanopy_inst.etsrc_profile
+    trsrc       = mlcanopy_inst.trsrc_profile
+    evsrc       = mlcanopy_inst.evsrc_profile
+    fco2src     = mlcanopy_inst.fco2src_profile
+    swleaf_mean = mlcanopy_inst.swleaf_mean_profile
+    lwleaf_mean = mlcanopy_inst.lwleaf_mean_profile
+    rnleaf_mean = mlcanopy_inst.rnleaf_mean_profile
+    stleaf_mean = mlcanopy_inst.stleaf_mean_profile
+    shleaf_mean = mlcanopy_inst.shleaf_mean_profile
+    lhleaf_mean = mlcanopy_inst.lhleaf_mean_profile
+    etleaf_mean = mlcanopy_inst.etleaf_mean_profile
+    trleaf_mean = mlcanopy_inst.trleaf_mean_profile
+    evleaf_mean = mlcanopy_inst.evleaf_mean_profile
+    fco2_mean   = mlcanopy_inst.fco2_mean_profile
+    apar_mean   = mlcanopy_inst.apar_mean_profile
+    gs_mean     = mlcanopy_inst.gs_mean_profile
+    tleaf_mean  = mlcanopy_inst.tleaf_mean_profile
+    lwp_mean    = mlcanopy_inst.lwp_mean_profile
+
+    # ==================================================================
+    # Main patch loop — Fortran: do fp = 1, num_filter
+    # ==================================================================
+    for fp in range(1, num_filter + 1):
+        p = int(filter[fp - 1])
+        _ncan = int(mlcanopy_inst.ncan_canopy[p])
+        _ntop = int(mlcanopy_inst.ntop_canopy[p])
+        _sl   = slice(1, _ncan + 1)
+
+        # ----------------------------------------------------------------
+        # Pre-extract all per-layer inputs as numpy (one sync per array)
+        # ----------------------------------------------------------------
+        _dpai    = np.asarray(mlcanopy_inst.dpai_profile[p])
+        _fracsun = np.asarray(mlcanopy_inst.fracsun_profile[p])
+        _fwet    = np.asarray(mlcanopy_inst.fwet_profile[p])
+        _fdry    = np.asarray(mlcanopy_inst.fdry_profile[p])
+        _wind    = np.asarray(mlcanopy_inst.wind_profile[p])
+        _tair    = np.asarray(mlcanopy_inst.tair_profile[p])
+        _stair   = np.asarray(mlcanopy_inst.stair_profile[p])
+        _vcmax25_prof = np.asarray(mlcanopy_inst.vcmax25_profile[p])
+        _lwleaf_sun  = np.asarray(mlcanopy_inst.lwleaf_leaf[p, :, isun])
+        _lwleaf_sha  = np.asarray(mlcanopy_inst.lwleaf_leaf[p, :, isha])
+        _swleaf_sun_vis = np.asarray(mlcanopy_inst.swleaf_leaf[p, :, isun, ivis])
+        _swleaf_sun_nir = np.asarray(mlcanopy_inst.swleaf_leaf[p, :, isun, inir])
+        _swleaf_sha_vis = np.asarray(mlcanopy_inst.swleaf_leaf[p, :, isha, ivis])
+        _swleaf_sha_nir = np.asarray(mlcanopy_inst.swleaf_leaf[p, :, isha, inir])
+        _rnleaf_sun = np.asarray(mlcanopy_inst.rnleaf_leaf[p, :, isun])
+        _rnleaf_sha = np.asarray(mlcanopy_inst.rnleaf_leaf[p, :, isha])
+        _stleaf_sun = np.asarray(mlcanopy_inst.stleaf_leaf[p, :, isun])
+        _stleaf_sha = np.asarray(mlcanopy_inst.stleaf_leaf[p, :, isha])
+        _shleaf_sun = np.asarray(mlcanopy_inst.shleaf_leaf[p, :, isun])
+        _shleaf_sha = np.asarray(mlcanopy_inst.shleaf_leaf[p, :, isha])
+        _lhleaf_sun = np.asarray(mlcanopy_inst.lhleaf_leaf[p, :, isun])
+        _lhleaf_sha = np.asarray(mlcanopy_inst.lhleaf_leaf[p, :, isha])
+        _evleaf_sun = np.asarray(mlcanopy_inst.evleaf_leaf[p, :, isun])
+        _evleaf_sha = np.asarray(mlcanopy_inst.evleaf_leaf[p, :, isha])
+        _trleaf_sun = np.asarray(mlcanopy_inst.trleaf_leaf[p, :, isun])
+        _trleaf_sha = np.asarray(mlcanopy_inst.trleaf_leaf[p, :, isha])
+        _anet_sun   = np.asarray(mlcanopy_inst.anet_leaf[p, :, isun])
+        _anet_sha   = np.asarray(mlcanopy_inst.anet_leaf[p, :, isha])
+        _agross_sun = np.asarray(mlcanopy_inst.agross_leaf[p, :, isun])
+        _agross_sha = np.asarray(mlcanopy_inst.agross_leaf[p, :, isha])
+        _apar_sun   = np.asarray(mlcanopy_inst.apar_leaf[p, :, isun])
+        _apar_sha   = np.asarray(mlcanopy_inst.apar_leaf[p, :, isha])
+        _gs_sun     = np.asarray(mlcanopy_inst.gs_leaf[p, :, isun])
+        _gs_sha     = np.asarray(mlcanopy_inst.gs_leaf[p, :, isha])
+        _tleaf_sun  = np.asarray(mlcanopy_inst.tleaf_leaf[p, :, isun])
+        _tleaf_sha  = np.asarray(mlcanopy_inst.tleaf_leaf[p, :, isha])
+        _lwp_sun    = np.asarray(mlcanopy_inst.lwp_leaf[p, :, isun])
+        _lwp_sha    = np.asarray(mlcanopy_inst.lwp_leaf[p, :, isha])
+        _vcmax25_sun = np.asarray(mlcanopy_inst.vcmax25_leaf[p, :, isun])
+        _vcmax25_sha = np.asarray(mlcanopy_inst.vcmax25_leaf[p, :, isha])
+        _swskyb = np.asarray(mlcanopy_inst.swskyb_forcing[p])
+        _swskyd = np.asarray(mlcanopy_inst.swskyd_forcing[p])
+        _swbeam_ntop = np.asarray(mlcanopy_inst.swbeam_profile[p, _ntop])
+        _swdwn_ntop  = np.asarray(mlcanopy_inst.swdwn_profile[p, _ntop])
+        _swupw_ntop  = np.asarray(mlcanopy_inst.swupw_profile[p, _ntop])
+        _lwdwn_ntop  = float(mlcanopy_inst.lwdwn_profile[p, _ntop])
+        _lwupw_ntop  = float(mlcanopy_inst.lwupw_profile[p, _ntop])
+        _swsoi_vis   = float(mlcanopy_inst.swsoi_soil[p, ivis])
+        _swsoi_nir   = float(mlcanopy_inst.swsoi_soil[p, inir])
+        _lwsoi_p     = float(mlcanopy_inst.lwsoi_soil[p])
+        _lwsky_p     = float(mlcanopy_inst.lwsky_forcing[p])
+        _lwup_p      = float(mlcanopy_inst.lwup_canopy[p])
+        _gsoi_p      = float(mlcanopy_inst.gsoi_soil[p])
+        lai_p        = float(mlcanopy_inst.lai_canopy[p])
+        sai_p        = float(mlcanopy_inst.sai_canopy[p])
+
+        # ----------------------------------------------------------------
+        # Vectorized computation over ic=1.._ncan
+        # ----------------------------------------------------------------
+        ics = np.arange(1, _ncan + 1)
+        dpai_v   = _dpai[ics]
+        fs_v     = _fracsun[ics]
+        fsh_v    = 1.0 - fs_v
+        fwet_v   = _fwet[ics]
+        fdry_v   = _fdry[ics]
+        has_pai  = dpai_v > 0.0
+        dpai_s   = np.where(has_pai, dpai_v, 0.0)
+
+        # fracgreen = fdry / (1 - fwet), guard against fwet == 1
+        fwet_safe    = np.where(fwet_v < 1.0, fwet_v, 0.0)
+        fracgreen_v  = np.where(has_pai, fdry_v / (1.0 - fwet_safe), 0.0)
+
+        # --- 1. Layer-mean leaf fluxes (per leaf area) ---
+        def _blend(a_sun, a_sha):
+            return np.where(has_pai, a_sun[ics] * fs_v + a_sha[ics] * fsh_v, 0.0)
+
+        lw_m    = _blend(_lwleaf_sun, _lwleaf_sha)
+        sw_m_vis = _blend(_swleaf_sun_vis, _swleaf_sha_vis)
+        sw_m_nir = _blend(_swleaf_sun_nir, _swleaf_sha_nir)
+        rn_m    = _blend(_rnleaf_sun, _rnleaf_sha)
+        st_m    = _blend(_stleaf_sun, _stleaf_sha)
+        sh_m    = _blend(_shleaf_sun, _shleaf_sha)
+        lh_m    = _blend(_lhleaf_sun, _lhleaf_sha)
+        ev_m    = _blend(_evleaf_sun, _evleaf_sha)
+        tr_m    = _blend(_trleaf_sun, _trleaf_sha)
+        et_m    = ev_m + tr_m
+        fco2_m  = _blend(_anet_sun,   _anet_sha)
+        apar_m  = _blend(_apar_sun,   _apar_sha)
+        gs_m    = _blend(_gs_sun,     _gs_sha)
+        tl_m    = _blend(_tleaf_sun,  _tleaf_sha)
+        lp_m    = _blend(_lwp_sun,    _lwp_sha)
+
+        # --- 1. Source terms (per ground area) ---
+        lw_src     = lw_m    * dpai_s
+        sw_src_vis = sw_m_vis * dpai_s
+        sw_src_nir = sw_m_nir * dpai_s
+        rn_src     = rn_m    * dpai_s
+        st_src     = st_m    * dpai_s
+        sh_src     = sh_m    * dpai_s
+        lh_src     = lh_m    * dpai_s
+        et_src     = et_m    * dpai_s
+        tr_src     = tr_m    * dpai_s
+        ev_src     = ev_m    * dpai_s
+        fco2_src   = fco2_m  * dpai_s * fracgreen_v
+
+        # --- 2. Vegetation totals ---
+        swveg_vis    = float(np.sum(sw_src_vis))
+        swveg_nir    = float(np.sum(sw_src_nir))
+        lwveg_p      = float(np.sum(lw_src))
+        stflx_veg_p  = float(np.sum(st_src))
+        shveg_p      = float(np.sum(sh_src))
+        lhveg_p      = float(np.sum(lh_src))
+        etveg_p      = float(np.sum(et_src))
+        trveg_p      = float(np.sum(tr_src))
+        evveg_p      = float(np.sum(ev_src))
+        vcmax25veg_p = float(np.sum(_vcmax25_prof[ics] * dpai_s))
+        gppveg_p     = float(np.sum(
+            (_agross_sun[ics] * fs_v + _agross_sha[ics] * fsh_v) * dpai_s * fracgreen_v
+        ))
+        gsveg_p      = float(np.sum(gs_m * dpai_s))
+
+        swveg      = swveg.at[p, ivis].set(swveg_vis)
+        swveg      = swveg.at[p, inir].set(swveg_nir)
+        lwveg      = lwveg.at[p].set(lwveg_p)
+        stflx_veg  = stflx_veg.at[p].set(stflx_veg_p)
+        shveg      = shveg.at[p].set(shveg_p)
+        lhveg      = lhveg.at[p].set(lhveg_p)
+        etveg      = etveg.at[p].set(etveg_p)
+        trveg      = trveg.at[p].set(trveg_p)
+        evveg      = evveg.at[p].set(evveg_p)
+        gppveg     = gppveg.at[p].set(gppveg_p)
+        vcmax25veg = vcmax25veg.at[p].set(vcmax25veg_p)
+        gsveg      = gsveg.at[p].set(gsveg_p)
+
+        # --- 3. Vegetation energy balance check ---
+        err = swveg_vis + swveg_nir + lwveg_p - shveg_p - lhveg_p - stflx_veg_p
+        if abs(err) >= 1.0e-3:
+            endrun(msg=' ERROR: CanopyFluxesDiagnostics: energy conservation error (1)')
+
+        # --- 4. Albedo ---
+        _alb_vis = _swupw_ntop[ivis] / (_swskyb[ivis] + _swskyd[ivis]) if (_swskyb[ivis] + _swskyd[ivis]) > 0.0 else 0.0
+        _alb_nir = _swupw_ntop[inir] / (_swskyb[inir] + _swskyd[inir]) if (_swskyb[inir] + _swskyd[inir]) > 0.0 else 0.0
+        albcan = albcan.at[p, ivis].set(_alb_vis)
+        albcan = albcan.at[p, inir].set(_alb_nir)
+
+        # --- 5. Turbulent fluxes ---
+        if flux_profile_type in (0, -1):
+            shflx_val  = shveg_p + float(mlcanopy_inst.shsoi_soil[p])
+            etflx_val  = etveg_p + float(mlcanopy_inst.etsoi_soil[p])
+            lhflx_val  = lhveg_p + float(mlcanopy_inst.lhsoi_soil[p])
+        elif flux_profile_type == 1:
+            shflx_val  = float(mlcanopy_inst.shair_profile[p, _ncan])
+            etflx_val  = float(mlcanopy_inst.etair_profile[p, _ncan])
+            lhflx_val  = etflx_val * LatVap(float(mlcanopy_inst.tref_forcing[p]))
+        else:
+            endrun(msg=' ERROR: CanopyFluxesDiagnostics: turbulence type not valid')
+            shflx_val = etflx_val = lhflx_val = 0.0    # Unreachable
+        shflx = shflx.at[p].set(shflx_val)
+        etflx = etflx.at[p].set(etflx_val)
+        lhflx = lhflx.at[p].set(lhflx_val)
+
+        # --- 6. Air heat storage ---
+        stflx_air_p = float(np.sum(_stair[ics]))
+        stflx_air   = stflx_air.at[p].set(stflx_air_p)
+
+        # --- 7. Energy balance checks ---
+        rnet_p = swveg_vis + swveg_nir + _swsoi_vis + _swsoi_nir + lwveg_p + _lwsoi_p
+        rnet   = rnet.at[p].set(rnet_p)
+
+        radin  = (_swskyb[ivis] + _swskyd[ivis] + _swskyb[inir] + _swskyd[inir] + _lwsky_p)
+        radout = (_alb_vis * (_swskyb[ivis] + _swskyd[ivis])
+                  + _alb_nir * (_swskyb[inir] + _swskyd[inir])
+                  + _lwup_p)
+
+        err = rnet_p - (radin - radout)
+        if abs(err) > 0.001:
+            endrun(msg=' ERROR: CanopyFluxesDiagnostics: energy conservation error (2)')
+
+        avail  = radin - radout - _gsoi_p
+        flux_p = shflx_val + lhflx_val + stflx_air_p + stflx_veg_p
+        err = avail - flux_p
+        if abs(err) > 0.01:
+            endrun(msg=' ERROR: CanopyFluxesDiagnostics: energy conservation error (3)')
+
+        radin_top  = (_swbeam_ntop[ivis] + _swbeam_ntop[inir]
+                      + _swdwn_ntop[ivis] + _swdwn_ntop[inir] + _lwdwn_ntop)
+        radout_top = _swupw_ntop[ivis] + _swupw_ntop[inir] + _lwupw_ntop
+        err = (radin_top - radout_top) - rnet_p
+        if abs(err) > 0.001:
+            endrun(msg=' ERROR: CanopyFluxesDiagnostics: energy conservation error (4)')
+
+        # --- 8. Sun/shade canopy totals ---
+        laisun_p     = float(np.sum(fs_v  * dpai_s))
+        laisha_p     = float(np.sum(fsh_v * dpai_s))
+        swvegsun_vis = float(np.sum(_swleaf_sun_vis[ics] * fs_v  * dpai_s))
+        swvegsun_nir = float(np.sum(_swleaf_sun_nir[ics] * fs_v  * dpai_s))
+        swvegsha_vis = float(np.sum(_swleaf_sha_vis[ics] * fsh_v * dpai_s))
+        swvegsha_nir = float(np.sum(_swleaf_sha_nir[ics] * fsh_v * dpai_s))
+        lwvegsun_p   = float(np.sum(_lwleaf_sun[ics] * fs_v  * dpai_s))
+        lwvegsha_p   = float(np.sum(_lwleaf_sha[ics] * fsh_v * dpai_s))
+        shvegsun_p   = float(np.sum(_shleaf_sun[ics] * fs_v  * dpai_s))
+        shvegsha_p   = float(np.sum(_shleaf_sha[ics] * fsh_v * dpai_s))
+        lhvegsun_p   = float(np.sum(_lhleaf_sun[ics] * fs_v  * dpai_s))
+        lhvegsha_p   = float(np.sum(_lhleaf_sha[ics] * fsh_v * dpai_s))
+        etvegsun_p   = float(np.sum((_evleaf_sun[ics] + _trleaf_sun[ics]) * fs_v  * dpai_s))
+        etvegsha_p   = float(np.sum((_evleaf_sha[ics] + _trleaf_sha[ics]) * fsh_v * dpai_s))
+        gppvegsun_p  = float(np.sum(_agross_sun[ics] * fs_v  * dpai_s * fracgreen_v))
+        gppvegsha_p  = float(np.sum(_agross_sha[ics] * fsh_v * dpai_s * fracgreen_v))
+        vcmax25sun_p = float(np.sum(_vcmax25_sun[ics] * fs_v  * dpai_s))
+        vcmax25sha_p = float(np.sum(_vcmax25_sha[ics] * fsh_v * dpai_s))
+        gsvegsun_p   = float(np.sum(_gs_sun[ics] * fs_v  * dpai_s))
+        gsvegsha_p   = float(np.sum(_gs_sha[ics] * fsh_v * dpai_s))
+
+        laisun    = laisun.at[p].set(laisun_p)
+        laisha    = laisha.at[p].set(laisha_p)
+        swvegsun  = swvegsun.at[p, ivis].set(swvegsun_vis)
+        swvegsun  = swvegsun.at[p, inir].set(swvegsun_nir)
+        swvegsha  = swvegsha.at[p, ivis].set(swvegsha_vis)
+        swvegsha  = swvegsha.at[p, inir].set(swvegsha_nir)
+        lwvegsun  = lwvegsun.at[p].set(lwvegsun_p)
+        lwvegsha  = lwvegsha.at[p].set(lwvegsha_p)
+        shvegsun  = shvegsun.at[p].set(shvegsun_p)
+        shvegsha  = shvegsha.at[p].set(shvegsha_p)
+        lhvegsun  = lhvegsun.at[p].set(lhvegsun_p)
+        lhvegsha  = lhvegsha.at[p].set(lhvegsha_p)
+        etvegsun  = etvegsun.at[p].set(etvegsun_p)
+        etvegsha  = etvegsha.at[p].set(etvegsha_p)
+        gppvegsun = gppvegsun.at[p].set(gppvegsun_p)
+        gppvegsha = gppvegsha.at[p].set(gppvegsha_p)
+        vcmax25sun = vcmax25sun.at[p].set(vcmax25sun_p)
+        vcmax25sha = vcmax25sha.at[p].set(vcmax25sha_p)
+        gsvegsun  = gsvegsun.at[p].set(gsvegsun_p)
+        gsvegsha  = gsvegsha.at[p].set(gsvegsha_p)
+
+        # --- 9. PAI-weighted temperatures and wind ---
+        total_pai = laisun_p + laisha_p
+        if total_pai > 0.0:
+            wind_v    = _wind[ics]
+            tair_v    = _tair[ics]
+            windveg_p    = float(np.sum(wind_v * dpai_s)) / total_pai
+            windvegsun_p = float(np.sum(wind_v * fs_v * dpai_s)) / laisun_p if laisun_p > 0.0 else 0.0
+            windvegsha_p = float(np.sum(wind_v * fsh_v * dpai_s)) / laisha_p if laisha_p > 0.0 else 0.0
+            tlveg_p      = float(np.sum(tl_m * dpai_s)) / total_pai
+            tlvegsun_p   = float(np.sum(_tleaf_sun[ics] * fs_v * dpai_s)) / laisun_p if laisun_p > 0.0 else 0.0
+            tlvegsha_p   = float(np.sum(_tleaf_sha[ics] * fsh_v * dpai_s)) / laisha_p if laisha_p > 0.0 else 0.0
+            taveg_p      = float(np.sum(tair_v * dpai_s)) / total_pai
+            tavegsun_p   = float(np.sum(tair_v * fs_v * dpai_s)) / laisun_p if laisun_p > 0.0 else 0.0
+            tavegsha_p   = float(np.sum(tair_v * fsh_v * dpai_s)) / laisha_p if laisha_p > 0.0 else 0.0
+        else:
+            windveg_p = windvegsun_p = windvegsha_p = 0.0
+            tlveg_p = tlvegsun_p = tlvegsha_p = 0.0
+            taveg_p = tavegsun_p = tavegsha_p = 0.0
+
+        windveg   = windveg.at[p].set(windveg_p)
+        windvegsun = windvegsun.at[p].set(windvegsun_p)
+        windvegsha = windvegsha.at[p].set(windvegsha_p)
+        tlveg     = tlveg.at[p].set(tlveg_p)
+        tlvegsun  = tlvegsun.at[p].set(tlvegsun_p)
+        tlvegsha  = tlvegsha.at[p].set(tlvegsha_p)
+        taveg     = taveg.at[p].set(taveg_p)
+        tavegsun  = tavegsun.at[p].set(tavegsun_p)
+        tavegsha  = tavegsha.at[p].set(tavegsha_p)
+
+        # --- 10. Water-stress fraction ---
+        fracminlwp_p = float(np.sum(np.where(lp_m <= -2.0, dpai_s, 0.0)))
+        if (lai_p + sai_p) > 0.0:
+            fracminlwp_p /= (lai_p + sai_p)
+        fracminlwp = fracminlwp.at[p].set(fracminlwp_p)
+
+        # ----------------------------------------------------------------
+        # Bulk JAX write-backs for per-layer profile fields
+        # ----------------------------------------------------------------
+        swleaf_mean = swleaf_mean.at[p, _sl, ivis].set(jnp.array(sw_m_vis))
+        swleaf_mean = swleaf_mean.at[p, _sl, inir].set(jnp.array(sw_m_nir))
+        lwleaf_mean = lwleaf_mean.at[p, _sl].set(jnp.array(lw_m))
+        rnleaf_mean = rnleaf_mean.at[p, _sl].set(jnp.array(rn_m))
+        stleaf_mean = stleaf_mean.at[p, _sl].set(jnp.array(st_m))
+        shleaf_mean = shleaf_mean.at[p, _sl].set(jnp.array(sh_m))
+        lhleaf_mean = lhleaf_mean.at[p, _sl].set(jnp.array(lh_m))
+        etleaf_mean = etleaf_mean.at[p, _sl].set(jnp.array(et_m))
+        trleaf_mean = trleaf_mean.at[p, _sl].set(jnp.array(tr_m))
+        evleaf_mean = evleaf_mean.at[p, _sl].set(jnp.array(ev_m))
+        fco2_mean   = fco2_mean.at[p, _sl].set(jnp.array(fco2_m))
+        apar_mean   = apar_mean.at[p, _sl].set(jnp.array(apar_m))
+        gs_mean     = gs_mean.at[p, _sl].set(jnp.array(gs_m))
+        tleaf_mean  = tleaf_mean.at[p, _sl].set(jnp.array(tl_m))
+        lwp_mean    = lwp_mean.at[p, _sl].set(jnp.array(lp_m))
+        swsrc       = swsrc.at[p, _sl, ivis].set(jnp.array(sw_src_vis))
+        swsrc       = swsrc.at[p, _sl, inir].set(jnp.array(sw_src_nir))
+        lwsrc       = lwsrc.at[p, _sl].set(jnp.array(lw_src))
+        rnsrc       = rnsrc.at[p, _sl].set(jnp.array(rn_src))
+        stsrc       = stsrc.at[p, _sl].set(jnp.array(st_src))
+        shsrc       = shsrc.at[p, _sl].set(jnp.array(sh_src))
+        lhsrc       = lhsrc.at[p, _sl].set(jnp.array(lh_src))
+        etsrc       = etsrc.at[p, _sl].set(jnp.array(et_src))
+        trsrc       = trsrc.at[p, _sl].set(jnp.array(tr_src))
+        evsrc       = evsrc.at[p, _sl].set(jnp.array(ev_src))
+        fco2src     = fco2src.at[p, _sl].set(jnp.array(fco2_src))
+
+    # ==================================================================
+    # Commit all updates — single ._replace() call
+    # ==================================================================
+    return mlcanopy_inst._replace(
+        rnet_canopy          = rnet,
+        stflx_air_canopy     = stflx_air,
+        stflx_veg_canopy     = stflx_veg,
+        shflx_canopy         = shflx,
+        lhflx_canopy         = lhflx,
+        etflx_canopy         = etflx,
+        albcan_canopy        = albcan,
+        swveg_canopy         = swveg,
+        swvegsun_canopy      = swvegsun,
+        swvegsha_canopy      = swvegsha,
+        lwveg_canopy         = lwveg,
+        lwvegsun_canopy      = lwvegsun,
+        lwvegsha_canopy      = lwvegsha,
+        shveg_canopy         = shveg,
+        shvegsun_canopy      = shvegsun,
+        shvegsha_canopy      = shvegsha,
+        lhveg_canopy         = lhveg,
+        lhvegsun_canopy      = lhvegsun,
+        lhvegsha_canopy      = lhvegsha,
+        etveg_canopy         = etveg,
+        etvegsun_canopy      = etvegsun,
+        etvegsha_canopy      = etvegsha,
+        trveg_canopy         = trveg,
+        evveg_canopy         = evveg,
+        gppveg_canopy        = gppveg,
+        gppvegsun_canopy     = gppvegsun,
+        gppvegsha_canopy     = gppvegsha,
+        vcmax25veg_canopy    = vcmax25veg,
+        vcmax25sun_canopy    = vcmax25sun,
+        vcmax25sha_canopy    = vcmax25sha,
+        gsveg_canopy         = gsveg,
+        gsvegsun_canopy      = gsvegsun,
+        gsvegsha_canopy      = gsvegsha,
+        windveg_canopy       = windveg,
+        windvegsun_canopy    = windvegsun,
+        windvegsha_canopy    = windvegsha,
+        tlveg_canopy         = tlveg,
+        tlvegsun_canopy      = tlvegsun,
+        tlvegsha_canopy      = tlvegsha,
+        taveg_canopy         = taveg,
+        tavegsun_canopy      = tavegsun,
+        tavegsha_canopy      = tavegsha,
+        laisun_canopy        = laisun,
+        laisha_canopy        = laisha,
+        fracminlwp_canopy    = fracminlwp,
+        swsrc_profile        = swsrc,
+        lwsrc_profile        = lwsrc,
+        rnsrc_profile        = rnsrc,
+        stsrc_profile        = stsrc,
+        shsrc_profile        = shsrc,
+        lhsrc_profile        = lhsrc,
+        etsrc_profile        = etsrc,
+        trsrc_profile        = trsrc,
+        evsrc_profile        = evsrc,
+        fco2src_profile      = fco2src,
+        swleaf_mean_profile  = swleaf_mean,
+        lwleaf_mean_profile  = lwleaf_mean,
+        rnleaf_mean_profile  = rnleaf_mean,
+        stleaf_mean_profile  = stleaf_mean,
+        shleaf_mean_profile  = shleaf_mean,
+        lhleaf_mean_profile  = lhleaf_mean,
+        etleaf_mean_profile  = etleaf_mean,
+        trleaf_mean_profile  = trleaf_mean,
+        evleaf_mean_profile  = evleaf_mean,
+        fco2_mean_profile    = fco2_mean,
+        apar_mean_profile    = apar_mean,
+        gs_mean_profile      = gs_mean,
+        tleaf_mean_profile   = tleaf_mean,
+        lwp_mean_profile     = lwp_mean,
+    )

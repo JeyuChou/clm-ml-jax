@@ -1,300 +1,155 @@
 """
-Water Vapor Calculations for Multilayer Canopy Model.
+JAX translation of MLWaterVaporMod Fortran module.
 
-Translated from CTSM's MLWaterVaporMod.F90
+Compute saturation vapour pressure and latent heat of vaporization.
+Polynomial approximations for saturation vapour pressure follow
+Flatau et al. (1992) J. Appl. Meteor. 31:1507-1513.
 
-This module provides functions for calculating fundamental thermodynamic
-properties needed for energy balance and water vapor flux calculations in
-the multilayer canopy model:
-
-- Saturation vapor pressure and its temperature derivative
-- Latent heat of vaporization/sublimation
-
-Key equations:
-    Saturation vapor pressure (Clausius-Clapeyron relation):
-        For T >= 0°C (water): es = polynomial fit (Flatau et al. 1992)
-        For T < 0°C (ice): es = polynomial fit (Flatau et al. 1992)
-    
-    Latent heat:
-        For T > Tfrz: λ = hvap * mmh2o
-        For T ≤ Tfrz: λ = hsub * mmh2o
-
-References:
-    Flatau et al. (1992) "Polynomial fits to saturation vapor pressure",
-    Journal of Applied Meteorology 31:1507-1513.
-
-Fortran source: MLWaterVaporMod.F90, lines 1-140
+Original Fortran module: MLWaterVaporMod
+Fortran lines 1-115
 """
 
-from typing import NamedTuple, Tuple
-import jax
-import jax.numpy as jnp
+from typing import Tuple
+
+from clm_src_main.clm_varcon import tfrz, hvap, hsub    # noqa: F401
+from multilayer_canopy.MLclm_varcon import mmh2o             # noqa: F401
 
 
-# =============================================================================
-# Type Definitions
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Public: saturation vapour pressure and its temperature derivative
+# ---------------------------------------------------------------------------
 
-class WaterVaporConstants(NamedTuple):
-    """Physical constants for water vapor calculations.
-    
-    Attributes:
-        tfrz: Freezing point of water [K]
-        hvap: Latent heat of vaporization [J/kg]
-        hsub: Latent heat of sublimation [J/kg]
-        mmh2o: Molecular mass of water [kg/mol]
+# Polynomial coefficients for water vapour (0 °C to 100 °C) — Fortran lines 35-43
+_a0: float =  6.11213476
+_a1: float =  0.444007856
+_a2: float =  0.143064234e-1
+_a3: float =  0.264461437e-3
+_a4: float =  0.305903558e-5
+_a5: float =  0.196237241e-7
+_a6: float =  0.892344772e-10
+_a7: float = -0.373208410e-12
+_a8: float =  0.209339997e-15
+
+# Derivative coefficients for water vapour — Fortran lines 45-53
+_b0: float =  0.444017302
+_b1: float =  0.286064092e-1
+_b2: float =  0.794683137e-3
+_b3: float =  0.121211669e-4
+_b4: float =  0.103354611e-6
+_b5: float =  0.404125005e-9
+_b6: float = -0.788037859e-12
+_b7: float = -0.114596802e-13
+_b8: float =  0.381294516e-16
+
+# Polynomial coefficients for ice (-75 °C to 0 °C) — Fortran lines 55-63
+_c0: float =  6.11123516
+_c1: float =  0.503109514
+_c2: float =  0.188369801e-1
+_c3: float =  0.420547422e-3
+_c4: float =  0.614396778e-5
+_c5: float =  0.602780717e-7
+_c6: float =  0.387940929e-9
+_c7: float =  0.149436277e-11
+_c8: float =  0.262655803e-14
+
+# Derivative coefficients for ice — Fortran lines 65-73
+_d0: float =  0.503277922
+_d1: float =  0.377289173e-1
+_d2: float =  0.126801703e-2
+_d3: float =  0.249468427e-4
+_d4: float =  0.313703411e-6
+_d5: float =  0.257180651e-8
+_d6: float =  0.133268878e-10
+_d7: float =  0.394116744e-13
+_d8: float =  0.498070196e-16
+
+
+def SatVap(t: float) -> Tuple[float, float]:
     """
-    tfrz: float = 273.15      # Freezing point [K]
-    hvap: float = 2.501e6     # Latent heat of vaporization [J/kg]
-    hsub: float = 2.834e6     # Latent heat of sublimation [J/kg]
-    mmh2o: float = 0.018015   # Molecular mass of water [kg/mol]
+    Compute saturation vapour pressure and its temperature derivative.
 
+    Mirrors Fortran subroutine ``SatVap`` (lines 22-95).
 
-# Default constants instance
-DEFAULT_CONSTANTS = WaterVaporConstants()
+    Uses 8th-order polynomial fits from Flatau et al. (1992):
 
+    - **Water** (``tc >= 0``, valid 0 °C – 100 °C): coefficients ``a0–a8``
+      (es) and ``b0–b8`` (d(es)/dT).
+    - **Ice** (``tc < 0``, valid -75 °C – 0 °C): coefficients ``c0–c8``
+      (es) and ``d0–d8`` (d(es)/dT).
 
-# =============================================================================
-# Saturation Vapor Pressure Calculations
-# =============================================================================
+    Temperature in Celsius is clamped to ``[-75, 100]`` before evaluation
+    (Fortran lines 75-76). Results are converted from millibars to Pa
+    by multiplying by 100 (Fortran lines 91-92).
 
-def sat_vap(
-    t: jnp.ndarray,
-    tfrz: float = 273.15,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Calculate saturation vapor pressure and its temperature derivative.
-    
-    Uses polynomial approximations from Flatau et al. (1992) for both
-    water vapor (T >= 0°C) and ice (T < 0°C) phases. The polynomial
-    coefficients provide accurate fits over the ranges:
-    - Water vapor: 0°C to 100°C
-    - Ice: -75°C to 0°C
-    
-    The function automatically selects the appropriate polynomial based
-    on temperature and clamps input temperatures to valid ranges.
-    
-    Fortran source: MLWaterVaporMod.F90, lines 23-111
-    
     Args:
-        t: Temperature [K] [arbitrary shape]
-        tfrz: Freezing point of water [K] (default: 273.15)
-        
+        t: Temperature (K).
+
     Returns:
-        Tuple of:
-            es: Saturation vapor pressure [Pa] [same shape as t]
-            desdt: Temperature derivative of es [Pa/K] [same shape as t]
-            
-    Note:
-        - Temperature is clamped to [-75°C, 100°C] before applying polynomials
-        - Results are converted from mb to Pa by multiplying by 100
-        - The transition between water and ice formulations is sharp at 0°C
-        
-    Example:
-        >>> t = jnp.array([273.15, 283.15, 293.15])  # 0°C, 10°C, 20°C
-        >>> es, desdt = sat_vap(t)
-        >>> # es ≈ [611, 1228, 2339] Pa
-        >>> # desdt ≈ [44, 82, 145] Pa/K
+        Tuple of ``(es, desdt)`` where:
+
+        - ``es``: Saturation vapour pressure (Pa).
+        - ``desdt``: d(es)/dT (Pa/K).
     """
-    # Polynomial coefficients for water vapor (0°C to 100°C)
-    # Flatau et al. (1992), Table 1
-    # Lines 26-34
-    a0 = 6.11213476
-    a1 = 0.444007856
-    a2 = 0.143064234e-01
-    a3 = 0.264461437e-03
-    a4 = 0.305903558e-05
-    a5 = 0.196237241e-07
-    a6 = 0.892344772e-10
-    a7 = -0.373208410e-12
-    a8 = 0.209339997e-15
-    
-    # Derivative coefficients for water vapor
-    # Lines 38-46
-    b0 = 0.444017302
-    b1 = 0.286064092e-01
-    b2 = 0.794683137e-03
-    b3 = 0.121211669e-04
-    b4 = 0.103354611e-06
-    b5 = 0.404125005e-09
-    b6 = -0.788037859e-12
-    b7 = -0.114596802e-13
-    b8 = 0.381294516e-16
-    
-    # Polynomial coefficients for ice (-75°C to 0°C)
-    # Flatau et al. (1992), Table 2
-    # Lines 50-58
-    c0 = 6.11123516
-    c1 = 0.503109514
-    c2 = 0.188369801e-01
-    c3 = 0.420547422e-03
-    c4 = 0.614396778e-05
-    c5 = 0.602780717e-07
-    c6 = 0.387940929e-09
-    c7 = 0.149436277e-11
-    c8 = 0.262655803e-14
-    
-    # Derivative coefficients for ice
-    # Lines 62-70
-    d0 = 0.503277922
-    d1 = 0.377289173e-01
-    d2 = 0.126801703e-02
-    d3 = 0.249468427e-04
-    d4 = 0.313703411e-06
-    d5 = 0.257180651e-08
-    d6 = 0.133268878e-10
-    d7 = 0.394116744e-13
-    d8 = 0.498070196e-16
-    
-    # Convert to Celsius and clamp to valid range
-    # Lines 72-74
+    # Temperature in Celsius, clamped to valid polynomial range — Fortran lines 74-76
     tc = t - tfrz
-    tc = jnp.clip(tc, -75.0, 100.0)
-    
-    # Compute saturation vapor pressure using appropriate polynomial
-    # Horner's method for efficient polynomial evaluation
-    # Lines 76-86
-    
-    # For water (tc >= 0): nested polynomial evaluation
-    es_water = (a0 + tc * (a1 + tc * (a2 + tc * (a3 + tc * (a4 
-               + tc * (a5 + tc * (a6 + tc * (a7 + tc * a8))))))))
-    desdt_water = (b0 + tc * (b1 + tc * (b2 + tc * (b3 + tc * (b4 
-                  + tc * (b5 + tc * (b6 + tc * (b7 + tc * b8))))))))
-    
-    # For ice (tc < 0): nested polynomial evaluation
-    es_ice = (c0 + tc * (c1 + tc * (c2 + tc * (c3 + tc * (c4 
-             + tc * (c5 + tc * (c6 + tc * (c7 + tc * c8))))))))
-    desdt_ice = (d0 + tc * (d1 + tc * (d2 + tc * (d3 + tc * (d4 
-                + tc * (d5 + tc * (d6 + tc * (d7 + tc * d8))))))))
-    
-    # Select based on temperature (sharp transition at 0°C)
-    # Lines 88-89
-    es = jnp.where(tc >= 0.0, es_water, es_ice)
-    desdt = jnp.where(tc >= 0.0, desdt_water, desdt_ice)
-    
-    # Convert from mb to Pa
-    # Lines 88-89
-    es = es * 100.0
+    if tc >  100.0:
+        tc = 100.0
+    if tc < -75.0:
+        tc = -75.0
+
+    if tc >= 0.0:
+        # Water vapour polynomials — Fortran lines 78-83
+        es = _a0 + tc*(_a1 + tc*(_a2 + tc*(_a3 + tc*(_a4
+             + tc*(_a5 + tc*(_a6 + tc*(_a7 + tc*_a8)))))))
+        desdt = _b0 + tc*(_b1 + tc*(_b2 + tc*(_b3 + tc*(_b4
+                + tc*(_b5 + tc*(_b6 + tc*(_b7 + tc*_b8)))))))
+    else:
+        # Ice polynomials — Fortran lines 84-89
+        es = _c0 + tc*(_c1 + tc*(_c2 + tc*(_c3 + tc*(_c4
+             + tc*(_c5 + tc*(_c6 + tc*(_c7 + tc*_c8)))))))
+        desdt = _d0 + tc*(_d1 + tc*(_d2 + tc*(_d3 + tc*(_d4
+                + tc*(_d5 + tc*(_d6 + tc*(_d7 + tc*_d8)))))))
+
+    # Convert from millibars (mb) to Pa — Fortran lines 91-92
+    es    = es    * 100.0
     desdt = desdt * 100.0
-    
+
     return es, desdt
 
 
-# =============================================================================
-# Latent Heat Calculations
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Public: molar latent heat of vaporization
+# ---------------------------------------------------------------------------
 
-def lat_vap(
-    t: jnp.ndarray,
-    constants: WaterVaporConstants = DEFAULT_CONSTANTS,
-) -> jnp.ndarray:
-    """Calculate molar latent heat of vaporization.
-    
-    Computes latent heat as a function of temperature, switching between
-    vaporization (liquid to vapor) and sublimation (ice to vapor) at the
-    freezing point. The latent heat is returned in molar units [J/mol]
-    by multiplying the mass-specific values by the molecular mass of water.
-    
-    Fortran source: MLWaterVaporMod.F90, lines 114-138
-    
-    Args:
-        t: Temperature [K] [arbitrary shape]
-        constants: Physical constants (default: DEFAULT_CONSTANTS)
-        
-    Returns:
-        Molar latent heat of vaporization [J/mol] [same shape as t]
-        
-    Note:
-        - Above freezing (T > Tfrz): uses hvap (liquid water evaporation)
-        - Below freezing (T ≤ Tfrz): uses hsub (ice sublimation)
-        - The transition is sharp at tfrz (no smoothing)
-        - Typical values:
-            * At 20°C: ~44 kJ/mol (vaporization)
-            * At -10°C: ~51 kJ/mol (sublimation)
-            
-    Example:
-        >>> t = jnp.array([263.15, 273.15, 283.15])  # -10°C, 0°C, 10°C
-        >>> lambda_mol = lat_vap(t)
-        >>> # lambda_mol ≈ [51060, 51060, 45050] J/mol
-        >>> # Note: at exactly 0°C, uses sublimation (T ≤ Tfrz)
+def LatVap(t: float) -> float:
     """
-    # Line 131-135: Select latent heat based on temperature
-    # if (t > tfrz) then
-    #    lambda = hvap
-    # else
-    #    lambda = hsub
-    # end if
-    lambda_mass = jnp.where(
-        t > constants.tfrz,
-        constants.hvap,
-        constants.hsub
-    )
-    
-    # Line 136: Convert from J/kg to J/mol
-    # lambda = lambda * mmh2o
-    lambda_molar = lambda_mass * constants.mmh2o
-    
-    return lambda_molar
+    Compute the molar latent heat of vaporization as a function of
+    temperature, following the CLM5 formulation.
 
+    Mirrors Fortran function ``LatVap`` (lines 97-115).
 
-# =============================================================================
-# Convenience Functions
-# =============================================================================
+    Above the freezing point ``tfrz`` the latent heat of vaporization
+    (``hvap``) is used; at or below freezing the latent heat of
+    sublimation (``hsub``) is used. The mass-specific value (J/kg) is
+    then converted to a molar value (J/mol) by multiplying by the
+    molecular mass of water ``mmh2o``:
 
-def sat_vap_with_constants(
-    t: jnp.ndarray,
-    constants: WaterVaporConstants = DEFAULT_CONSTANTS,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Calculate saturation vapor pressure using constants from NamedTuple.
-    
-    Convenience wrapper around sat_vap that extracts tfrz from constants.
-    
+    .. code-block:: none
+
+        lambda = hvap * mmh2o    if t > tfrz
+        lambda = hsub * mmh2o    if t <= tfrz
+
     Args:
-        t: Temperature [K] [arbitrary shape]
-        constants: Physical constants (default: DEFAULT_CONSTANTS)
-        
+        t: Temperature (K).
+
     Returns:
-        Tuple of (es, desdt) as in sat_vap()
+        Molar latent heat of vaporization (J/mol).
     """
-    return sat_vap(t, tfrz=constants.tfrz)
+    # Select vaporization or sublimation — Fortran lines 111-113
+    if t > tfrz:
+        lam = hvap
+    else:
+        lam = hsub
 
-
-def vapor_pressure_deficit(
-    t: jnp.ndarray,
-    rh: jnp.ndarray,
-    constants: WaterVaporConstants = DEFAULT_CONSTANTS,
-) -> jnp.ndarray:
-    """Calculate vapor pressure deficit from temperature and relative humidity.
-    
-    VPD = es(T) * (1 - RH/100)
-    
-    Args:
-        t: Temperature [K] [arbitrary shape]
-        rh: Relative humidity [%] [same shape as t]
-        constants: Physical constants (default: DEFAULT_CONSTANTS)
-        
-    Returns:
-        Vapor pressure deficit [Pa] [same shape as t]
-        
-    Example:
-        >>> t = jnp.array([293.15])  # 20°C
-        >>> rh = jnp.array([50.0])   # 50% RH
-        >>> vpd = vapor_pressure_deficit(t, rh)
-        >>> # vpd ≈ 1170 Pa (half of saturation pressure)
-    """
-    es, _ = sat_vap(t, tfrz=constants.tfrz)
-    vpd = es * (1.0 - rh / 100.0)
-    return vpd
-
-
-# =============================================================================
-# Module Exports
-# =============================================================================
-
-__all__ = [
-    'WaterVaporConstants',
-    'DEFAULT_CONSTANTS',
-    'sat_vap',
-    'lat_vap',
-    'sat_vap_with_constants',
-    'vapor_pressure_deficit',
-]
+    # Convert J/kg → J/mol — Fortran line 114
+    return lam * mmh2o

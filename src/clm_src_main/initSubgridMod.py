@@ -206,10 +206,10 @@ def add_patch(pi: int, ptype: int) -> int:
         if hasattr(patch, 'resize') and len(patch.column) <= new_pi:
             patch.resize(new_pi + 100)
         
-        # Set patch properties (1-based indexing for compatibility with Fortran)
+        # Set patch properties (0-based indexing — Python/JAX arrays start at 0)
         if hasattr(patch, 'column'):
-            patch.column = patch.column.at[new_pi].set(1)  # Column 1
-            patch.gridcell = patch.gridcell.at[new_pi].set(1)  # Gridcell 1
+            patch.column = patch.column.at[new_pi].set(0)    # Column 0 (0-based)
+            patch.gridcell = patch.gridcell.at[new_pi].set(0)  # Gridcell 0 (0-based)
             patch.itype = patch.itype.at[new_pi].set(ptype)
         
         # Update subgrid structure

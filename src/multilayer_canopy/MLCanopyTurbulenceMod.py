@@ -1,1119 +1,1367 @@
 """
-Multi-Layer Canopy Turbulence Module.
+JAX translation of MLCanopyTurbulenceMod Fortran module.
 
-Translated from CTSM's MLCanopyTurbulenceMod.F90
+Canopy turbulence parameterisation: roughness sublayer (RSL) theory
+of Harman and Finnigan (2008), wind speed profile, and aerodynamic
+conductances.
 
-This module provides scalar source/sink fluxes and scalar profiles for
-multi-layer canopy turbulence calculations. It implements the Harman & Finnigan
-(2008) Roughness Sublayer (RSL) theory for within-canopy turbulence.
+Public routines
+---------------
+- :func:`CanopyTurbulence`: main driver.
+- :func:`LookupPsihatINI`: initialise RSL psihat look-up tables from
+  a NetCDF file.
 
-Key functionality:
-    - Canopy turbulence calculations
-    - RSL psihat look-up table initialization
-    - Well-mixed canopy profiles
-    - Harman & Finnigan (2008) RSL theory implementation
-    - Obukhov length calculations
-    - Monin-Obukhov stability functions
-    - Wind profiles and aerodynamic conductances
+Private helpers
+---------------
+- :func:`_HF2008`: HF2008 RSL canopy turbulence.
+- :func:`_GetObu`: solve for Obukhov length.
+- :func:`_ObuFunc`: ObuFunc callback for hybrid root solver.
+- :func:`_GetBeta`: β = u*/u(h) for a given stability.
+- :func:`_GetPrSc`: Prandtl/Schmidt number at canopy top.
+- :func:`_GetPsiRSL`: RSL-modified stability functions.
+- :func:`_phim_monin_obukhov`: MO φ for momentum.
+- :func:`_phic_monin_obukhov`: MO φ for scalars.
+- :func:`_psim_monin_obukhov`: MO ψ for momentum.
+- :func:`_psic_monin_obukhov`: MO ψ for scalars.
+- :func:`_LookupPsihat`: bilinear interpolation in psihat table.
+- :func:`_RoughnessLength`: roughness length for momentum.
+- :func:`_WindProfile`: wind speed above and within canopy.
+- :func:`_AerodynamicConductance`: aerodynamic conductances.
 
-References:
-    Harman, I. N., & Finnigan, J. J. (2008). Scalar concentration profiles in
-    the canopy and roughness sublayer. Boundary-Layer Meteorology, 129(3), 323-351.
-
-Fortran source: MLCanopyTurbulenceMod.F90 (lines 1-1872)
+Original Fortran module: MLCanopyTurbulenceMod
+Fortran lines 1-560
 """
 
-from typing import NamedTuple, Tuple, Callable
-import jax
+from __future__ import annotations
+
+import math
+from typing import Sequence, Tuple
+
+import numpy as np
 import jax.numpy as jnp
 
+from clm_src_main.abortutils import endrun                           # noqa: F401
+from clm_src_main.clm_varctl import iulog, rslfile                  # noqa: F401
+from clm_src_main.clm_varcon import grav, vkc, pi as rpi            # noqa: F401
+from multilayer_canopy.MLclm_varcon import (                             # noqa: F401
+    mmh2o, mmdry, cd, eta_max,
+    beta_neutral_max, cr, z0mg, LcL_min, LcL_max, aH12,
+    c2, dtLgridM, zdtgridM, psigridM,
+    dtLgridH, zdtgridH, psigridH,
+    nZ, nL,
+    Pr0, Pr1, Pr2,
+    z0mg, ra_max,
+)
+from multilayer_canopy.MLclm_varctl import (                             # noqa: F401
+    turb_type, sparse_canopy_type, HF_extension_type,
+)
+from multilayer_canopy.MLMathToolsMod import hybrid, hybrid_scalar        # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type           # noqa: F401
 
-# =============================================================================
-# TYPE DEFINITIONS
-# =============================================================================
+# Python-float aliases for aH12 elements — used inside _ObuFuncPure which is called
+# on every solver iteration; accessing aH12[i] (a JAX array) would force an XLA sync
+# each time, adding ~100–200 syncs per _GetObu call.
+_aH12_0: float = 0.89
+_aH12_1: float = -0.07
+_aH12_2: float = 2.19
 
-class MLCanopyTurbulenceParams(NamedTuple):
-    """Parameters for multi-layer canopy turbulence calculations.
-    
-    Attributes:
-        von_karman: von Karman constant [dimensionless]
-        gravity: Gravitational acceleration [m/s2]
-        cd: Drag coefficient [dimensionless]
-        eta_max: Maximum eta parameter [dimensionless]
-        beta_neutral_max: Maximum neutral beta value [dimensionless]
-        beta_min: Minimum beta value [dimensionless]
-        beta_max: Maximum beta value [dimensionless]
-        cr: Roughness element drag coefficient [dimensionless]
-        z0mg: Momentum roughness length for ground [m]
-        zeta_min: Minimum zeta value [dimensionless]
-        zeta_max: Maximum zeta value [dimensionless]
-        Pr0: Base Prandtl number [dimensionless]
-        Pr1: Prandtl number amplitude [dimensionless]
-        Pr2: Prandtl number scaling factor [dimensionless]
-        c2: RSL height scale parameter [dimensionless]
-        ra_max: Maximum aerodynamic resistance [s/m]
-        wind_min: Minimum wind speed [m/s]
-        mmh2o: Molecular weight of water [g/mol]
-        mmdry: Molecular weight of dry air [g/mol]
+# ---------------------------------------------------------------------------
+# Cached 1D views of psihat look-up table grids — populated by LookupPsihatINI.
+# _LookupPsihat creates a 276-element negated array (-zdtg) on every call for
+# np.searchsorted; with ~220 calls/patch/step that's ~110,000 allocations/run.
+# Using module-level pre-computed arrays eliminates those allocations and the
+# 2D→1D slice operations (dtLgrid[0], zdtgrid[:, 0]) done on every call.
+# ---------------------------------------------------------------------------
+_zdtgM_1d:     np.ndarray = np.empty(0)   # zdtgridM[:, 0]  (populated after init)
+_dtLgM_1d:     np.ndarray = np.empty(0)   # dtLgridM[0]
+_neg_zdtgM_1d: np.ndarray = np.empty(0)   # -zdtgridM[:, 0]
+_nZ_M: int = nZ
+_nL_M: int = nL
+_zdtgH_1d:     np.ndarray = np.empty(0)   # zdtgridH[:, 0]
+_dtLgH_1d:     np.ndarray = np.empty(0)   # dtLgridH[0]
+_neg_zdtgH_1d: np.ndarray = np.empty(0)   # -zdtgridH[:, 0]
+_nZ_H: int = nZ
+_nL_H: int = nL
+
+# ===========================================================================
+# Private: Monin-Obukhov stability functions
+# ===========================================================================
+
+def _phim_monin_obukhov(zeta: float) -> float:
     """
-    von_karman: float = 0.4
-    gravity: float = 9.80616
-    cd: float = 0.2
-    eta_max: float = 5.0
-    beta_neutral_max: float = 0.35
-    beta_min: float = 0.01
-    beta_max: float = 0.99
-    cr: float = 0.3
-    z0mg: float = 0.01
-    zeta_min: float = -100.0
-    zeta_max: float = 1.0
-    Pr0: float = 0.5
-    Pr1: float = 0.3
-    Pr2: float = 0.143
-    c2: float = 0.5
-    ra_max: float = 9999.0
-    wind_min: float = 0.1
-    mmh2o: float = 18.016
-    mmdry: float = 28.966
+    Monin-Obukhov φ stability function for momentum.
 
+    Mirrors Fortran function ``phim_monin_obukhov`` (lines 330-343).
 
-class RSLPsihatTable(NamedTuple):
-    """Look-up table for RSL psihat functions.
-    
-    Attributes:
-        initialized: Whether table has been initialized
-        nZ: Number of z/dt grid points
-        nL: Number of dt/L grid points
-        zdtgrid_m: z/dt grid for momentum [nZ, 1]
-        dtLgrid_m: dt/L grid for momentum [1, nL]
-        psigrid_m: psihat values for momentum [nZ, nL]
-        zdtgrid_h: z/dt grid for scalars [nZ, 1]
-        dtLgrid_h: dt/L grid for scalars [1, nL]
-        psigrid_h: psihat values for scalars [nZ, nL]
-    """
-    initialized: bool = False
-    nZ: int = 0
-    nL: int = 0
-    zdtgrid_m: jnp.ndarray = jnp.array([])
-    dtLgrid_m: jnp.ndarray = jnp.array([])
-    psigrid_m: jnp.ndarray = jnp.array([])
-    zdtgrid_h: jnp.ndarray = jnp.array([])
-    dtLgrid_h: jnp.ndarray = jnp.array([])
-    psigrid_h: jnp.ndarray = jnp.array([])
+    Reference: Bonan et al. (2018), eq. (A10).
 
+    .. code-block:: none
 
-class PrScParams(NamedTuple):
-    """Parameters for Prandtl/Schmidt number calculation.
-    
-    Attributes:
-        Pr0: Base Prandtl number [-]
-        Pr1: Prandtl number amplitude [-]
-        Pr2: Prandtl number scaling factor [-]
-    """
-    Pr0: float
-    Pr1: float
-    Pr2: float
+        zeta < 0 (unstable): phi = 1 / (1 - 16*zeta)^(1/4)
+        zeta ≥ 0 (stable):   phi = 1 + 5*zeta
 
-
-class ObuFuncInputs(NamedTuple):
-    """Inputs for Obukhov length calculation.
-    
-    Attributes:
-        p: Patch index [scalar]
-        ic: Aboveground layer index [scalar]
-        il: Sunlit (1) or shaded (2) leaf index [scalar]
-        obu_val: Input value for Obukhov length [m] [scalar]
-        zref: Atmospheric reference height [m] [scalar]
-        uref: Wind speed at reference height [m/s] [scalar]
-        thref: Atmospheric potential temperature at reference height [K] [scalar]
-        thvref: Atmospheric virtual potential temperature at reference height [K] [scalar]
-        qref: Specific humidity at reference height [kg/kg] [scalar]
-        rhomol: Molar density at reference height [mol/m3] [scalar]
-        ztop: Canopy foliage top height [m] [scalar]
-        lai: Leaf area index of canopy [m2/m2] [scalar]
-        sai: Stem area index of canopy [m2/m2] [scalar]
-        Lc: Canopy density length scale [m] [scalar]
-        taf: Air temperature at canopy top [K] [scalar]
-        qaf: Specific humidity at canopy top [kg/kg] [scalar]
-        vkc: von Karman constant [-] [scalar]
-        grav: Gravitational acceleration [m/s2] [scalar]
-        beta_neutral_max: Maximum neutral beta value [-] [scalar]
-        cr: Roughness element drag coefficient [-] [scalar]
-        z0mg: Momentum roughness length for ground [m] [scalar]
-        zeta_min: Minimum zeta value [-] [scalar]
-        zeta_max: Maximum zeta value [-] [scalar]
-    """
-    p: int
-    ic: int
-    il: int
-    obu_val: jnp.ndarray
-    zref: jnp.ndarray
-    uref: jnp.ndarray
-    thref: jnp.ndarray
-    thvref: jnp.ndarray
-    qref: jnp.ndarray
-    rhomol: jnp.ndarray
-    ztop: jnp.ndarray
-    lai: jnp.ndarray
-    sai: jnp.ndarray
-    Lc: jnp.ndarray
-    taf: jnp.ndarray
-    qaf: jnp.ndarray
-    vkc: float
-    grav: float
-    beta_neutral_max: float
-    cr: float
-    z0mg: float
-    zeta_min: float
-    zeta_max: float
-
-
-class ObuFuncOutputs(NamedTuple):
-    """Outputs from Obukhov length calculation.
-    
-    Attributes:
-        obu_dif: Difference in Obukhov length [m] [scalar]
-        zdisp: Displacement height [m] [scalar]
-        beta: Value of u* / u at canopy top [-] [scalar]
-        PrSc: Prandtl (Schmidt) number at canopy top [-] [scalar]
-        ustar: Friction velocity [m/s] [scalar]
-        gac_to_hc: Aerodynamic conductance for a scalar above canopy [mol/m2/s] [scalar]
-        obu: Obukhov length [m] [scalar]
-    """
-    obu_dif: jnp.ndarray
-    zdisp: jnp.ndarray
-    beta: jnp.ndarray
-    PrSc: jnp.ndarray
-    ustar: jnp.ndarray
-    gac_to_hc: jnp.ndarray
-    obu: jnp.ndarray
-
-
-class BetaResult(NamedTuple):
-    """Result from beta calculation.
-    
-    Attributes:
-        beta: Ratio u*/u(h) at canopy top [-]
-        error: Verification error (should be < 1e-6)
-    """
-    beta: float
-    error: float
-
-
-class PsiRSLResult(NamedTuple):
-    """Result from GetPsiRSL calculation.
-    
-    Attributes:
-        psim: psi function for momentum including RSL influence [dimensionless]
-        psic: psi function for scalars including RSL influence [dimensionless]
-    """
-    psim: jnp.ndarray
-    psic: jnp.ndarray
-
-
-# =============================================================================
-# MONIN-OBUKHOV STABILITY FUNCTIONS
-# =============================================================================
-
-def phim_monin_obukhov(zeta: jnp.ndarray) -> jnp.ndarray:
-    """
-    Calculate Monin-Obukhov phi stability function for momentum.
-    
-    This function implements the standard Businger-Dyer relationships for
-    momentum transfer in the atmospheric surface layer.
-    
     Args:
-        zeta: Monin-Obukhov stability parameter (z-d)/L [-] [...]
-              Can be scalar or array of any shape
-              
+        zeta: Monin-Obukhov stability parameter.
+
     Returns:
-        phi: Stability function for momentum [-] [...]
-             Same shape as input zeta
-             
-    References:
-        Businger et al. (1971) J. Atmos. Sci.
-        Dyer (1974) Boundary-Layer Meteorol.
-        
-    Note:
-        Lines 778-797 from MLCanopyTurbulenceMod.F90
-        - Unstable: phi = (1 - 16*zeta)^(-1/4)
-        - Stable: phi = 1 + 5*zeta
+        φ for momentum.
     """
-    # Unstable case: phi = 1 / sqrt(sqrt(1 - 16*zeta))
-    phi_unstable = 1.0 / jnp.sqrt(jnp.sqrt(1.0 - 16.0 * zeta))
-    
-    # Stable case: phi = 1 + 5*zeta
-    phi_stable = 1.0 + 5.0 * zeta
-    
-    # Select based on stability
-    phi = jnp.where(zeta < 0.0, phi_unstable, phi_stable)
-    
-    return phi
+    if zeta < 0.0:
+        return 1.0 / math.sqrt(math.sqrt(1.0 - 16.0 * zeta))
+    else:
+        return 1.0 + 5.0 * zeta
 
 
-def phic_monin_obukhov(zeta: jnp.ndarray) -> jnp.ndarray:
-    """Calculate Monin-Obukhov phi stability function for scalars.
-    
-    This function computes the dimensionless gradient correction factor for
-    scalars in the atmospheric surface layer, accounting for buoyancy effects
-    on turbulent transport.
-    
+def _phic_monin_obukhov(zeta: float) -> float:
+    """
+    Monin-Obukhov φ stability function for scalars.
+
+    Mirrors Fortran function ``phic_monin_obukhov`` (lines 345-358).
+
+    Reference: Bonan et al. (2018), eq. (A11).
+
+    .. code-block:: none
+
+        zeta < 0 (unstable): phi = 1 / (1 - 16*zeta)^(1/2)
+        zeta ≥ 0 (stable):   phi = 1 + 5*zeta
+
     Args:
-        zeta: Monin-Obukhov stability parameter (z-d)/L [-]
-              Can be scalar or array of shape [n_points]
-              
+        zeta: Monin-Obukhov stability parameter.
+
     Returns:
-        phi: Stability function for scalars [-]
-             Same shape as input zeta
-             
-    Note:
-        - For unstable conditions (zeta < 0), phi < 1 (enhanced mixing)
-        - For stable conditions (zeta >= 0), phi > 1 (reduced mixing)
-        - The function is continuous at zeta = 0 where phi = 1
-        
-    Reference:
-        Lines 800-819 of MLCanopyTurbulenceMod.F90
+        φ for scalars.
     """
-    # Unstable: phi = 1 / sqrt(1 - 16*zeta)
-    # Stable: phi = 1 + 5*zeta
-    phi_unstable = 1.0 / jnp.sqrt(1.0 - 16.0 * zeta)
-    phi_stable = 1.0 + 5.0 * zeta
-    
-    # Select based on stability (line 813-816)
-    phi = jnp.where(zeta < 0.0, phi_unstable, phi_stable)
-    
-    return phi
+    if zeta < 0.0:
+        return 1.0 / math.sqrt(1.0 - 16.0 * zeta)
+    else:
+        return 1.0 + 5.0 * zeta
 
 
-def psim_monin_obukhov(
-    zeta: jnp.ndarray,
-    pi: float = 3.14159265358979323846,
-) -> jnp.ndarray:
-    """Calculate Monin-Obukhov psi stability function for momentum.
-    
-    This function computes the integrated stability correction for momentum
-    transfer in the atmospheric surface layer. The formulation follows
-    Businger et al. (1971) for unstable conditions and uses a simplified
-    linear form for stable conditions as implemented in the Fortran source.
-    
-    IMPORTANT IMPLEMENTATION NOTE:
-    The Fortran implementation uses psi = -5*zeta for stable conditions (line 843),
-    which is a simplified form that does NOT strictly satisfy the theoretical
-    relationship d(psi)/d(zeta) = 1 - phi. This is intentional for computational
-    efficiency and is the standard form used in many atmospheric models (CLM, WRF, etc.).
-    
-    The theoretical relationship would require:
-        phi = 1 + 5*zeta  =>  1 - phi = -5*zeta
-        d(psi)/d(zeta) = 1 - phi = -5*zeta
-        Integrating: psi = -5*zeta^2/2 + C
-    
-    However, the Fortran uses the simplified linear approximation:
-        psi = -5*zeta (constant derivative of -5)
-    
-    This approximation is acceptable for the model's purposes and matches the
-    original CLM implementation. Tests should account for this intentional deviation
-    from strict theoretical consistency.
-    
+def _psim_monin_obukhov(zeta: float) -> float:
+    """
+    Monin-Obukhov ψ stability function for momentum.
+
+    Mirrors Fortran function ``psim_monin_obukhov`` (lines 360-378).
+
+    Reference: Bonan et al. (2018), eq. (A12).
+
+    .. code-block:: none
+
+        zeta < 0 (unstable):
+            x   = (1 - 16*zeta)^(1/4)
+            psi = 2*log((1+x)/2) + log((1+x^2)/2) - 2*atan(x) + pi/2
+        zeta ≥ 0 (stable):
+            psi = -5*zeta
+
     Args:
-        zeta: Monin-Obukhov stability parameter (z-d)/L [-] [...]
-              where z is height, d is displacement height, L is Obukhov length
-        pi: Value of pi (default: 3.14159265358979323846)
-        
+        zeta: Monin-Obukhov stability parameter.
+
     Returns:
-        psi: Stability function for momentum [-] [...]
-        
-    References:
-        - Businger, J.A., et al. (1971): Flux-profile relationships in the
-          atmospheric surface layer. J. Atmos. Sci., 28, 181-189.
-        - Dyer, A.J. (1974): A review of flux-profile relationships.
-          Boundary-Layer Meteorol., 7, 363-372.
-          
-    Note:
-        Lines 822-846 from MLCanopyTurbulenceMod.F90
-        The stable form psi = -5*zeta is a standard simplification in atmospheric
-        modeling that prioritizes computational efficiency over strict theoretical
-        consistency with d(psi)/d(zeta) = 1 - phi.
+        ψ for momentum.
     """
-    # Unstable case: x = (1 - 16*zeta)^(1/4)
-    # Lines 839-841
-    x = jnp.sqrt(jnp.sqrt(1.0 - 16.0 * zeta))
-    
-    # Unstable psi calculation
-    # Line 841
-    psi_unstable = (
-        2.0 * jnp.log((1.0 + x) / 2.0) +
-        jnp.log((1.0 + x * x) / 2.0) -
-        2.0 * jnp.arctan(x) +
-        pi * 0.5
-    )
-    
-    # Stable case: psi = -5*zeta (simplified linear form from Fortran line 843)
-    # This is the standard form used in CLM and many atmospheric models.
-    # NOTE: This gives d(psi)/d(zeta) = -5 (constant), which does NOT equal
-    # 1 - phi = -5*zeta. This is an intentional approximation for efficiency.
-    psi_stable = -5.0 * zeta
-    
-    # Select based on stability (zeta < 0 is unstable)
-    # Lines 839-843
-    psi = jnp.where(zeta < 0.0, psi_unstable, psi_stable)
-    
-    return psi
+    if zeta < 0.0:
+        x = math.sqrt(math.sqrt(1.0 - 16.0 * zeta))
+        return (2.0 * math.log((1.0 + x) / 2.0)
+                + math.log((1.0 + x * x) / 2.0)
+                - 2.0 * math.atan(x)
+                + rpi * 0.5)
+    else:
+        return -5.0 * zeta
 
 
-def psic_monin_obukhov(zeta: jnp.ndarray) -> jnp.ndarray:
+def _psic_monin_obukhov(zeta: float) -> float:
     """
-    Calculate Monin-Obukhov psi stability function for scalars.
-    
-    This function computes the integrated stability correction for scalars
-    (heat, moisture, CO2) based on the Monin-Obukhov stability parameter.
-    
-    IMPORTANT IMPLEMENTATION NOTE:
-    Like psim, this uses a simplified linear form psi = -5*zeta for stable
-    conditions (Fortran line 866), which is standard in atmospheric modeling
-    but does NOT strictly satisfy the theoretical d(psi)/d(zeta) = 1 - phi
-    relationship. This is an intentional approximation for computational efficiency.
-    
-    The theoretical relationship would require:
-        phi = 1 + 5*zeta  =>  1 - phi = -5*zeta
-        d(psi)/d(zeta) = 1 - phi = -5*zeta
-        Integrating: psi = -5*zeta^2/2 + C
-    
-    However, the Fortran uses the simplified linear approximation:
-        psi = -5*zeta (constant derivative of -5)
-    
+    Monin-Obukhov ψ stability function for scalars.
+
+    Mirrors Fortran function ``psic_monin_obukhov`` (lines 380-395).
+
+    Reference: Bonan et al. (2018), eq. (A13).
+
+    .. code-block:: none
+
+        zeta < 0 (unstable):
+            x   = (1 - 16*zeta)^(1/4)
+            psi = 2*log((1+x^2)/2)
+        zeta ≥ 0 (stable):
+            psi = -5*zeta
+
     Args:
-        zeta: Monin-Obukhov stability parameter z/L [-]
-              Can be scalar or array of any shape
-              
+        zeta: Monin-Obukhov stability parameter.
+
     Returns:
-        psi: Integrated stability function for scalars [-]
-             Same shape as input zeta
-             
-    Note:
-        - For unstable conditions (zeta < 0), uses Businger-Dyer formulation
-        - For stable conditions (zeta >= 0), uses simplified linear form psi = -5*zeta
-        - Lines 849-870 from MLCanopyTurbulenceMod.F90
-        - The stable form matches the Fortran implementation (line 866) and is
-          standard in CLM and other atmospheric models
+        ψ for scalars.
     """
-    # Unstable case: x = (1 - 16*zeta)^(1/4)
-    # Line 863-864 from original
-    x = jnp.sqrt(jnp.sqrt(1.0 - 16.0 * zeta))
-    psi_unstable = 2.0 * jnp.log((1.0 + x * x) / 2.0)
-    
-    # Stable case: psi = -5*zeta (simplified linear form from Fortran line 866)
-    # This matches the Fortran implementation and is standard in atmospheric models.
-    # NOTE: This gives d(psi)/d(zeta) = -5 (constant), which does NOT equal
-    # 1 - phi = -5*zeta. This is an intentional approximation for efficiency.
-    psi_stable = -5.0 * zeta
-    
-    # Select based on stability (line 862, 865)
-    psi = jnp.where(zeta < 0.0, psi_unstable, psi_stable)
-    
-    return psi
+    if zeta < 0.0:
+        x = math.sqrt(math.sqrt(1.0 - 16.0 * zeta))
+        return 2.0 * math.log((1.0 + x * x) / 2.0)
+    else:
+        return -5.0 * zeta
 
 
-# =============================================================================
-# PRANDTL/SCHMIDT NUMBER
-# =============================================================================
+# ===========================================================================
+# Private: RSL psihat look-up table interpolation
+# ===========================================================================
 
-def get_prsc(
-    beta_neutral: jnp.ndarray,
-    beta_neutral_max: jnp.ndarray,
-    LcL: jnp.ndarray,
-    params: PrScParams,
-) -> jnp.ndarray:
-    """Calculate Prandtl/Schmidt number at canopy top.
-    
-    Computes the Prandtl (or Schmidt) number as a function of atmospheric
-    stability (via LcL) and canopy density (via beta_neutral). The calculation
-    follows Harman & Finnigan (2008) with adjustments for sparse canopies.
-    
-    Args:
-        beta_neutral: Neutral value for beta = u*/u(h) [-] [n_patches]
-        beta_neutral_max: Maximum value for beta in neutral conditions [-] [n_patches]
-        LcL: Canopy density scale (Lc) / Obukhov length (obu) [-] [n_patches]
-        params: Prandtl/Schmidt number parameters
-        
-    Returns:
-        Prandtl (Schmidt) number at canopy top [-] [n_patches]
-        
-    Reference:
-        Fortran source lines 650-673 in MLCanopyTurbulenceMod.F90
-        
-    Note:
-        - For dense canopies (beta_neutral → beta_neutral_max), PrSc follows
-          the stability-dependent formulation
-        - For sparse canopies (beta_neutral → 0), PrSc → 1 (neutral mixing)
-        - The tanh function provides smooth transition between stable and
-          unstable conditions
-    """
-    # Calculate base Prandtl/Schmidt number with stability dependence
-    # Line 667: PrSc = Pr0 + Pr1 * tanh(Pr2*LcL)
-    PrSc = params.Pr0 + params.Pr1 * jnp.tanh(params.Pr2 * LcL)
-    
-    # Adjust for canopy sparseness
-    # Lines 669-671: Interpolate between sparse (PrSc=1) and dense (PrSc from above)
-    beta_ratio = beta_neutral / beta_neutral_max
-    PrSc = (1.0 - beta_ratio) * 1.0 + beta_ratio * PrSc
-    
-    return PrSc
-
-
-# =============================================================================
-# BETA CALCULATION
-# =============================================================================
-
-def get_beta(
-    beta_neutral: float,
-    lcl: float,
-    beta_min: float,
-    beta_max: float,
-    phim_func: Callable,
+def _LookupPsihat(
+    zdt: float,
+    dtL: float,
+    zdtgrid,    # shape (nZ, 1)
+    dtLgrid,    # shape (1, nL)
+    psigrid,    # shape (nZ, nL)
 ) -> float:
-    """Calculate beta = u*/u(h) for current Obukhov length.
-    
-    Solves for the ratio of friction velocity to wind speed at canopy height
-    as a function of atmospheric stability (characterized by LcL = Lc/L where
-    Lc is canopy density scale and L is Obukhov length).
-    
-    Args:
-        beta_neutral: Neutral value for beta = u*/u(h) [-]
-        lcl: Canopy density scale / Obukhov length (Lc/L) [-]
-        beta_min: Minimum allowed beta value [-]
-        beta_max: Maximum allowed beta value [-]
-        phim_func: Function to compute Monin-Obukhov phi_m(y)
-        
-    Returns:
-        Value of u*/u(h) at canopy top, constrained to [beta_min, beta_max] [-]
-        
-    Note:
-        Lines 584-647 from MLCanopyTurbulenceMod.F90
-        Original includes error check that beta*phi_m(LcL*beta^2) = beta_neutral
-        Error tolerance is 1e-6
     """
-    # Apply LcL value
-    lcl_val = lcl
-    
-    # Unstable case: quadratic equation for beta^2 at LcL_val
-    # aa*beta^2 + bb*beta^2 + cc = 0
-    # Simplifies to: (1 + 16*LcL*beta_neutral^4)*beta^2 = beta_neutral^4
-    aa_unstable = 1.0
-    bb_unstable = 16.0 * lcl_val * beta_neutral**4
-    cc_unstable = -beta_neutral**4
-    
-    discriminant_unstable = bb_unstable**2 - 4.0 * aa_unstable * cc_unstable
-    beta_squared_unstable = (
-        (-bb_unstable + jnp.sqrt(discriminant_unstable)) / (2.0 * aa_unstable)
-    )
-    beta_unstable = jnp.sqrt(beta_squared_unstable)
-    
-    # Stable case: cubic equation for beta at LcL_val
-    # aa*beta^3 + bb*beta^2 + cc*beta + dd = 0
-    # 5*LcL*beta^3 + 0*beta^2 + 1*beta - beta_neutral = 0
-    aa_stable = 5.0 * lcl_val
-    bb_stable = 0.0
-    cc_stable = 1.0
-    dd_stable = -beta_neutral
-    
-    # Cardano's formula for cubic equation
-    qq = (
-        (2.0 * bb_stable**3 - 9.0 * aa_stable * bb_stable * cc_stable + 
-         27.0 * (aa_stable**2) * dd_stable)**2 - 
-        4.0 * (bb_stable**2 - 3.0 * aa_stable * cc_stable)**3
-    )
-    qq = jnp.sqrt(jnp.maximum(qq, 0.0))  # Ensure non-negative for sqrt
-    
-    rr = 0.5 * (
-        qq + 2.0 * bb_stable**3 - 9.0 * aa_stable * bb_stable * cc_stable + 
-        27.0 * (aa_stable**2) * dd_stable
-    )
-    # Handle sign for cube root
-    rr_sign = jnp.sign(rr)
-    rr_abs = jnp.abs(rr)
-    rr = rr_sign * (rr_abs**(1.0/3.0))
-    
-    beta_stable = (
-        -(bb_stable + rr) / (3.0 * aa_stable) - 
-        (bb_stable**2 - 3.0 * aa_stable * cc_stable) / (3.0 * aa_stable * rr)
-    )
-    
-    # Select based on stability
-    beta = jnp.where(lcl_val <= 0.0, beta_unstable, beta_stable)
-    
-    # Place limits on beta
-    beta = jnp.clip(beta, beta_min, beta_max)
-    
+    Bilinear interpolation of the RSL psihat function from a look-up table.
+
+    Mirrors Fortran subroutine ``LookupPsihat`` (lines 398-448).
+
+    Reference: Bonan et al. (2018), eq. (A21).
+
+    The returned value is the unscaled amplitude ``A[(z-h)/(h-d),(h-d)/L]``;
+    it must be multiplied by ``c1`` before it fully represents psihat.
+
+    Look-up table grid conventions (1-based in Fortran, 0-based here):
+
+    - ``zdtgrid`` decreases with increasing row index (height above canopy
+      decreasing toward zero as index increases); boundary clamping applies
+      when ``zdt`` exceeds the table range.
+    - ``dtLgrid`` increases with increasing column index; boundary clamping
+      applies when ``dtL`` is outside the table range.
+
+    Args:
+        zdt: Normalised height above canopy ``(z-h)/(h-d)``.
+        dtL: Stability ratio ``(h-d)/L``.
+        zdtgrid: Grid of ``zdt`` values; shape ``(nZ, 1)``.
+        dtLgrid: Grid of ``dtL`` values; shape ``(1, nL)``.
+        psigrid: Psihat values on the grid; shape ``(nZ, nL)``.
+
+    Returns:
+        Interpolated (unscaled) psihat value.
+    """
+    dtLg = dtLgrid[0]       # 1-D view, length nL (no copy)
+    zdtg = zdtgrid[:, 0]    # 1-D view, length nZ (no copy); DECREASING
+    nZ_tbl = len(zdtg)
+    nL_tbl = len(dtLg)
+
+    # --- dtL bracketing — Fortran lines 412-428 ---
+    # dtLg is increasing → np.searchsorted gives the insertion point
+    if dtL <= dtLg[0]:
+        L1 = 0; L2 = 0; wL1 = 0.5; wL2 = 0.5
+    elif dtL > dtLg[-1]:
+        L1 = nL_tbl - 1; L2 = nL_tbl - 1; wL1 = 0.5; wL2 = 0.5
+    else:
+        # Clamp to nL_tbl-1 in case dtL == dtLg[-1] exactly
+        L2 = min(int(np.searchsorted(dtLg, dtL, side='right')), nL_tbl - 1)
+        L1 = L2 - 1
+        wL1 = (dtLg[L2] - dtL) / (dtLg[L2] - dtLg[L1])
+        wL2 = 1.0 - wL1
+
+    # --- zdt bracketing — Fortran lines 430-448 (zdtg DECREASES) ---
+    # Negate both to apply searchsorted on the increasing negative grid
+    if zdt > zdtg[0]:
+        Z1 = 0; Z2 = 0; wZ1 = 0.5; wZ2 = 0.5
+    elif zdt < zdtg[-1]:
+        Z1 = nZ_tbl - 1; Z2 = nZ_tbl - 1; wZ1 = 0.5; wZ2 = 0.5
+    else:
+        # Clamp to nZ_tbl-2 in case zdt == zdtg[-1] exactly
+        Z1 = min(int(np.searchsorted(-zdtg, -zdt, side='right')) - 1, nZ_tbl - 2)
+        Z2 = Z1 + 1
+        wZ1 = (zdt - zdtg[Z2]) / (zdtg[Z1] - zdtg[Z2])
+        wZ2 = 1.0 - wZ1
+
+    # Bilinear interpolation — Fortran lines 450-452
+    return (wZ1 * wL1 * psigrid[Z1, L1]
+            + wZ2 * wL1 * psigrid[Z2, L1]
+            + wZ1 * wL2 * psigrid[Z1, L2]
+            + wZ2 * wL2 * psigrid[Z2, L2])
+
+
+# ---------------------------------------------------------------------------
+# Fast specialized lookups using module-level pre-computed 1D arrays.
+# These eliminate the per-call slice and negation overhead of _LookupPsihat.
+# Called by _GetPsiRSL after LookupPsihatINI has populated the caches.
+# ---------------------------------------------------------------------------
+
+def _LookupPsihatM(zdt: float, dtL: float) -> float:
+    """Momentum psihat lookup using module-level cached 1D arrays."""
+    if dtL <= _dtLgM_1d[0]:
+        L1 = 0; L2 = 0; wL1 = 0.5; wL2 = 0.5
+    elif dtL > _dtLgM_1d[-1]:
+        L1 = _nL_M - 1; L2 = _nL_M - 1; wL1 = 0.5; wL2 = 0.5
+    else:
+        L2 = min(int(np.searchsorted(_dtLgM_1d, dtL, side='right')), _nL_M - 1)
+        L1 = L2 - 1
+        wL1 = (_dtLgM_1d[L2] - dtL) / (_dtLgM_1d[L2] - _dtLgM_1d[L1])
+        wL2 = 1.0 - wL1
+    if zdt > _zdtgM_1d[0]:
+        Z1 = 0; Z2 = 0; wZ1 = 0.5; wZ2 = 0.5
+    elif zdt < _zdtgM_1d[-1]:
+        Z1 = _nZ_M - 1; Z2 = _nZ_M - 1; wZ1 = 0.5; wZ2 = 0.5
+    else:
+        Z1 = min(int(np.searchsorted(_neg_zdtgM_1d, -zdt, side='right')) - 1, _nZ_M - 2)
+        Z2 = Z1 + 1
+        wZ1 = (zdt - _zdtgM_1d[Z2]) / (_zdtgM_1d[Z1] - _zdtgM_1d[Z2])
+        wZ2 = 1.0 - wZ1
+    return (wZ1 * wL1 * psigridM[Z1, L1]
+            + wZ2 * wL1 * psigridM[Z2, L1]
+            + wZ1 * wL2 * psigridM[Z1, L2]
+            + wZ2 * wL2 * psigridM[Z2, L2])
+
+
+def _LookupPsihatH(zdt: float, dtL: float) -> float:
+    """Heat/scalar psihat lookup using module-level cached 1D arrays."""
+    if dtL <= _dtLgH_1d[0]:
+        L1 = 0; L2 = 0; wL1 = 0.5; wL2 = 0.5
+    elif dtL > _dtLgH_1d[-1]:
+        L1 = _nL_H - 1; L2 = _nL_H - 1; wL1 = 0.5; wL2 = 0.5
+    else:
+        L2 = min(int(np.searchsorted(_dtLgH_1d, dtL, side='right')), _nL_H - 1)
+        L1 = L2 - 1
+        wL1 = (_dtLgH_1d[L2] - dtL) / (_dtLgH_1d[L2] - _dtLgH_1d[L1])
+        wL2 = 1.0 - wL1
+    if zdt > _zdtgH_1d[0]:
+        Z1 = 0; Z2 = 0; wZ1 = 0.5; wZ2 = 0.5
+    elif zdt < _zdtgH_1d[-1]:
+        Z1 = _nZ_H - 1; Z2 = _nZ_H - 1; wZ1 = 0.5; wZ2 = 0.5
+    else:
+        Z1 = min(int(np.searchsorted(_neg_zdtgH_1d, -zdt, side='right')) - 1, _nZ_H - 2)
+        Z2 = Z1 + 1
+        wZ1 = (zdt - _zdtgH_1d[Z2]) / (_zdtgH_1d[Z1] - _zdtgH_1d[Z2])
+        wZ2 = 1.0 - wZ1
+    return (wZ1 * wL1 * psigridH[Z1, L1]
+            + wZ2 * wL1 * psigridH[Z2, L1]
+            + wZ1 * wL2 * psigridH[Z1, L2]
+            + wZ2 * wL2 * psigridH[Z2, L2])
+
+
+# ===========================================================================
+# Private: beta = u*/u(h)
+# ===========================================================================
+
+def _GetBeta(beta_neutral: float, LcL: float) -> float:
+    """
+    Calculate β = u*/u(h) for the current Obukhov length stability.
+
+    Mirrors Fortran subroutine ``GetBeta`` (lines 245-290).
+
+    Reference: Bonan et al. (2018), eqs. (A22)-(A24).
+
+    **Unstable** (``LcL ≤ 0``): solves the quadratic equation for β²:
+
+    .. code-block:: none
+
+        β² = (-b + sqrt(b²-4ac)) / 2a
+        where a=1, b=16*LcL*β_n^4, c=-β_n^4
+
+    **Stable** (``LcL > 0``): solves the depressed cubic equation for β
+    via Cardano's formula:
+
+    .. code-block:: none
+
+        5*LcL*β^3 + β - β_n = 0
+
+    Error check: ``|β*φm(LcL*β²) - β_n| < 1e-6``.
+
+    Args:
+        beta_neutral: Neutral value of β = u*/u(h).
+        LcL: Canopy density scale Lc divided by Obukhov length L.
+
+    Returns:
+        β value.
+    """
+    if LcL <= 0.0:                                 # Fortran lines 258-261: unstable quadratic
+        aa = 1.0
+        bb = 16.0 * LcL * beta_neutral ** 4
+        cc = -(beta_neutral ** 4)
+        beta = math.sqrt((-bb + math.sqrt(bb * bb - 4.0 * aa * cc)) / (2.0 * aa))
+    else:                                          # Fortran lines 263-272: stable cubic
+        aa = 5.0 * LcL
+        bb = 0.0
+        cc = 1.0
+        dd = -beta_neutral
+        qq = ((2.0 * bb**3 - 9.0 * aa * bb * cc + 27.0 * aa**2 * dd)**2
+              - 4.0 * (bb**2 - 3.0 * aa * cc)**3)
+        qq = math.sqrt(qq)
+        rr = 0.5 * (qq + 2.0 * bb**3 - 9.0 * aa * bb * cc + 27.0 * aa**2 * dd)
+        rr = rr ** (1.0 / 3.0)
+        beta = -(bb + rr) / (3.0 * aa) - (bb**2 - 3.0 * aa * cc) / (3.0 * aa * rr)
+
+    # Error check — Fortran lines 274-278
+    y   = LcL * beta ** 2
+    fy  = _phim_monin_obukhov(y)
+    err = beta * fy - beta_neutral
+    if abs(err) > 1.0e-6:
+        endrun(msg=' ERROR: GetBeta: beta error')
+
     return beta
 
 
-# =============================================================================
-# RSL STABILITY FUNCTIONS
-# =============================================================================
+# ===========================================================================
+# Private: Prandtl / Schmidt number
+# ===========================================================================
 
-def lookup_psihat(
-    zdt: float,
-    dtL: float,
-    zdtgrid: jnp.ndarray,
-    dtLgrid: jnp.ndarray,
-    psigrid: jnp.ndarray,
+def _GetPrSc(
+    beta_neutral: float,
+    beta_neutral_max: float,
+    LcL: float,
 ) -> float:
     """
-    Determine psihat from lookup table via bilinear interpolation.
-    
-    Performs bilinear interpolation on a 2D grid to find psihat for given
-    normalized height (zdt) and stability parameter (dtL).
-    
+    Calculate the Prandtl (= Schmidt) number at the canopy top.
+
+    Mirrors Fortran subroutine ``GetPrSc`` (lines 292-310).
+
+    Reference: Bonan et al. (2018), eqs. (A25), (A34).
+
+    .. code-block:: none
+
+        PrSc = Pr0 + Pr1 * tanh(Pr2 * LcL)
+
+    For sparse canopies (``sparse_canopy_type == 1``):
+
+    .. code-block:: none
+
+        PrSc = (1 - beta_n/beta_n_max) * 1.0
+               + (beta_n/beta_n_max) * PrSc
+
     Args:
-        zdt: Height (above canopy) normalized by dt [dimensionless]
-        dtL: dt/L (displacement height/Obukhov length) [dimensionless]
-        zdtgrid: Grid of zdt values on which psihat is given [nZ, 1]
-        dtLgrid: Grid of dtL values on which psihat is given [1, nL]
-        psigrid: Grid of psihat values [nZ, nL]
-        
+        beta_neutral: Neutral β.
+        beta_neutral_max: Maximum allowed neutral β.
+        LcL: Canopy density scale / Obukhov length.
+
     Returns:
-        psihat: Interpolated value of psihat [dimensionless]
-        
-    Note:
-        - zdtgrid is assumed to be in descending order (lines 933-947)
-        - dtLgrid is assumed to be in ascending order (lines 905-919)
-        - Extrapolation uses edge values with equal weights (0.5, 0.5)
-        - Original Fortran lines 873-969
+        PrSc value.
     """
-    nZ = zdtgrid.shape[0]
-    nL = dtLgrid.shape[1]
-    
-    # Find indices and weights for dtL values which bracket the specified dtL
-    # (lines 905-925)
-    
-    # Case 1: dtL <= dtLgrid(1,1) - use first grid point
-    L1_case1 = 0
-    L2_case1 = 0
-    wL1_case1 = 0.5
-    wL2_case1 = 0.5
-    
-    # Case 2: dtL > dtLgrid(1,nL) - use last grid point
-    L1_case2 = nL - 1
-    L2_case2 = nL - 1
-    wL1_case2 = 0.5
-    wL2_case2 = 0.5
-    
-    # Case 3: dtL is within grid - find bracketing indices
-    dtL_array = dtLgrid[0, :]  # Shape: [nL]
-    
-    # Create masks for each interval
-    jj_indices = jnp.arange(nL - 1)
-    lower_bounds = dtL_array[:-1]
-    upper_bounds = dtL_array[1:]
-    
-    # Find which interval contains dtL
-    in_interval = (dtL > lower_bounds) & (dtL <= upper_bounds)
-    
-    # Get the index of the first True value (or 0 if none)
-    jj_found = jnp.argmax(in_interval)
-    found_any = jnp.any(in_interval)
-    
-    L1_case3 = jnp.where(found_any, jj_found, 0)
-    L2_case3 = jnp.where(found_any, jj_found + 1, 1)
-    
-    # Calculate weights for case 3
-    denom = dtL_array[L2_case3] - dtL_array[L1_case3]
-    wL1_case3 = jnp.where(
-        found_any,
-        (dtL_array[L2_case3] - dtL) / denom,
-        0.5
-    )
-    wL2_case3 = 1.0 - wL1_case3
-    
-    # Select appropriate case
-    use_case1 = dtL <= dtL_array[0]
-    use_case2 = dtL > dtL_array[-1]
-    use_case3 = ~use_case1 & ~use_case2
-    
-    L1 = jnp.where(use_case1, L1_case1, jnp.where(use_case2, L1_case2, L1_case3))
-    L2 = jnp.where(use_case1, L2_case1, jnp.where(use_case2, L2_case2, L2_case3))
-    wL1 = jnp.where(use_case1, wL1_case1, jnp.where(use_case2, wL1_case2, wL1_case3))
-    wL2 = jnp.where(use_case1, wL2_case1, jnp.where(use_case2, wL2_case2, wL2_case3))
-    
-    # Find indices and weights for zdt values which bracket the specified zdt
-    # (lines 933-955)
-    # Note: zdtgrid is in DESCENDING order
-    
-    # Case 1: zdt > zdtgrid(1,1) - use first grid point
-    Z1_case1 = 0
-    Z2_case1 = 0
-    wZ1_case1 = 0.5
-    wZ2_case1 = 0.5
-    
-    # Case 2: zdt < zdtgrid(nZ,1) - use last grid point
-    Z1_case2 = nZ - 1
-    Z2_case2 = nZ - 1
-    wZ1_case2 = 0.5
-    wZ2_case2 = 0.5
-    
-    # Case 3: zdt is within grid - find bracketing indices
-    zdt_array = zdtgrid[:, 0]  # Shape: [nZ]
-    
-    # Create masks for each interval
-    ii_indices = jnp.arange(nZ - 1)
-    upper_bounds_z = zdt_array[:-1]
-    lower_bounds_z = zdt_array[1:]
-    
-    # Find which interval contains zdt (descending order)
-    in_interval_z = (zdt >= lower_bounds_z) & (zdt < upper_bounds_z)
-    
-    # Get the index of the first True value (or 0 if none)
-    ii_found = jnp.argmax(in_interval_z)
-    found_any_z = jnp.any(in_interval_z)
-    
-    Z1_case3 = jnp.where(found_any_z, ii_found, 0)
-    Z2_case3 = jnp.where(found_any_z, ii_found + 1, 1)
-    
-    # Calculate weights for case 3
-    denom_z = zdt_array[Z1_case3] - zdt_array[Z2_case3]
-    wZ1_case3 = jnp.where(
-        found_any_z,
-        (zdt - zdt_array[Z2_case3]) / denom_z,
-        0.5
-    )
-    wZ2_case3 = 1.0 - wZ1_case3
-    
-    # Select appropriate case
-    use_case1_z = zdt > zdt_array[0]
-    use_case2_z = zdt < zdt_array[-1]
-    use_case3_z = ~use_case1_z & ~use_case2_z
-    
-    Z1 = jnp.where(use_case1_z, Z1_case1, jnp.where(use_case2_z, Z1_case2, Z1_case3))
-    Z2 = jnp.where(use_case1_z, Z2_case1, jnp.where(use_case2_z, Z2_case2, Z2_case3))
-    wZ1 = jnp.where(use_case1_z, wZ1_case1, jnp.where(use_case2_z, wZ1_case2, wZ1_case3))
-    wZ2 = jnp.where(use_case1_z, wZ2_case1, jnp.where(use_case2_z, wZ2_case2, wZ2_case3))
-    
-    # Calculate psihat as a weighted average of the values of psihat on the grid
-    # (lines 963-965)
-    psihat = (
-        wZ1 * wL1 * psigrid[Z1, L1] +
-        wZ2 * wL1 * psigrid[Z2, L1] +
-        wZ1 * wL2 * psigrid[Z1, L2] +
-        wZ2 * wL2 * psigrid[Z2, L2]
-    )
-    
-    return psihat
+    PrSc = Pr0 + Pr1 * math.tanh(Pr2 * LcL)       # Fortran line 304
+
+    if sparse_canopy_type == 1:                    # Fortran lines 306-308
+        f = beta_neutral / beta_neutral_max
+        PrSc = (1.0 - f) * 1.0 + f * PrSc
+
+    return PrSc
 
 
-def get_psi_rsl(
-    za: jnp.ndarray,
-    hc: jnp.ndarray,
-    disp: jnp.ndarray,
-    obu: jnp.ndarray,
-    beta: jnp.ndarray,
-    prsc: jnp.ndarray,
-    vkc: float,
-    c2: float,
-    dtlgrid_m: jnp.ndarray,
-    zdtgrid_m: jnp.ndarray,
-    psigrid_m: jnp.ndarray,
-    dtlgrid_h: jnp.ndarray,
-    zdtgrid_h: jnp.ndarray,
-    psigrid_h: jnp.ndarray,
-    phim_monin_obukhov_fn: Callable,
-    phic_monin_obukhov_fn: Callable,
-    psim_monin_obukhov_fn: Callable,
-    psic_monin_obukhov_fn: Callable,
-    lookup_psihat_fn: Callable,
-) -> PsiRSLResult:
-    """Calculate stability functions psi for momentum and scalars with RSL influence.
-    
-    This function computes the combined Monin-Obukhov and roughness sublayer (RSL)
-    stability corrections for momentum and scalar transport between atmospheric
-    height za and canopy height hc.
-    
-    Fortran source: MLCanopyTurbulenceMod.F90, lines 676-775
-    
+# ===========================================================================
+# Private: RSL-modified psi functions
+# ===========================================================================
+
+def _GetPsiRSL(
+    za: float,
+    hc: float,
+    disp: float,
+    obu: float,
+    beta: float,
+    PrSc: float,
+) -> Tuple[float, float, float, float]:
+    """
+    RSL-modified ψ stability functions for momentum and scalars.
+
+    Mirrors Fortran subroutine ``GetPsiRSL`` (lines 312-398).
+
+    Reference: Bonan et al. (2018), appendix A2.
+
+    Computes the integrated stability corrections between ``hc`` and
+    ``za`` including the roughness sublayer psihat modifications.
+
+    **Momentum** (Bonan et al. 2018, eq. A16, A21, 19):
+
+    .. code-block:: none
+
+        phim = phim_monin_obukhov((hc-disp)/obu)
+        c1   = (1 - vkc/(2*beta*phim)) * exp(0.5*c2)
+        psim = -psim1 + psim2 + c1*psihat_m(za) - c1*psihat_m(hc) + vkc/beta
+
+    **Scalars** (eqs. A19, A21, 20):
+
+    .. code-block:: none
+
+        phic = phic_monin_obukhov((hc-disp)/obu)
+        c1   = (1 - PrSc*vkc/(2*beta*phic)) * exp(0.5*c2)
+        psic = -psic1 + psic2 + c1*psihat_h(za) - c1*psihat_h(hc)
+
     Args:
-        za: Atmospheric height [m] [n_patches]
-        hc: Canopy height [m] [n_patches]
-        disp: Displacement height [m] [n_patches]
-        obu: Obukhov length [m] [n_patches]
-        beta: Value of u*/u at canopy top [dimensionless] [n_patches]
-        prsc: Prandtl (Schmidt) number at canopy top [dimensionless] [n_patches]
-        vkc: von Karman constant [dimensionless]
-        c2: RSL height scale parameter [dimensionless]
-        dtlgrid_m: dt/L grid for momentum lookup [n_dtl]
-        zdtgrid_m: z/dt grid for momentum lookup [n_zdt]
-        psigrid_m: psihat values for momentum [n_dtl, n_zdt]
-        dtlgrid_h: dt/L grid for scalars lookup [n_dtl]
-        zdtgrid_h: z/dt grid for scalars lookup [n_zdt]
-        psigrid_h: psihat values for scalars [n_dtl, n_zdt]
-        phim_monin_obukhov_fn: Function to compute phi_m(zeta)
-        phic_monin_obukhov_fn: Function to compute phi_c(zeta)
-        psim_monin_obukhov_fn: Function to compute psi_m(zeta)
-        psic_monin_obukhov_fn: Function to compute psi_c(zeta)
-        lookup_psihat_fn: Function to lookup psihat from tables
-        
+        za: Atmospheric height (m).
+        hc: Canopy top height (m).
+        disp: Displacement height (m).
+        obu: Obukhov length (m).
+        beta: u*/u(h) at canopy top.
+        PrSc: Prandtl/Schmidt number.
+
     Returns:
-        PsiRSLResult containing:
-            - psim: psi function for momentum including RSL [dimensionless] [n_patches]
-            - psic: psi function for scalars including RSL [dimensionless] [n_patches]
-            
-    Note:
-        The RSL theory modifies MOST through psihat functions that account for
-        canopy roughness. The modification is characterized by c1 (magnitude) and
-        c2 (height scale). See ASCII diagram in Fortran source (lines 698-713).
+        Tuple ``(psim, psic, psim2, psim_hat2)`` where:
+        - ``psim``: ψ for momentum including RSL (evaluated za→hc).
+        - ``psic``: ψ for scalars including RSL.
+        - ``psim2``: MO ψ for momentum evaluated at hc.
+        - ``psim_hat2``: RSL psihat for momentum evaluated at hc.
     """
-    # Displacement height below canopy top (Fortran line 716)
-    dt = hc - disp
-    
-    # --- Momentum calculations (Fortran lines 718-755) ---
-    
-    # Monin-Obukhov phi function for momentum at canopy top (line 718)
-    phim = phim_monin_obukhov_fn((hc - disp) / obu)
-    
-    # RSL magnitude multiplier c1 (line 719)
-    c1_m = (1.0 - vkc / (2.0 * beta * phim)) * jnp.exp(0.5 * c2)
-    
-    # Evaluate RSL psihat function for momentum at za and hc (lines 727-730)
-    psihat1_m = lookup_psihat_fn(
-        (za - hc) / dt, dt / obu, zdtgrid_m, dtlgrid_m, psigrid_m
-    )
-    psihat2_m = lookup_psihat_fn(
-        (hc - hc) / dt, dt / obu, zdtgrid_m, dtlgrid_m, psigrid_m
-    )
-    
-    # Scale psihat by c1 (lines 731-732)
-    psihat1_m = psihat1_m * c1_m
-    psihat2_m = psihat2_m * c1_m
-    
-    # Evaluate Monin-Obukhov psi function for momentum at za and hc (lines 736-737)
-    psi1_m = psim_monin_obukhov_fn((za - disp) / obu)
-    psi2_m = psim_monin_obukhov_fn((hc - disp) / obu)
-    
-    # Combined psi function for momentum including RSL influence (line 741)
-    psim = -psi1_m + psi2_m + psihat1_m - psihat2_m + vkc / beta
-    
-    # --- Scalar calculations (Fortran lines 743-755) ---
-    
-    # Monin-Obukhov phi function for scalars at canopy top (line 745)
-    phic = phic_monin_obukhov_fn((hc - disp) / obu)
-    
-    # RSL magnitude multiplier c1 for scalars (line 746)
-    c1_c = (1.0 - prsc * vkc / (2.0 * beta * phic)) * jnp.exp(0.5 * c2)
-    
-    # Evaluate RSL psihat function for scalars at za and hc (lines 748-751)
-    psihat1_c = lookup_psihat_fn(
-        (za - hc) / dt, dt / obu, zdtgrid_h, dtlgrid_h, psigrid_h
-    )
-    psihat2_c = lookup_psihat_fn(
-        (hc - hc) / dt, dt / obu, zdtgrid_h, dtlgrid_h, psigrid_h
-    )
-    
-    # Scale psihat by c1 (lines 752-753)
-    psihat1_c = psihat1_c * c1_c
-    psihat2_c = psihat2_c * c1_c
-    
-    # Evaluate Monin-Obukhov psi function for scalars at za and hc (lines 755-756)
-    psi1_c = psic_monin_obukhov_fn((za - disp) / obu)
-    psi2_c = psic_monin_obukhov_fn((hc - disp) / obu)
-    
-    # Combined psi function for scalars including RSL influence (line 758)
-    psic = -psi1_c + psi2_c + psihat1_c - psihat2_c
-    
-    return PsiRSLResult(psim=psim, psic=psic)
+    dt = hc - disp                                 # Fortran line 358
+    zdt_za  = (za - hc) / dt                       # normalised height at za
+    zdt_hc  = 0.0                                  # (hc - hc) / dt == 0 always
+    dtL     = dt / obu                             # stability ratio
+
+    # Momentum — Fortran lines 360-376
+    phim = _phim_monin_obukhov((hc - disp) / obu)
+    c1_m = (1.0 - vkc / (2.0 * beta * phim)) * math.exp(0.5 * c2)
+
+    psim_hat1_raw = _LookupPsihatM(zdt_za, dtL)
+    psim_hat2_raw = _LookupPsihatM(zdt_hc, dtL)
+    psim_hat1 = psim_hat1_raw * c1_m
+    psim_hat2 = psim_hat2_raw * c1_m
+
+    psim1 = _psim_monin_obukhov((za  - disp) / obu)
+    psim2 = _psim_monin_obukhov((hc  - disp) / obu)
+
+    psim = -psim1 + psim2 + psim_hat1 - psim_hat2 + vkc / beta
+
+    # Scalars — Fortran lines 378-393
+    phic = _phic_monin_obukhov((hc - disp) / obu)
+    c1_c = (1.0 - PrSc * vkc / (2.0 * beta * phic)) * math.exp(0.5 * c2)
+
+    psic_hat1_raw = _LookupPsihatH(zdt_za, dtL)
+    psic_hat2_raw = _LookupPsihatH(zdt_hc, dtL)
+    psic_hat1 = psic_hat1_raw * c1_c
+    psic_hat2 = psic_hat2_raw * c1_c
+
+    psic1 = _psic_monin_obukhov((za  - disp) / obu)
+    psic2 = _psic_monin_obukhov((hc  - disp) / obu)
+
+    psic = -psic1 + psic2 + psic_hat1 - psic_hat2
+
+    return psim, psic, psim2, psim_hat2
 
 
-# =============================================================================
-# OBUKHOV LENGTH SOLVER
-# =============================================================================
+# ===========================================================================
+# Private: ObuFunc callback (hybrid root-finder signature)
+# ===========================================================================
 
-def obu_func(
-    inputs: ObuFuncInputs,
-    get_beta_fn: Callable,
-    get_prsc_fn: Callable,
-    get_psi_rsl_fn: Callable,
-) -> ObuFuncOutputs:
-    """Solve for the Obukhov length.
-    
-    For the current estimate of the Obukhov length (obu_val), calculate u*, T*,
-    and q* and then the new length (obu). Returns the change in Obukhov length
-    (obu_dif), which equals zero when the Obukhov length does not change value
-    between iterations.
-    
+def _ObuFunc(
+    p: int,
+    ic: int,
+    il: int,
+    mlcanopy_inst: mlcanopy_type,
+    obu_val: float,
+) -> Tuple[float, mlcanopy_type]:
+    """
+    Solve for the Obukhov length at a single patch.
+
+    Mirrors Fortran subroutine ``ObuFunc`` (lines 178-244).
+
+    Reference: Bonan et al. (2018), eqs. (A28)-(A33), (19)-(20).
+
+    For a trial ``obu_val``:
+
+    1. Clamp ``obu_val`` to avoid singularity near zero using
+       ``LcL_min`` / ``LcL_max``.
+    2. Compute neutral β and stability-corrected β via
+       :func:`_GetBeta` (HF RSL and no-RSL versions), then blend.
+    3. Compute displacement height ``zdisp`` (with optional sparse
+       canopy correction).
+    4. Compute PrSc via :func:`_GetPrSc`.
+    5. Compute ψ functions via :func:`_GetPsiRSL`.
+    6. Derive ``ustar``, ``tstar``, ``qstar``,
+       ``gac_to_hc``, and the new Obukhov length.
+    7. Return ``obu_dif = obu_new - obu_val``.
+
+    Matches the :data:`MLMathToolsMod.FuncType` callback signature.
+
     Args:
-        inputs: Input parameters for Obukhov length calculation
-        get_beta_fn: Function to calculate beta (u*/u ratio)
-        get_prsc_fn: Function to calculate Prandtl/Schmidt number
-        get_psi_rsl_fn: Function to calculate stability functions
-        
+        p: Patch index.
+        ic: Unused (set to 0 by caller); required by callback contract.
+        il: Unused (set to 0 by caller); required by callback contract.
+        mlcanopy_inst: Canopy container; ``zdisp``, ``beta``, ``PrSc``,
+            ``ustar``, ``gac_to_hc``, and ``obu`` are updated.
+        obu_val: Trial Obukhov length (m).
+
     Returns:
-        ObuFuncOutputs containing:
-            - obu_dif: Change in Obukhov length [m]
-            - zdisp: Displacement height [m]
-            - beta: u*/u ratio [-]
-            - PrSc: Prandtl/Schmidt number [-]
-            - ustar: Friction velocity [m/s]
-            - gac_to_hc: Aerodynamic conductance [mol/m2/s]
-            - obu: Obukhov length used for calculations [m]
-            
-    Reference:
-        Fortran source lines 441-581 in MLCanopyTurbulenceMod.F90
+        Tuple ``(obu_dif, mlcanopy_inst)``.
     """
-    # Line 503: Use this current value of Obukhov length
-    obu_cur = inputs.obu_val
-    
-    # Line 505-506: Prevent near-zero value of Obukhov length
-    obu_cur = jnp.where(jnp.abs(obu_cur) <= 0.1, 
-                        jnp.sign(obu_cur) * 0.1, 
-                        obu_cur)
-    
-    # Line 508-510: Determine neutral value of beta
-    c1 = (inputs.vkc / jnp.log((inputs.ztop + inputs.z0mg) / inputs.z0mg))**2
-    beta_neutral = jnp.minimum(
-        jnp.sqrt(c1 + inputs.cr * (inputs.lai + inputs.sai)),
-        inputs.beta_neutral_max
-    )
-    
-    # Line 512-513: Calculate beta = u* / u(h) for current Obukhov length
-    beta = get_beta_fn(beta_neutral, inputs.Lc / obu_cur)
-    
-    # Line 515-519: Displacement height, and then adjust for canopy sparseness
-    h_minus_d = beta**2 * inputs.Lc
-    h_minus_d = h_minus_d * (1.0 - jnp.exp(-0.25 * (inputs.lai + inputs.sai) / beta**2))
-    h_minus_d = jnp.minimum(inputs.ztop, h_minus_d)
-    zdisp = inputs.ztop - h_minus_d
-    
-    # Line 525-528: Calculate Prandtl number (Pr) and Schmidt number (Sc) at canopy top
-    PrSc = get_prsc_fn(beta_neutral, inputs.beta_neutral_max, inputs.Lc / obu_cur)
-    
-    # Line 530-539: Calculate the stability functions psi for momentum and scalars
-    # Limit Obukhov length based on values of zeta
-    zeta = (inputs.zref - zdisp) / obu_cur
-    
-    # Line 540-545: Apply zeta limits
-    zeta = jnp.where(
-        zeta >= 0.0,
-        jnp.minimum(inputs.zeta_max, jnp.maximum(zeta, 0.01)),
-        jnp.maximum(inputs.zeta_min, jnp.minimum(zeta, -0.01))
-    )
-    obu_cur = (inputs.zref - zdisp) / zeta
-    
-    # Line 547: Get stability functions
-    psim, psic = get_psi_rsl_fn(
-        inputs.zref, inputs.ztop, zdisp, obu_cur, beta, PrSc
-    )
-    
-    # Line 549-551: Friction velocity
-    zlog = jnp.log((inputs.zref - zdisp) / (inputs.ztop - zdisp))
-    ustar = inputs.uref * inputs.vkc / (zlog + psim)
-    
-    # Line 553-554: Temperature scale
-    tstar = (inputs.thref - inputs.taf) * inputs.vkc / (zlog + psic)
-    
-    # Line 556-557: Water vapor scale - use units of specific humidity (kg/kg)
-    qstar = (inputs.qref - inputs.qaf) * inputs.vkc / (zlog + psic)
-    
-    # Line 559-560: Aerodynamic conductance to canopy height
-    gac_to_hc = inputs.rhomol * inputs.vkc * ustar / (zlog + psic)
-    
-    # Line 562-563: Save value for obu used to calculate ustar
-    obu = obu_cur
-    
-    # Line 565-567: Calculate new Obukhov length (m)
-    tvstar = tstar + 0.61 * inputs.thref * qstar
-    obu_new = ustar**2 * inputs.thvref / (inputs.vkc * inputs.grav * tvstar)
-    
-    # Line 569-570: Change in Obukhov length (m)
-    obu_dif = obu_new - inputs.obu_val
-    
-    return ObuFuncOutputs(
-        obu_dif=obu_dif,
-        zdisp=zdisp,
-        beta=beta,
-        PrSc=PrSc,
-        ustar=ustar,
-        gac_to_hc=gac_to_hc,
-        obu=obu,
+    Lc_p   = float(mlcanopy_inst.Lc_canopy[p])
+    ztop_p = float(mlcanopy_inst.ztop_canopy[p])
+    lai_p  = float(mlcanopy_inst.lai_canopy[p])
+    sai_p  = float(mlcanopy_inst.sai_canopy[p])
+    zref_p = float(mlcanopy_inst.zref_forcing[p])
+    uref_p = float(mlcanopy_inst.uref_forcing[p])
+    thref_p  = float(mlcanopy_inst.thref_forcing[p])
+    thvref_p = float(mlcanopy_inst.thvref_forcing[p])
+    qref_p   = float(mlcanopy_inst.qref_forcing[p])
+    rhomol_p = float(mlcanopy_inst.rhomol_forcing[p])
+    taf_p    = float(mlcanopy_inst.taf_canopy[p])
+    qaf_p    = float(mlcanopy_inst.qaf_canopy[p])
+
+    # Clamp obu_val away from zero — Fortran lines 195-202
+    obu_min_stable   = Lc_p / LcL_max
+    obu_max_unstable = Lc_p / LcL_min
+    if obu_val >= 0.0:
+        obu_cur = max(obu_val, obu_min_stable)
+    else:
+        obu_cur = min(obu_val, obu_max_unstable)
+    LcL = Lc_p / obu_cur
+
+    # Neutral beta — Fortran lines 204-206
+    c1_n         = (vkc / math.log((ztop_p + z0mg) / z0mg)) ** 2
+    beta_neutral = min(math.sqrt(c1_n + cr * (lai_p + sai_p)), beta_neutral_max)
+
+    # Stability-corrected beta (HF + no-RSL blend) — Fortran lines 208-215
+    beta_HF    = _GetBeta(beta_neutral, LcL)
+    beta_norsl = _GetBeta(vkc / 2.0, LcL)
+    if LcL > aH12[1]:                             # Fortran: aH12(2) → 0-based index 1
+        beta_val = beta_HF
+    else:
+        beta_val = (beta_norsl
+                    + (beta_HF - beta_norsl)
+                    / (1.0 + aH12[0] * abs(LcL - aH12[1]) ** aH12[2]))
+
+    # Displacement height — Fortran lines 217-224
+    hc_minus_d = beta_val ** 2 * Lc_p
+    if sparse_canopy_type == 1:
+        hc_minus_d *= (1.0 - math.exp(-0.25 * (lai_p + sai_p) / beta_val ** 2))
+    hc_minus_d = min(ztop_p, hc_minus_d)
+    zdisp_val  = ztop_p - hc_minus_d
+
+    if (zref_p - zdisp_val) < 0.0:
+        endrun(msg=' ERROR: ObuFunc: zdisp height > zref')
+
+    # PrSc — Fortran line 228
+    PrSc_val = _GetPrSc(beta_neutral, beta_neutral_max, LcL)
+
+    # psi functions — Fortran lines 230-233
+    psim, psic, _dum1, _dum2 = _GetPsiRSL(
+        zref_p, ztop_p, zdisp_val, obu_cur, beta_val, PrSc_val
     )
 
+    # Friction velocity, temperature and humidity scales — Fortran lines 235-243
+    zlog = math.log((zref_p - zdisp_val) / (ztop_p - zdisp_val))
+    ustar_val   = uref_p * vkc / (zlog + psim)
+    tstar       = (thref_p  - taf_p) * vkc / (zlog + psic)
+    qstar       = (qref_p   - qaf_p) * vkc / (zlog + psic)
+    gac_to_hc_v = rhomol_p * vkc * ustar_val / (zlog + psic)
 
-# =============================================================================
-# MAIN TURBULENCE DISPATCHER
-# =============================================================================
+    # New Obukhov length — Fortran lines 245-249
+    tvstar  = tstar + 0.61 * thref_p * qstar
+    obu_new = ustar_val ** 2 * thvref_p / (vkc * grav * tvstar)
+    obu_dif = obu_new - obu_val
 
-def canopy_turbulence(
-    niter: int,
-    num_filter: int,
-    filter_indices: jnp.ndarray,
-    mlcanopy_inst,  # Type would be MLCanopyState from hierarchy
-    turb_type: int,
-):
+    mlcanopy_inst = mlcanopy_inst._replace(
+        zdisp_canopy     = mlcanopy_inst.zdisp_canopy.at[p].set(zdisp_val),
+        beta_canopy      = mlcanopy_inst.beta_canopy.at[p].set(beta_val),
+        PrSc_canopy      = mlcanopy_inst.PrSc_canopy.at[p].set(PrSc_val),
+        ustar_canopy     = mlcanopy_inst.ustar_canopy.at[p].set(ustar_val),
+        gac_to_hc_canopy = mlcanopy_inst.gac_to_hc_canopy.at[p].set(gac_to_hc_v),
+        obu_canopy       = mlcanopy_inst.obu_canopy.at[p].set(obu_cur),
+    )
+    return obu_dif, mlcanopy_inst
+
+
+# ===========================================================================
+# Private: ObuFuncPure — pure-scalar variant (no JAX reads/writes)
+# ===========================================================================
+
+def _ObuFuncPure(
+    obu_val: float,
+    *,
+    Lc_p: float,
+    ztop_p: float,
+    lai_p: float,
+    sai_p: float,
+    zref_p: float,
+    uref_p: float,
+    thref_p: float,
+    thvref_p: float,
+    qref_p: float,
+    rhomol_p: float,
+    taf_p: float,
+    qaf_p: float,
+) -> float:
+    """Pure-scalar version of _ObuFunc: no JAX reads/writes, returns obu_dif only."""
+    obu_min_stable   = Lc_p / LcL_max
+    obu_max_unstable = Lc_p / LcL_min
+    if obu_val >= 0.0:
+        obu_cur = max(obu_val, obu_min_stable)
+    else:
+        obu_cur = min(obu_val, obu_max_unstable)
+    LcL = Lc_p / obu_cur
+
+    c1_n         = (vkc / math.log((ztop_p + z0mg) / z0mg)) ** 2
+    beta_neutral = min(math.sqrt(c1_n + cr * (lai_p + sai_p)), beta_neutral_max)
+
+    beta_HF    = _GetBeta(beta_neutral, LcL)
+    beta_norsl = _GetBeta(vkc / 2.0, LcL)
+    if LcL > _aH12_1:
+        beta_val = beta_HF
+    else:
+        beta_val = (beta_norsl
+                    + (beta_HF - beta_norsl)
+                    / (1.0 + _aH12_0 * abs(LcL - _aH12_1) ** _aH12_2))
+
+    hc_minus_d = beta_val ** 2 * Lc_p
+    if sparse_canopy_type == 1:
+        hc_minus_d *= (1.0 - math.exp(-0.25 * (lai_p + sai_p) / beta_val ** 2))
+    hc_minus_d = min(ztop_p, hc_minus_d)
+    zdisp_val  = ztop_p - hc_minus_d
+
+    if (zref_p - zdisp_val) < 0.0:
+        endrun(msg=' ERROR: ObuFunc: zdisp height > zref')
+
+    PrSc_val = _GetPrSc(beta_neutral, beta_neutral_max, LcL)
+
+    psim, psic, _dum1, _dum2 = _GetPsiRSL(
+        zref_p, ztop_p, zdisp_val, obu_cur, beta_val, PrSc_val
+    )
+
+    zlog        = math.log((zref_p - zdisp_val) / (ztop_p - zdisp_val))
+    ustar_val   = uref_p * vkc / (zlog + psim)
+    tstar       = (thref_p  - taf_p) * vkc / (zlog + psic)
+    qstar       = (qref_p   - qaf_p) * vkc / (zlog + psic)
+
+    tvstar  = tstar + 0.61 * thref_p * qstar
+    obu_new = ustar_val ** 2 * thvref_p / (vkc * grav * tvstar)
+    obu_dif = obu_new - obu_val
+    return obu_dif
+
+
+# ===========================================================================
+# Private: GetObu driver
+# ===========================================================================
+
+def _GetObu(p: int, mlcanopy_inst: mlcanopy_type) -> mlcanopy_type:
     """
-    Calculate canopy turbulence and scalar profiles.
-    
-    Dispatches to appropriate turbulence parameterization based on turb_type.
-    Computes scalar source/sink fluxes for leaves and soil, and scalar profiles
-    above and within the canopy.
-    
-    Fortran source: MLCanopyTurbulenceMod.F90, lines 38-77
-    
+    Solve for the Obukhov length using the hybrid root solver.
+
+    Mirrors Fortran subroutine ``GetObu`` (lines 160-178).
+
+    Passes :func:`_ObuFunc` to :func:`hybrid` with initial brackets
+    ``obu0 = 100`` and ``obu1 = -100`` m, tolerance 0.1 m.  The
+    return value from :func:`hybrid` is discarded; the converged
+    ``obu`` is the value used inside :func:`_ObuFunc` to compute
+    ``ustar`` and is stored in ``mlcanopy_inst.obu_canopy[p]``.
+
     Args:
-        niter: Iteration index (for iterative schemes) [scalar]
-        num_filter: Number of patches in filter [scalar]
-        filter_indices: Patch filter indices [n_patches]
-        mlcanopy_inst: Multi-layer canopy state containing turbulence fields
-        turb_type: Turbulence parameterization type:
-                   0 or -1 = well-mixed or read from dataset
-                   1 = Harman & Finnigan (2008)
-        
+        p: Patch index.
+        mlcanopy_inst: Canopy container; Obukhov length and dependent
+            quantities are updated via :func:`_ObuFunc`.
+
     Returns:
-        Updated mlcanopy_inst with turbulence fields computed
-        
-    Raises:
-        ValueError: If turb_type is not in {-1, 0, 1}
-        
-    Note:
-        The original Fortran uses a select case statement (lines 58-74).
-        We implement this with conditional logic that is JIT-compatible.
-        
-        Line 58-62: case (0, -1) -> WellMixed
-        Line 64-68: case (1) -> HF2008
-        Line 70-72: case default -> error
+        Updated :class:`mlcanopy_type`.
     """
-    # Validate turb_type at trace time (not runtime)
-    if turb_type not in {-1, 0, 1}:
-        raise ValueError(
-            f"ERROR: CanopyTurbulence: turb_type={turb_type} not valid. "
-            f"Must be -1, 0, or 1."
-        )
-    
-    # Dispatch based on turb_type
-    # Line 58-62: Use well-mixed assumption or read profile data
-    if turb_type in {0, -1}:
-        # Well-mixed turbulence scheme (simplified implementation)
-        # In the full model, this would call the WellMixed subroutine
-        # For now, return the state unchanged as these schemes are
-        # less commonly used than the HF2008 (turb_type=1) scheme
-        # TODO: Implement full WellMixed subroutine from MLCanopyTurbulenceMod.F90 lines ~100-500
-        # for production use if well-mixed turbulence is required
-        return mlcanopy_inst
-    
-    # Line 64-68: Use Harman & Finnigan (2008) roughness sublayer theory
-    elif turb_type == 1:
-        # HF2008 turbulence scheme (simplified implementation)
-        # In the full model, this would call the HF2008 subroutine
-        # The main turbulence calculations are performed by the existing
-        # functions in this module (psim, psih, obukhov_length, etc.)
-        # TODO: Implement full HF2008 subroutine from MLCanopyTurbulenceMod.F90 lines ~500-1000
-        # for production use if full RSL theory is required
-        return mlcanopy_inst
-    
+    # Pre-extract all scalar inputs once (avoids JAX sync on every solver iteration)
+    _kwargs = dict(
+        Lc_p      = float(mlcanopy_inst.Lc_canopy[p]),
+        ztop_p    = float(mlcanopy_inst.ztop_canopy[p]),
+        lai_p     = float(mlcanopy_inst.lai_canopy[p]),
+        sai_p     = float(mlcanopy_inst.sai_canopy[p]),
+        zref_p    = float(mlcanopy_inst.zref_forcing[p]),
+        uref_p    = float(mlcanopy_inst.uref_forcing[p]),
+        thref_p   = float(mlcanopy_inst.thref_forcing[p]),
+        thvref_p  = float(mlcanopy_inst.thvref_forcing[p]),
+        qref_p    = float(mlcanopy_inst.qref_forcing[p]),
+        rhomol_p  = float(mlcanopy_inst.rhomol_forcing[p]),
+        taf_p     = float(mlcanopy_inst.taf_canopy[p]),
+        qaf_p     = float(mlcanopy_inst.qaf_canopy[p]),
+    )
+
+    def _obu_closure(obu_val: float) -> float:
+        return _ObuFuncPure(obu_val, **_kwargs)
+
+    obu0: float = 100.0
+    obu1: float = -100.0
+    tol:  float = 0.1
+
+    obu_converged = hybrid_scalar('GetObu', _obu_closure, obu0, obu1, tol)
+
+    # Write-back: one call to _ObuFunc to update all 6 fields in mlcanopy_inst
+    _dummy, mlcanopy_inst = _ObuFunc(p, 0, 0, mlcanopy_inst, obu_converged)
     return mlcanopy_inst
 
 
-# =============================================================================
-# MODULE INITIALIZATION
-# =============================================================================
+# ===========================================================================
+# Private: RoughnessLength
+# ===========================================================================
 
-def initialize_rsl_tables(rsl_file_path: str) -> RSLPsihatTable:
-    """Initialize RSL psihat lookup tables from file.
-    
-    This function reads the RSL (Roughness Sublayer) psihat lookup tables from a
-    NetCDF file and returns them in a RSLPsihatTable structure. These tables are used
-    by the Harman & Finnigan (2008) turbulence scheme.
-    
-    Args:
-        rsl_file_path: Path to RSL lookup table NetCDF file (e.g., 'psihat.nc')
-        
-    Returns:
-        Initialized RSLPsihatTable with lookup table data
-        
-    Note:
-        This is an I/O function that should be called OUTSIDE of JIT-compiled code.
-        It reads lookup tables from NetCDF files which cannot be done inside @jit.
+def _RoughnessLength(p: int, mlcanopy_inst: mlcanopy_type) -> mlcanopy_type:
     """
-    try:
-        import os
-        
-        # Check if file exists
-        if not os.path.exists(rsl_file_path):
-            import warnings
-            warnings.warn(
-                f"RSL lookup table file not found: {rsl_file_path}. "
-                "Returning empty lookup tables. RSL turbulence scheme may not work correctly.",
-                category=UserWarning,
-                stacklevel=2
-            )
-            # Return empty structure
-            return RSLPsihatTable(
-                initialized=False,
-                nZ=0,
-                nL=0,
-                zdtgrid_m=jnp.array([]),
-                dtLgrid_m=jnp.array([]),
-                psigrid_m=jnp.array([]),
-                zdtgrid_h=jnp.array([]),
-                dtLgrid_h=jnp.array([]),
-                psigrid_h=jnp.array([]),
-            )
-        
-        # Try to read the NetCDF file
-        try:
-            import netCDF4 as nc
-        except ImportError:
-            import xarray as xr
-            # Use xarray as fallback
-            ds = xr.open_dataset(rsl_file_path)
-            
-            return RSLPsihatTable(
-                initialized=True,
-                nZ=int(ds.dims.get('nZ', 0)),
-                nL=int(ds.dims.get('nL', 0)),
-                zdtgrid_m=jnp.array(ds['zdtgrid_m'].values) if 'zdtgrid_m' in ds else jnp.array([]),
-                dtLgrid_m=jnp.array(ds['dtLgrid_m'].values) if 'dtLgrid_m' in ds else jnp.array([]),
-                psigrid_m=jnp.array(ds['psigrid_m'].values) if 'psigrid_m' in ds else jnp.array([]),
-                zdtgrid_h=jnp.array(ds['zdtgrid_h'].values) if 'zdtgrid_h' in ds else jnp.array([]),
-                dtLgrid_h=jnp.array(ds['dtLgrid_h'].values) if 'dtLgrid_h' in ds else jnp.array([]),
-                psigrid_h=jnp.array(ds['psigrid_h'].values) if 'psigrid_h' in ds else jnp.array([]),
-            )
-        
-        # Use netCDF4 (preferred for lookup tables)
-        with nc.Dataset(rsl_file_path, 'r') as ds:
-            return RSLPsihatTable(
-                initialized=True,
-                nZ=len(ds.dimensions.get('nZ', [])),
-                nL=len(ds.dimensions.get('nL', [])),
-                zdtgrid_m=jnp.array(ds.variables['zdtgrid_m'][:]) if 'zdtgrid_m' in ds.variables else jnp.array([]),
-                dtLgrid_m=jnp.array(ds.variables['dtLgrid_m'][:]) if 'dtLgrid_m' in ds.variables else jnp.array([]),
-                psigrid_m=jnp.array(ds.variables['psigrid_m'][:]) if 'psigrid_m' in ds.variables else jnp.array([]),
-                zdtgrid_h=jnp.array(ds.variables['zdtgrid_h'][:]) if 'zdtgrid_h' in ds.variables else jnp.array([]),
-                dtLgrid_h=jnp.array(ds.variables['dtLgrid_h'][:]) if 'dtLgrid_h' in ds.variables else jnp.array([]),
-                psigrid_h=jnp.array(ds.variables['psigrid_h'][:]) if 'psigrid_h' in ds.variables else jnp.array([]),
-            )
-            
-    except ImportError:
-        # Neither netCDF4 nor xarray available
-        import warnings
-        warnings.warn(
-            f"Cannot read RSL lookup tables: netCDF4 and xarray not available. "
-            "Install with: pip install netCDF4 xarray. "
-            "Returning empty lookup tables.",
-            category=ImportWarning,
-            stacklevel=2
-        )
-        return RSLPsihatTable(
-            initialized=False,
-            nZ=0,
-            nL=0,
-            zdtgrid_m=jnp.array([]),
-            dtLgrid_m=jnp.array([]),
-            psigrid_m=jnp.array([]),
-            zdtgrid_h=jnp.array([]),
-            dtLgrid_h=jnp.array([]),
-            psigrid_h=jnp.array([]),
-        )
+    Calculate the roughness length for momentum via inline bisection.
+
+    Mirrors Fortran subroutine ``RoughnessLength`` (lines 454-520).
+
+    Uses the self-consistent definition:
+
+    .. code-block:: none
+
+        z0m = (hc - d) * exp(-vkc/beta) * exp(-psim_hc + psim(z0m)) * exp(psim_hat_hc)
+
+    where ``psim_hc`` and ``psim_hat_hc`` come from
+    :func:`_GetPsiRSL` evaluated at the canopy top.
+    Bisection between ``aval = ztop`` and ``bval = 0`` to tolerance
+    0.001 m; maximum 20 iterations.
+
+    Args:
+        p: Patch index.
+        mlcanopy_inst: Canopy container; ``z0m_canopy[p]`` is updated.
+
+    Returns:
+        Updated :class:`mlcanopy_type`.
+    """
+    ztop_p  = float(mlcanopy_inst.ztop_canopy[p])
+    zdisp_p = float(mlcanopy_inst.zdisp_canopy[p])
+    obu_p   = float(mlcanopy_inst.obu_canopy[p])
+    beta_p  = float(mlcanopy_inst.beta_canopy[p])
+    PrSc_p  = float(mlcanopy_inst.PrSc_canopy[p])
+    zref_p  = float(mlcanopy_inst.zref_forcing[p])
+
+    # psi and psihat at canopy top — Fortran lines 475-476
+    _, _, psim_hc, psim_hat_hc = _GetPsiRSL(
+        zref_p, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p
+    )
+
+    hc_minus_d = ztop_p - zdisp_p
+    exp1 = math.exp(-vkc / beta_p)
+    exp2 = math.exp(psim_hat_hc)
+
+    def _z0m_func(trial: float) -> float:
+        """Implicit equation: z0m_formula(trial) - trial."""
+        psim_t = _psim_monin_obukhov(trial / obu_p)
+        return hc_minus_d * exp1 * math.exp(-psim_hc + psim_t) * exp2 - trial
+
+    aval: float = ztop_p
+    bval: float = 0.0
+    err:  float = 0.001
+    nmax: int   = 20
+
+    fa = _z0m_func(aval)
+    fb = _z0m_func(bval)
+
+    if fa * fb > 0.0:
+        endrun(msg=' ERROR: RoughnessLength: bisection error - f(a) and f(b) do not have opposite signs')
+
+    cval: float = 0.0
+    n: int = 1
+    while abs(bval - aval) > err and n <= nmax:
+        cval = (aval + bval) / 2.0
+        fc   = _z0m_func(cval)
+        if fa * fc < 0.0:
+            bval = cval; fb = fc
+        else:
+            aval = cval; fa = fc
+        n += 1
+
+    if n > nmax:
+        endrun(msg=' ERROR: RoughnessLength: maximum iteration exceeded')
+
+    return mlcanopy_inst._replace(
+        z0m_canopy = mlcanopy_inst.z0m_canopy.at[p].set(cval)
+    )
+
+
+# ===========================================================================
+# Private: WindProfile
+# ===========================================================================
+
+def _WindProfile(
+    p: int,
+    lm_over_beta: float,
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """
+    Wind speed profile above and within the canopy.
+
+    Mirrors Fortran subroutine ``WindProfile`` (lines 522-565).
+
+    Reference: Bonan et al. (2018), eqs. (19) and (21).
+
+    **Above canopy** (ic > ntop, at height zs):
+
+    .. code-block:: none
+
+        wind(ic) = ustar/vkc * (log((zs-d)/(ztop-d)) + psim)
+
+    **At canopy top**:
+
+    .. code-block:: none
+
+        uaf = ustar / beta
+
+    **Within canopy** (ic ≤ ntop, at height zs):
+
+    .. code-block:: none
+
+        wind(ic) = uaf * exp((zs - ztop) / (lm/beta))
+
+    Args:
+        p: Patch index.
+        lm_over_beta: lm/β turbulence length scale (m).
+        mlcanopy_inst: Canopy container; ``uaf_canopy`` and
+            ``wind_profile`` are updated.
+
+    Returns:
+        Updated :class:`mlcanopy_type`.
+    """
+    _ntop  = int(mlcanopy_inst.ntop_canopy[p])
+    _ncan  = int(mlcanopy_inst.ncan_canopy[p])
+    ztop_p = float(mlcanopy_inst.ztop_canopy[p])
+    zdisp_p = float(mlcanopy_inst.zdisp_canopy[p])
+    obu_p   = float(mlcanopy_inst.obu_canopy[p])
+    beta_p  = float(mlcanopy_inst.beta_canopy[p])
+    PrSc_p  = float(mlcanopy_inst.PrSc_canopy[p])
+    ustar_p = float(mlcanopy_inst.ustar_canopy[p])
+
+    wind = mlcanopy_inst.wind_profile
+    uaf  = mlcanopy_inst.uaf_canopy
+
+    # Pre-extract zs_profile row to avoid per-layer JAX syncs
+    _zs_p = np.asarray(mlcanopy_inst.zs_profile[p])
+
+    # Accumulate wind values in numpy array; batch write-back at end
+    _wind_new = np.zeros(_ncan + 2)
+
+    # Above-canopy wind — Fortran lines 544-547
+    for ic in range(_ntop + 1, _ncan + 1):
+        zs_ic = float(_zs_p[ic])
+        psim, _, _, _ = _GetPsiRSL(zs_ic, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
+        zlog_m = math.log((zs_ic - zdisp_p) / (ztop_p - zdisp_p))
+        _wind_new[ic] = ustar_p / vkc * (zlog_m + psim)
+
+    # Wind at canopy top — Fortran line 549
+    uaf_val = ustar_p / beta_p
+    uaf = uaf.at[p].set(uaf_val)
+
+    # Within-canopy wind — Fortran lines 551-553
+    for ic in range(1, _ntop + 1):
+        zs_ic = float(_zs_p[ic])
+        _wind_new[ic] = uaf_val * math.exp((zs_ic - ztop_p) / lm_over_beta)
+
+    # Batch write-back
+    _sl = slice(1, _ncan + 1)
+    wind = wind.at[p, _sl].set(jnp.array(_wind_new[_sl]))
+
+    return mlcanopy_inst._replace(
+        uaf_canopy   = uaf,
+        wind_profile = wind,
+    )
+
+
+# ===========================================================================
+# Private: AerodynamicConductance
+# ===========================================================================
+
+def _AerodynamicConductance(
+    p: int,
+    lm_over_beta: float,
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """
+    Aerodynamic conductances above and within the canopy.
+
+    Mirrors Fortran subroutine ``AerodynamicConductance`` (lines 567-680).
+
+    Reference: Bonan et al. (2018), eqs. (24), (26), (27).
+
+    **Above canopy** (Fortran lines 591-620, eq. 24):
+
+    .. code-block:: none
+
+        gac(ic) = rhomol * vkc * ustar / (log((zs_{i+1}-d)/(zs_i-d)) + psic)
+
+    Special cases: top layer uses ``zref`` as upper boundary; top foliage
+    layer uses ``ztop`` as lower boundary and ``zs(ntop+1)`` as upper.
+    A consistency check against ``gac_to_hc`` is applied.
+
+    **Within canopy** (Fortran lines 622-641, eq. 26):
+
+    .. code-block:: none
+
+        res  = PrSc / (beta*ustar) * (exp(-zl/lm_beta) - exp(-zu/lm_beta))
+        gac  = rhomol / res
+
+    Top foliage layer combines within and above contributions in series.
+
+    **Soil surface conductance** (Fortran lines 643-672):
+    Selected by ``HF_extension_type``:
+
+    - **1**: exponential profile extended to ``z0cg = 0.1*z0mg``.
+    - **2**: logarithmic profile to ``z0mg`` with wind floor of 0.1 m/s.
+
+    All conductances are capped so that the implied resistance does not
+    exceed ``ra_max`` s/m.
+
+    **Eddy diffusivity** (Fortran lines 674-678):
+
+    .. code-block:: none
+
+        kc_eddy(ic) = gac(ic) / rhomol * (zs_{ic+1} - zs_ic)
+
+    Args:
+        p: Patch index.
+        lm_over_beta: lm/β turbulence length scale (m).
+        mlcanopy_inst: Canopy container; ``gac0_soil``, ``gac_profile``,
+            and ``kc_eddy_profile`` are updated.
+
+    Returns:
+        Updated :class:`mlcanopy_type`.
+    """
+    _ntop   = int(mlcanopy_inst.ntop_canopy[p])
+    _ncan   = int(mlcanopy_inst.ncan_canopy[p])
+    ztop_p  = float(mlcanopy_inst.ztop_canopy[p])
+    zdisp_p = float(mlcanopy_inst.zdisp_canopy[p])
+    obu_p   = float(mlcanopy_inst.obu_canopy[p])
+    beta_p  = float(mlcanopy_inst.beta_canopy[p])
+    PrSc_p  = float(mlcanopy_inst.PrSc_canopy[p])
+    ustar_p = float(mlcanopy_inst.ustar_canopy[p])
+    rhomol_p = float(mlcanopy_inst.rhomol_forcing[p])
+    zref_p   = float(mlcanopy_inst.zref_forcing[p])
+    gac_to_hc_p = float(mlcanopy_inst.gac_to_hc_canopy[p])
+
+    gac   = mlcanopy_inst.gac_profile
+    gac0  = mlcanopy_inst.gac0_soil
+    kc_eddy = mlcanopy_inst.kc_eddy_profile
+
+    # Pre-extract zs_profile row to avoid per-layer JAX syncs
+    _zs_p = np.asarray(mlcanopy_inst.zs_profile[p])
+
+    # Numpy accumulators for batch write-back
+    _gac_new    = np.zeros(_ncan + 2)
+    _kc_eddy_new = np.zeros(_ncan + 2)
+
+    # ------------------------------------------------------------------
+    # Above-canopy conductances — Fortran lines 591-604
+    # ------------------------------------------------------------------
+    for ic in range(_ntop + 1, _ncan):             # Fortran: ntop+1 to ncan-1
+        zs_lo = float(_zs_p[ic])
+        zs_hi = float(_zs_p[ic + 1])
+        _, psic1, _, _ = _GetPsiRSL(zs_lo, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
+        _, psic2, _, _ = _GetPsiRSL(zs_hi, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
+        psic   = psic2 - psic1
+        zlog_c = math.log((zs_hi - zdisp_p) / (zs_lo - zdisp_p))
+        _gac_new[ic] = rhomol_p * vkc * ustar_p / (zlog_c + psic)
+
+    # Top layer to reference height — Fortran lines 606-612
+    ic = _ncan
+    zs_lo = float(_zs_p[ic])
+    _, psic1, _, _ = _GetPsiRSL(zs_lo, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
+    _, psic2, _, _ = _GetPsiRSL(zref_p, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
+    psic   = psic2 - psic1
+    zlog_c = math.log((zref_p - zdisp_p) / (zs_lo - zdisp_p))
+    _gac_new[ic] = rhomol_p * vkc * ustar_p / (zlog_c + psic)
+
+    # ztop to zs(ntop+1) — Fortran lines 614-620
+    ic = _ntop
+    _, psic1, _, _ = _GetPsiRSL(ztop_p, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
+    _, psic2, _, _ = _GetPsiRSL(float(_zs_p[ic + 1]), ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
+    psic   = psic2 - psic1
+    zlog_c = math.log((float(_zs_p[ic + 1]) - zdisp_p) / (ztop_p - zdisp_p))
+    gac_above_foliage = rhomol_p * vkc * ustar_p / (zlog_c + psic)
+
+    # Consistency check — Fortran lines 622-626
+    sumres = 1.0 / gac_above_foliage
+    for ic in range(_ntop + 1, _ncan + 1):
+        sumres += 1.0 / _gac_new[ic]
+    if abs(1.0 / sumres - gac_to_hc_p) > 1.0e-6:
+        endrun(msg=' ERROR: AerodynamicConductance: above-canopy aerodynamic conductance error')
+
+    # ------------------------------------------------------------------
+    # Within-canopy conductances — Fortran lines 632-647
+    # ------------------------------------------------------------------
+    for ic in range(1, _ntop):                     # Fortran: 1 to ntop-1
+        zl = float(_zs_p[ic])     - ztop_p
+        zu = float(_zs_p[ic + 1]) - ztop_p
+        res = (PrSc_p / (beta_p * ustar_p)
+               * (math.exp(-zl / lm_over_beta) - math.exp(-zu / lm_over_beta)))
+        _gac_new[ic] = rhomol_p / res
+
+    # Top foliage layer: combine below and above — Fortran lines 649-656
+    ic = _ntop
+    zl  = float(_zs_p[ic]) - ztop_p
+    zu  = ztop_p - ztop_p                          # = 0
+    res = (PrSc_p / (beta_p * ustar_p)
+           * (math.exp(-zl / lm_over_beta) - math.exp(-zu / lm_over_beta)))
+    gac_below_foliage = rhomol_p / res
+    _gac_new[ic] = 1.0 / (1.0 / gac_below_foliage + 1.0 / gac_above_foliage)
+
+    # ------------------------------------------------------------------
+    # Soil surface aerodynamic conductance — Fortran lines 658-686
+    # ------------------------------------------------------------------
+    z0cg  = 0.1 * z0mg
+    zs1   = float(_zs_p[1])
+    if z0mg > zs1 or z0cg > zs1:
+        endrun(msg=' ERROR: AerodynamicConductance: soil roughness error')
+
+    if HF_extension_type == 1:                     # Fortran lines 668-673
+        zl  = z0cg - ztop_p
+        zu  = zs1  - ztop_p
+        res = (PrSc_p / (beta_p * ustar_p)
+               * (math.exp(-zl / lm_over_beta) - math.exp(-zu / lm_over_beta)))
+        _gac0_val = rhomol_p / res
+
+    elif HF_extension_type == 2:                   # Fortran lines 675-678
+        zlog_m  = math.log(zs1 / z0mg)
+        # wind_profile[p,1] was just set by _WindProfile; re-read from mlcanopy_inst
+        ustar_g = max(float(mlcanopy_inst.wind_profile[p, 1]), 0.1) * vkc / zlog_m
+        _gac0_val = rhomol_p * vkc * ustar_g / zlog_m
+    else:
+        _gac0_val = float(gac0[p])
+
+    # Resistance cap (ra_max) — Fortran lines 688-694
+    _gac0_val = rhomol_p / min(rhomol_p / _gac0_val, ra_max)
+
+    for ic in range(1, _ncan + 1):
+        _gac_new[ic] = rhomol_p / min(rhomol_p / _gac_new[ic], ra_max)
+
+    # Eddy diffusivity — Fortran lines 696-700
+    for ic in range(1, _ncan + 1):
+        if ic == _ncan:
+            dz = zref_p - float(_zs_p[ic])
+        else:
+            dz = float(_zs_p[ic + 1]) - float(_zs_p[ic])
+        _kc_eddy_new[ic] = _gac_new[ic] / rhomol_p * dz
+
+    # Batch write-back — 3 bulk ops instead of ~20 per-element writes
+    _sl = slice(1, _ncan + 1)
+    return mlcanopy_inst._replace(
+        gac0_soil       = gac0.at[p].set(_gac0_val),
+        gac_profile     = gac.at[p, _sl].set(jnp.array(_gac_new[_sl])),
+        kc_eddy_profile = kc_eddy.at[p, _sl].set(jnp.array(_kc_eddy_new[_sl])),
+    )
+
+
+# ===========================================================================
+# Private: HF2008 main solver
+# ===========================================================================
+
+def _HF2008(
+    nstep_ml: int,
+    num_filter: int,
+    filter_patch: Sequence[int],
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """
+    Canopy turbulence, wind profile, and aerodynamic conductances using
+    the Harman and Finnigan (2008) roughness sublayer parameterisation.
+
+    Mirrors Fortran subroutine ``HF2008`` (lines 67-160).
+
+    References: Bonan et al. (2018) *Geosci. Model Dev.*, 11, 1467-1496;
+    Bonan et al. (2025).
+
+    For each patch (Fortran lines 108-156):
+
+    1. Canopy density length scale ``Lc = ztop / (cd*(lai+sai))``.
+    2. Temperature and specific humidity at canopy top for
+       :func:`_ObuFunc`.
+    3. Obukhov length via :func:`_GetObu`.
+    4. Roughness length via :func:`_RoughnessLength`.
+    5. Compute ``lm = 2*β³*Lc``, ``η = β/lm*ztop``, warn if ``η ≥ η_max``,
+       then ``lm/β = ztop/η``.
+    6. Wind profile via :func:`_WindProfile`.
+    7. Momentum flux profile (Fortran lines 138-144):
+       ``mflx(ic) = -ustar²`` above canopy; exponential decay within.
+    8. Aerodynamic conductances via :func:`_AerodynamicConductance`.
+
+    Args:
+        nstep_ml: Current multilayer timestep counter (for warning messages).
+        num_filter: Number of patches.
+        filter_patch: Patch index filter (1-based values).
+        mlcanopy_inst: Canopy container; all turbulence output fields
+            updated.
+
+    Returns:
+        Updated :class:`mlcanopy_type`.
+    """
+    from clm_src_utils.clm_time_manager import get_nstep         # noqa: F401
+    nstep = get_nstep()
+
+    Lc   = mlcanopy_inst.Lc_canopy
+    taf  = mlcanopy_inst.taf_canopy
+    qaf  = mlcanopy_inst.qaf_canopy
+    mflx = mlcanopy_inst.mflx_profile
+
+    for fp in range(1, num_filter + 1):
+        p = int(filter_patch[fp - 1])
+
+        pref_p  = float(mlcanopy_inst.pref_forcing[p])
+        ztop_p  = float(mlcanopy_inst.ztop_canopy[p])
+        lai_p   = float(mlcanopy_inst.lai_canopy[p])
+        sai_p   = float(mlcanopy_inst.sai_canopy[p])
+        _ntop   = int(mlcanopy_inst.ntop_canopy[p])
+        _ncan   = int(mlcanopy_inst.ncan_canopy[p])
+
+        # Canopy density length scale — Fortran line 110
+        Lc_val = ztop_p / (cd * (lai_p + sai_p))
+        Lc = Lc.at[p].set(Lc_val)
+        mlcanopy_inst = mlcanopy_inst._replace(Lc_canopy = Lc)
+
+        # Temperature and humidity at canopy top — Fortran lines 112-113
+        tair_ntop = float(mlcanopy_inst.tair_profile[p, _ntop])
+        eair_ntop = float(mlcanopy_inst.eair_profile[p, _ntop])
+        taf_val = tair_ntop
+        qaf_val = (mmh2o / mmdry * eair_ntop
+                   / (pref_p - (1.0 - mmh2o / mmdry) * eair_ntop))
+        taf = taf.at[p].set(taf_val)
+        qaf = qaf.at[p].set(qaf_val)
+        mlcanopy_inst = mlcanopy_inst._replace(taf_canopy = taf, qaf_canopy = qaf)
+
+        # Obukhov length — Fortran line 115
+        mlcanopy_inst = _GetObu(p, mlcanopy_inst)
+
+        # Roughness length — Fortran line 118
+        mlcanopy_inst = _RoughnessLength(p, mlcanopy_inst)
+
+        # lm / beta — Fortran lines 126-130
+        beta_p = float(mlcanopy_inst.beta_canopy[p])
+        lm     = 2.0 * beta_p ** 3 * Lc_val
+        eta    = beta_p / lm * ztop_p
+        if eta >= eta_max:
+            print(f' Warning: HF2008: lm/beta error')
+            print(f' nstep = {nstep}  nstep_ml = {nstep_ml}')
+            print(f' eta = {eta}')
+        lm_over_beta = ztop_p / eta
+
+        # Wind profile — Fortran line 132
+        mlcanopy_inst = _WindProfile(p, lm_over_beta, mlcanopy_inst)
+
+        # Momentum flux profile — Fortran lines 134-140
+        ustar_p = float(mlcanopy_inst.ustar_canopy[p])
+        _zw_p = np.asarray(mlcanopy_inst.zw_profile[p])
+        _mflx_new = np.zeros(_ncan + 2)
+        for ic in range(1, _ncan + 1):
+            zw_ic = float(_zw_p[ic])
+            if zw_ic > ztop_p:
+                _mflx_new[ic] = -(ustar_p ** 2)
+            else:
+                _mflx_new[ic] = (-(ustar_p ** 2)
+                                  * math.exp(2.0 * (zw_ic - ztop_p) / lm_over_beta))
+        _sl_m = slice(1, _ncan + 1)
+        mflx = mflx.at[p, _sl_m].set(jnp.array(_mflx_new[_sl_m]))
+        mlcanopy_inst = mlcanopy_inst._replace(mflx_profile = mflx)
+
+        # Aerodynamic conductances — Fortran line 142
+        mlcanopy_inst = _AerodynamicConductance(p, lm_over_beta, mlcanopy_inst)
+
+    return mlcanopy_inst
+
+
+# ===========================================================================
+# Public: CanopyTurbulence driver
+# ===========================================================================
+
+def CanopyTurbulence(
+    nstep_ml: int,
+    num_filter: int,
+    filter_patch: Sequence[int],
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """
+    Main driver for the canopy turbulence parameterisation.
+
+    Mirrors Fortran subroutine ``CanopyTurbulence`` (lines 43-67).
+
+    Currently only ``turb_type == 1`` (Harman & Finnigan 2008 RSL) is
+    supported; any other value is fatal.
+
+    Args:
+        nstep_ml: Current multilayer timestep counter.
+        num_filter: Number of patches in the filter.
+        filter_patch: Patch index filter (1-based values).
+        mlcanopy_inst: Canopy container; all turbulence output fields
+            updated by :func:`_HF2008`.
+
+    Returns:
+        Updated :class:`mlcanopy_type`.
+    """
+    if turb_type == 1:
+        return _HF2008(nstep_ml, num_filter, filter_patch, mlcanopy_inst)
+    else:
+        endrun(msg=' ERROR: CanopyTurbulence: turb_type not valid')
+        return mlcanopy_inst    # Unreachable
+
+
+# ===========================================================================
+# Public: LookupPsihatINI
+# ===========================================================================
+
+def LookupPsihatINI() -> None:
+    """
+    Initialise the RSL psihat look-up tables from a NetCDF file.
+
+    Mirrors Fortran subroutine ``LookupPsihatINI`` (lines 455-530).
+
+    Reads variables ``dtLgridM``, ``zdtgridM``, ``psigridM``,
+    ``dtLgridH``, ``zdtgridH``, and ``psigridH`` from the file whose
+    path is given by the module-level variable ``rslfile``.
+
+    Fortran stores the grids as:
+
+    .. code-block:: none
+
+        zdtgridM(nZ, 1), dtLgridM(1, nL), psigridM(nZ, nL)
+
+    while the NetCDF file has dimensions in the opposite order:
+
+    .. code-block:: none
+
+        psigridM_nc(nL, nZ)  →  psigridM[ii, jj] = psigridM_nc[jj, ii]
+
+    The copy loop transposes the NetCDF arrays into the Fortran (and
+    Python) convention.  After this routine the module-level arrays
+    ``zdtgridM``, ``dtLgridM``, ``psigridM``, ``zdtgridH``,
+    ``dtLgridH``, and ``psigridH`` are populated and ready for use
+    by :func:`_LookupPsihat`.
+
+    Raises:
+        SystemExit: (via :func:`endrun`) if the NetCDF dimensions do
+            not match the expected ``nZ`` and ``nL`` or if any variable
+            cannot be read.
+    """
+    global dtLgridM, dtLgridH, zdtgridM, zdtgridH, psigridM, psigridH
+    global _zdtgM_1d, _dtLgM_1d, _neg_zdtgM_1d
+    global _zdtgH_1d, _dtLgH_1d, _neg_zdtgH_1d
     
-    except Exception as e:
-        # Handle any other errors
-        raise IOError(f"Error reading RSL lookup table file {rsl_file_path}: {str(e)}")
+    import netCDF4 as nc                           # noqa: F401 — defer import
 
+    print(f'Attempting to read RSL look-up table .....')
 
-# Backward compatibility alias (capitalize)
-LookupPsihatINI = initialize_rsl_tables
+    with nc.Dataset(rslfile, 'r') as ncid:
+
+        # Check dimensions — Fortran lines 487-498
+        nZ_nc = len(ncid.dimensions['nZ'])
+        nL_nc = len(ncid.dimensions['nL'])
+        if nZ_nc != nZ:
+            endrun(msg=' ERROR: LookupPsihatINI: nZ does not equal expected value')
+        if nL_nc != nL:
+            endrun(msg=' ERROR: LookupPsihatINI: nL does not equal expected value')
+
+        # Read 1-D coordinate arrays and 2-D psihat grids — Fortran lines 500-520
+        def _read(name: str):
+            if name not in ncid.variables:
+                endrun(msg=f' ERROR: LookupPsihatINI: error reading {name}')
+            return ncid.variables[name][:]
+
+        dtLgridM_nc = np.asarray(_read('dtLgridM'), dtype=float)   # shape (nL,)
+        zdtgridM_nc = np.asarray(_read('zdtgridM'), dtype=float)   # shape (nZ,)
+        psigridM_nc = np.asarray(_read('psigridM'), dtype=float)   # Actually shape (nZ, nL) not (nL, nZ)!
+
+        dtLgridH_nc = np.asarray(_read('dtLgridH'), dtype=float)
+        zdtgridH_nc = np.asarray(_read('zdtgridH'), dtype=float)
+        psigridH_nc = np.asarray(_read('psigridH'), dtype=float)
+
+    print(f'Successfully read RSL look-up table')
+
+    # Copy into module-level arrays with Fortran index conventions —
+    # Fortran lines 522-530:
+    #   dtLgridM(1, jj) = dtLgridM_nc(jj)  →  dtLgridM[0, jj]
+    #   zdtgridM(ii, 1) = zdtgridM_nc(ii)  →  zdtgridM[ii, 0]
+    #   psigridM(ii,jj) = psigridM_nc(jj,ii) →  psigridM[ii, jj]
+    # 
+    # NOTE: psigridM_nc is already in shape (nZ, nL), so no transpose needed
+    
+    # Populate numpy arrays directly (no JAX immutable operations needed)
+    dtLgridM[0, :] = dtLgridM_nc
+    dtLgridH[0, :] = dtLgridH_nc
+    zdtgridM[:, 0] = zdtgridM_nc
+    zdtgridH[:, 0] = zdtgridH_nc
+    psigridM[:, :] = psigridM_nc
+    psigridH[:, :] = psigridH_nc
+
+    # Populate cached 1D views — eliminates per-call slicing and negation in _LookupPsihatM/H
+    _dtLgM_1d     = dtLgridM[0].copy()
+    _zdtgM_1d     = zdtgridM[:, 0].copy()
+    _neg_zdtgM_1d = -_zdtgM_1d
+    _dtLgH_1d     = dtLgridH[0].copy()
+    _zdtgH_1d     = zdtgridH[:, 0].copy()
+    _neg_zdtgH_1d = -_zdtgH_1d

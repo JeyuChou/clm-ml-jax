@@ -123,12 +123,13 @@ def init_surface_albedo_state(
         Here we use jnp.nan for consistency with the Fortran behavior.
         Uses float32 for memory efficiency while maintaining precision.
     """
+    # Size numrad+1 so that 1-based ivis=1, inir=2 indices are valid (slot 0 unused)
     return SurfaceAlbedoState(
         coszen_col=jnp.full((ncol,), jnp.nan, dtype=jnp.float32),
-        albd_patch=jnp.full((npatch, numrad), jnp.nan, dtype=jnp.float32),
-        albi_patch=jnp.full((npatch, numrad), jnp.nan, dtype=jnp.float32),
-        albgrd_col=jnp.full((ncol, numrad), jnp.nan, dtype=jnp.float32),
-        albgri_col=jnp.full((ncol, numrad), jnp.nan, dtype=jnp.float32),
+        albd_patch=jnp.full((npatch, numrad + 1), jnp.nan, dtype=jnp.float32),
+        albi_patch=jnp.full((npatch, numrad + 1), jnp.nan, dtype=jnp.float32),
+        albgrd_col=jnp.full((ncol, numrad + 1), jnp.nan, dtype=jnp.float32),
+        albgri_col=jnp.full((ncol, numrad + 1), jnp.nan, dtype=jnp.float32),
     )
 
 
@@ -173,16 +174,18 @@ def init_allocate(
     coszen_col = jnp.full((num_cols,), jnp.nan, dtype=jnp.float32)
     
     # Line 68: allocate (this%albd_patch (begp:endp,1:numrad))
-    albd_patch = jnp.full((num_patches, numrad), jnp.nan, dtype=jnp.float32)
-    
+    # Size numrad+1 so that 1-based ivis=1, inir=2 indices are valid (slot 0 unused)
+    albd_patch = jnp.full((num_patches, numrad + 1), jnp.nan, dtype=jnp.float32)
+
     # Line 69: allocate (this%albi_patch (begp:endp,1:numrad))
-    albi_patch = jnp.full((num_patches, numrad), jnp.nan, dtype=jnp.float32)
+    albi_patch = jnp.full((num_patches, numrad + 1), jnp.nan, dtype=jnp.float32)
     
     # Line 70: allocate (this%albgrd_col (begc:endc,1:numrad))
-    albgrd_col = jnp.full((num_cols, numrad), jnp.nan, dtype=jnp.float32)
-    
+    # Size numrad+1 so that 1-based ivis=1, inir=2 indices are valid (slot 0 unused)
+    albgrd_col = jnp.full((num_cols, numrad + 1), jnp.nan, dtype=jnp.float32)
+
     # Line 71: allocate (this%albgri_col (begc:endc,1:numrad))
-    albgri_col = jnp.full((num_cols, numrad), jnp.nan, dtype=jnp.float32)
+    albgri_col = jnp.full((num_cols, numrad + 1), jnp.nan, dtype=jnp.float32)
     
     return SurfaceAlbedoState(
         coszen_col=coszen_col,
