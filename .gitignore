@@ -114,3 +114,6 @@ dmypy.json
 Thumbs.db
 *.err
 *.out
+
+#plots
+comparison_plots/

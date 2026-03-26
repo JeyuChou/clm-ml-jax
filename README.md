@@ -44,7 +44,7 @@ Execute a 1-day tower-site simulation with the CHATS7 site:
 
 ```bash
 # Using the installed command (recommended)
-clm-ml-offline < input_files/nl.CHATS7.1day
+clm-ml-offline < nl.CHATS7.1day
 
 # Or with explicit namelist argument  
 clm-ml-offline input_files/nl.CHATS7.1day
