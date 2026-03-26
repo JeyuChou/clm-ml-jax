@@ -7,13 +7,23 @@ private solver (:func:`_Norman`).
 
 Original Fortran module: MLLongwaveRadiationMod
 Fortran lines 1-195
+
+Differentiability notes
+-----------------------
+* All ``np.asarray()`` calls removed — JAX arrays used directly.
+* All ``np.`` array operations replaced by ``jnp.``.
+* ``float()`` wrappers on JAX scalars removed.
+* The tridiagonal system is assembled using Python lists of JAX scalars
+  (Thomas algorithm in ``_tridiag_py``).  The list-based Python loop
+  runs at trace time, so all values inside the lists are JAX traced
+  scalars and the solver is fully differentiable.  TODO: replace with
+  ``jax.lax.scan`` for a fully JIT-compilable version.
 """
 
 from __future__ import annotations
 
 from typing import Sequence
 
-import numpy as np
 import jax.numpy as jnp
 
 
@@ -157,113 +167,121 @@ def _Norman(
     lwupw  = mlcanopy_inst.lwupw_profile
     lwdwn  = mlcanopy_inst.lwdwn_profile
 
-    for fp in range(1, num_filter + 1):            # Fortran: do fp = 1, num_filter
-        p   = int(filter_patch[fp - 1])
-        pft = int(patch.itype[p])
-        _ncan = int(mlcanopy_inst.ncan_canopy[p])
+    for fp in range(num_filter):                   # Fortran: do fp = 1, num_filter
+        p   = filter_patch[fp]
+        pft = patch.itype[p]                       # JAX int
+        _ncan = int(mlcanopy_inst.ncan_canopy[p])  # concrete at eager time
         _ntop = int(mlcanopy_inst.ntop_canopy[p])
         _nbot = int(mlcanopy_inst.nbot_canopy[p])
 
-        em_leaf = float(emleaf[pft])
+        em_leaf = emleaf[pft]                      # JAX scalar
         rho     = 1.0 - em_leaf
-        tau     = 0.0                              # Fortran: tau = 0._r8
+        tau     = 0.0
 
-        # --- Pre-extract input slices as numpy (one JAX sync each) ---
-        _tleaf_sun = np.asarray(mlcanopy_inst.tleaf_leaf[p, :, isun])
-        _tleaf_sha = np.asarray(mlcanopy_inst.tleaf_leaf[p, :, isha])
-        _fracsun   = np.asarray(mlcanopy_inst.fracsun_profile[p])
-        _td        = np.asarray(mlcanopy_inst.td_profile[p])
-        _dpai      = np.asarray(mlcanopy_inst.dpai_profile[p])
-        _lwsky_p   = float(mlcanopy_inst.lwsky_forcing[p])
-        _tg_p      = float(mlcanopy_inst.tg_soil[p])
+        # Per-layer input arrays — use JAX arrays directly (no numpy sync)
+        _tleaf_sun = mlcanopy_inst.tleaf_leaf[p, :, isun]   # (nlevmlcan+1,)
+        _tleaf_sha = mlcanopy_inst.tleaf_leaf[p, :, isha]
+        _fracsun   = mlcanopy_inst.fracsun_profile[p]
+        _td        = mlcanopy_inst.td_profile[p]
+        _dpai      = mlcanopy_inst.dpai_profile[p]
+        _lwsky_p   = mlcanopy_inst.lwsky_forcing[p]
+        _tg_p      = mlcanopy_inst.tg_soil[p]
 
-        # Layer emission — vectorised numpy — Fortran lines 83-88
-        ics = np.arange(_nbot, _ntop + 1)
-        lw_source = np.zeros(nlevmlcan + 2)
-        lw_sun = em_leaf * sb * _tleaf_sun[ics] ** 4
-        lw_sha = em_leaf * sb * _tleaf_sha[ics] ** 4
-        fs_arr = _fracsun[ics]
-        lw_source[ics] = (lw_sun * fs_arr + lw_sha * (1.0 - fs_arr)) * (1.0 - _td[ics])
+        # Layer emission — JAX vectorised — Fortran lines 83-88
+        ics = jnp.arange(_nbot, _ntop + 1)
+        lw_source = jnp.zeros(nlevmlcan + 2)
+        lw_sun    = em_leaf * sb * _tleaf_sun[ics] ** 4
+        lw_sha    = em_leaf * sb * _tleaf_sha[ics] ** 4
+        fs_arr    = _fracsun[ics]
+        lw_source = lw_source.at[ics].set(
+            (lw_sun * fs_arr + lw_sha * (1.0 - fs_arr)) * (1.0 - _td[ics])
+        )
 
         # ------------------------------------------------------------------
-        # Build tridiagonal system — Fortran lines 90-149 (pure Python lists)
+        # Build tridiagonal system — Fortran lines 90-149.
+        # Python lists hold JAX scalars (traced values); the Thomas
+        # algorithm in _tridiag_py operates on these traced scalars so
+        # the solve is differentiable.  Loop bounds are Python ints
+        # (derived from concretised _ntop/_nbot) — valid under jit when
+        # these are static (single-column, fixed canopy structure).
         # ------------------------------------------------------------------
-        atri = [0.0] * (neq + 1)
-        btri = [0.0] * (neq + 1)
-        ctri = [0.0] * (neq + 1)
-        dtri = [0.0] * (neq + 1)
+        atri = [jnp.zeros(())] * (neq + 1)
+        btri = [jnp.zeros(())] * (neq + 1)
+        ctri = [jnp.zeros(())] * (neq + 1)
+        dtri = [jnp.zeros(())] * (neq + 1)
 
         m = 0
 
         # Soil: upward flux — Fortran lines 94-98
         m += 1
-        atri[m] = 0.0
-        btri[m] = 1.0
+        atri[m] = jnp.zeros(())
+        btri[m] = jnp.ones(())
         ctri[m] = -(1.0 - emg)
         dtri[m] = emg * sb * _tg_p ** 4
 
         # Soil: downward flux — Fortran lines 100-108
-        td_nb  = float(_td[_nbot])
-        refld  = (1.0 - td_nb) * rho
-        trand  = (1.0 - td_nb) * tau + td_nb
-        aic    = refld - trand * trand / refld
-        bic    = trand / refld
+        td_nb = _td[_nbot]
+        refld = (1.0 - td_nb) * rho
+        trand = (1.0 - td_nb) * tau + td_nb
+        aic   = refld - trand * trand / refld
+        bic   = trand / refld
         m += 1
         atri[m] = -aic
-        btri[m] = 1.0
+        btri[m] = jnp.ones(())
         ctri[m] = -bic
         dtri[m] = (1.0 - bic) * lw_source[_nbot]
 
         # Leaf layers except top — Fortran lines 110-130
-        for ic in range(_nbot, _ntop):             # Fortran: do ic = nbot, ntop-1
-            td_ic  = float(_td[ic])
-            refld  = (1.0 - td_ic) * rho
-            trand  = (1.0 - td_ic) * tau + td_ic
-            fic    = refld - trand * trand / refld
-            eic    = trand / refld
+        for ic in range(_nbot, _ntop):
+            td_ic = _td[ic]
+            refld = (1.0 - td_ic) * rho
+            trand = (1.0 - td_ic) * tau + td_ic
+            fic   = refld - trand * trand / refld
+            eic   = trand / refld
             m += 1
-            atri[m] = -eic;  btri[m] = 1.0
+            atri[m] = -eic;  btri[m] = jnp.ones(())
             ctri[m] = -fic;  dtri[m] = (1.0 - eic) * lw_source[ic]
 
             ic1    = ic + 1
-            td_ic1 = float(_td[ic1])
+            td_ic1 = _td[ic1]
             refld  = (1.0 - td_ic1) * rho
             trand  = (1.0 - td_ic1) * tau + td_ic1
             aic    = refld - trand * trand / refld
             bic    = trand / refld
             m += 1
-            atri[m] = -aic;  btri[m] = 1.0
+            atri[m] = -aic;  btri[m] = jnp.ones(())
             ctri[m] = -bic;  dtri[m] = (1.0 - bic) * lw_source[ic1]
 
         # Top layer: upward flux — Fortran lines 132-140
-        ic     = _ntop
-        td_ic  = float(_td[ic])
-        refld  = (1.0 - td_ic) * rho
-        trand  = (1.0 - td_ic) * tau + td_ic
-        fic    = refld - trand * trand / refld
-        eic    = trand / refld
+        ic    = _ntop
+        td_ic = _td[ic]
+        refld = (1.0 - td_ic) * rho
+        trand = (1.0 - td_ic) * tau + td_ic
+        fic   = refld - trand * trand / refld
+        eic   = trand / refld
         m += 1
-        atri[m] = -eic;  btri[m] = 1.0
+        atri[m] = -eic;  btri[m] = jnp.ones(())
         ctri[m] = -fic;  dtri[m] = (1.0 - eic) * lw_source[ic]
 
         # Top layer: downward flux — Fortran lines 142-146
         m += 1
-        atri[m] = 0.0;  btri[m] = 1.0;  ctri[m] = 0.0;  dtri[m] = _lwsky_p
+        atri[m] = jnp.zeros(());  btri[m] = jnp.ones(())
+        ctri[m] = jnp.zeros(());  dtri[m] = _lwsky_p
 
-        # Solve — pure Python Thomas algorithm (no JAX) — Fortran line 148
+        # Solve — Thomas algorithm on JAX-scalar lists — Fortran line 148
         utri = _tridiag_py(atri, btri, ctri, dtri, m)
 
         # ------------------------------------------------------------------
-        # Unpack solution into numpy arrays — Fortran lines 154-163
+        # Unpack solution into JAX arrays — Fortran lines 154-163
         # ------------------------------------------------------------------
-        lwupw_new = np.zeros(nlevmlcan + 2)
-        lwdwn_new = np.zeros(nlevmlcan + 2)
+        lwupw_new = jnp.zeros(nlevmlcan + 2)
+        lwdwn_new = jnp.zeros(nlevmlcan + 2)
         k = 0
-        k += 1;  lwupw_new[0] = utri[k]
-        k += 1;  lwdwn_new[0] = utri[k]
+        k += 1;  lwupw_new = lwupw_new.at[0].set(utri[k])
+        k += 1;  lwdwn_new = lwdwn_new.at[0].set(utri[k])
         for ic in range(_nbot, _ntop + 1):
-            k += 1;  lwupw_new[ic] = utri[k]
-            k += 1;  lwdwn_new[ic] = utri[k]
+            k += 1;  lwupw_new = lwupw_new.at[ic].set(utri[k])
+            k += 1;  lwdwn_new = lwdwn_new.at[ic].set(utri[k])
 
         # ------------------------------------------------------------------
         # Ground absorption — Fortran line 165
@@ -271,42 +289,40 @@ def _Norman(
         _lwsoi_p = lwdwn_new[0] - lwupw_new[0]
 
         # ------------------------------------------------------------------
-        # Leaf layer absorption — vectorised numpy — Fortran lines 167-181
+        # Leaf layer absorption — JAX vectorised — Fortran lines 167-181
         # ------------------------------------------------------------------
-        icm1s    = np.where(ics == _nbot, 0, ics - 1)
+        icm1s     = jnp.where(ics == _nbot, 0, ics - 1)
         lwabs_arr = (em_leaf
                      * (lwdwn_new[ics] + lwupw_new[icm1s])
                      * (1.0 - _td[ics])
                      - 2.0 * lw_source[ics])
-        dpai_ics = _dpai[ics]
+        dpai_ics   = _dpai[ics]
         lwleaf_arr = lwabs_arr / dpai_ics
-        _lwveg_p = float(np.sum(lwabs_arr))
+        _lwveg_p   = jnp.sum(lwabs_arr)
 
-        # Local numpy arrays for lwleaf (same value for isun and isha)
-        lwleaf_new = np.zeros(nlevmlcan + 2)
-        lwleaf_new[ics] = lwleaf_arr
+        lwleaf_new = jnp.zeros(nlevmlcan + 2)
+        lwleaf_new = lwleaf_new.at[ics].set(lwleaf_arr)
 
         # Canopy upward longwave — Fortran line 183
         _lwup_p = lwupw_new[_ntop]
 
-        # Conservation check — Fortran lines 185-189
+        # Conservation check — diagnostic only
         err = (_lwsky_p - _lwup_p) - (_lwveg_p + _lwsoi_p)
-        if abs(err) > 1.0e-3:
+        if jnp.abs(err) > 1.0e-3:
             endrun(msg='ERROR: Norman: total longwave conservation error')
 
-        # DEBUG: print LW diagnostics for first few calls
         # ------------------------------------------------------------------
-        # Batch write-back (one _replace per patch)
+        # Batch write-back
         # ------------------------------------------------------------------
         _sl = slice(0, _ntop + 1)
         lwup  = lwup.at[p].set(_lwup_p)
         lwveg = lwveg.at[p].set(_lwveg_p)
         lwsoi = lwsoi.at[p].set(_lwsoi_p)
         lwleaf = (lwleaf
-                  .at[p, _sl, isun].set(jnp.array(lwleaf_new[_sl]))
-                  .at[p, _sl, isha].set(jnp.array(lwleaf_new[_sl])))
-        lwupw = lwupw.at[p, _sl].set(jnp.array(lwupw_new[_sl]))
-        lwdwn = lwdwn.at[p, _sl].set(jnp.array(lwdwn_new[_sl]))
+                  .at[p, _sl, isun].set(lwleaf_new[_sl])
+                  .at[p, _sl, isha].set(lwleaf_new[_sl]))
+        lwupw = lwupw.at[p, _sl].set(lwupw_new[_sl])
+        lwdwn = lwdwn.at[p, _sl].set(lwdwn_new[_sl])
 
     return mlcanopy_inst._replace(
         lwup_canopy   = lwup,

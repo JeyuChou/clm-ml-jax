@@ -5,11 +5,21 @@ Calculate leaf heat capacity for each canopy layer.
 
 Original Fortran module: MLLeafHeatCapacityMod
 Fortran lines 1-75
+
+Differentiability notes
+-----------------------
+The inner layer loop is replaced by ``jax.vmap`` over the full layer
+dimension (indices 1..nlevmlcan).  Layers with ``dpai == 0`` are masked
+via ``jnp.where`` rather than a Python ``if``, so the function is fully
+differentiable and ``jax.jit``-compatible.
 """
 
 from __future__ import annotations
 
 from typing import Sequence
+
+import jax
+import jax.numpy as jnp
 
 from clm_src_main.clm_varcon import cpliq                    # noqa: F401
 from clm_src_main.PatchType import patch                     # noqa: F401
@@ -17,6 +27,42 @@ from clm_src_main.pftconMod import pftcon                    # noqa: F401
 from multilayer_canopy.MLclm_varcon import cpbio, fcarbon, fwater  # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type    # noqa: F401
 
+
+# ---------------------------------------------------------------------------
+# Per-layer kernel — vmapped over the layer axis
+# ---------------------------------------------------------------------------
+
+def _cpleaf_layer(dpai_ic, slatop_pft):
+    """Leaf heat capacity for one canopy layer (differentiable).
+
+    Args:
+        dpai_ic:    Plant-area index increment for this layer (m2/m2).
+        slatop_pft: Specific leaf area at canopy top for this PFT (m2/gC).
+
+    Returns:
+        Heat capacity (J/K/m2 leaf); 0 when dpai_ic == 0.
+    """
+    # Leaf carbon mass per area: m2/gC → kg C/m2 — Fortran line 57
+    lma          = 1.0 / slatop_pft * 0.001
+    # Leaf dry mass per area — Fortran line 58
+    dry_weight   = lma / fcarbon
+    # Leaf fresh mass per area — Fortran line 59
+    fresh_weight = dry_weight / (1.0 - fwater)
+    # Leaf water content — Fortran line 60
+    leaf_water   = fwater * fresh_weight
+    # Heat capacity — Fortran line 61
+    cpleaf_val   = cpbio * dry_weight + cpliq * leaf_water
+    # Zero-out empty layers without Python if — Fortran lines 62-64
+    return jnp.where(dpai_ic > 0.0, cpleaf_val, 0.0)
+
+
+# vmap over layer axis; slatop_pft is a patch-level scalar (broadcast)
+_cpleaf_layers = jax.vmap(_cpleaf_layer, in_axes=(0, None))
+
+
+# ---------------------------------------------------------------------------
+# Public driver
+# ---------------------------------------------------------------------------
 
 def LeafHeatCapacity(
     num_filter: int,
@@ -47,41 +93,22 @@ def LeafHeatCapacity(
 
     Args:
         num_filter: Number of patches in the filter.
-        filter_patch: Patch index filter (1-based values).
+        filter_patch: Patch index filter (0-based values, length num_filter).
         mlcanopy_inst: Canopy container; ``cpleaf_profile`` is updated.
 
     Returns:
         Updated :class:`mlcanopy_type`.
     """
     slatop = pftcon.slatop
-    ncan   = mlcanopy_inst.ncan_canopy
-    dpai   = mlcanopy_inst.dpai_profile
-    cpleaf = mlcanopy_inst.cpleaf_profile
+    dpai   = mlcanopy_inst.dpai_profile    # shape (num_patch, nlevmlcan+1)
+    cpleaf = mlcanopy_inst.cpleaf_profile  # shape (num_patch, nlevmlcan+1)
 
-    for fp in range(1, num_filter + 1):            # Fortran: do fp = 1, num_filter
-        p   = int(filter_patch[fp - 1])
-        pft = int(patch.itype[p])
+    for fp in range(num_filter):           # Fortran: do fp = 1, num_filter
+        p   = filter_patch[fp]
+        pft = patch.itype[p]              # JAX int — dynamic index, differentiable
 
-        for ic in range(1, int(ncan[p]) + 1):      # Fortran: do ic = 1, ncan(p)
+        # vmap over all layers (index 1..nlevmlcan); dpai==0 layers yield 0
+        layers = _cpleaf_layers(dpai[p, 1:], slatop[pft])  # shape (nlevmlcan,)
+        cpleaf = cpleaf.at[p, 1:].set(layers)
 
-            if float(dpai[p, ic]) > 0.0:           # Fortran lines 56-64
-
-                # Leaf carbon mass per area: m2/gC → kg C/m2 — Fortran line 57
-                lma = 1.0 / float(slatop[pft]) * 0.001
-
-                # Leaf dry mass per area: kg C/m2 → kg DM/m2 — Fortran line 58
-                dry_weight = lma / fcarbon
-
-                # Leaf fresh mass per area: kg DM/m2 → kg FM/m2 — Fortran line 59
-                fresh_weight = dry_weight / (1.0 - fwater)
-
-                # Leaf water content: kg H2O/m2 leaf — Fortran line 60
-                leaf_water = fwater * fresh_weight
-
-                # Heat capacity: J/K/m2 leaf — Fortran line 61
-                cpleaf = cpleaf.at[p, ic].set(cpbio * dry_weight + cpliq * leaf_water)
-
-            else:
-                cpleaf = cpleaf.at[p, ic].set(0.0)  # Fortran line 63
-
-    return mlcanopy_inst._replace(cpleaf_profile = cpleaf)
+    return mlcanopy_inst._replace(cpleaf_profile=cpleaf)

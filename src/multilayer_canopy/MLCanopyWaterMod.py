@@ -10,14 +10,24 @@ Provides three public routines:
 
 Original Fortran module: MLCanopyWaterMod
 Fortran lines 1-215
+
+Differentiability notes
+-----------------------
+* All ``np.asarray()`` calls removed — JAX arrays used directly.
+* All ``np.`` operations replaced by ``jnp.``; ``math.tanh`` → ``jnp.tanh``.
+* ``int(ncan[p])`` and ``slice(1, ncan+1)`` replaced by full static slices
+  ``[p, 1:]`` over ``nlevmlcan`` layers; inactive layers are masked by
+  ``dpai == 0``.
+* Python ``if`` on traced values (``total_precip > 0``, ``n > 0``) replaced
+  by ``jnp.where`` with safe denominators.
+* ``int(np.sum(has_pai))`` replaced by ``jnp.sum(has_pai)`` with a JAX
+  safe floor to avoid division by zero.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Sequence
 
-import numpy as np
 import jax.numpy as jnp
 
 from multilayer_canopy.MLclm_varcon import (                              # noqa: F401
@@ -60,7 +70,7 @@ def CanopyWettedFraction(
 
     Args:
         num_filter: Number of patches in the filter.
-        filter_patch: Patch index filter (1-based values).
+        filter_patch: Patch index filter (0-based values, length num_filter).
         mlcanopy_inst: Canopy container; ``fwet_profile`` and
             ``fdry_profile`` are updated.
 
@@ -70,49 +80,35 @@ def CanopyWettedFraction(
     fwet = mlcanopy_inst.fwet_profile
     fdry = mlcanopy_inst.fdry_profile
 
-    for fp in range(1, num_filter + 1):                # Fortran: do fp = 1, num_filter
-        p = int(filter_patch[fp - 1])
-        _ncan = int(mlcanopy_inst.ncan_canopy[p])
+    for fp in range(num_filter):                   # Fortran: do fp = 1, num_filter
+        p = filter_patch[fp]
 
-        # Pre-extract as numpy — one JAX sync per array
-        _dpai   = np.asarray(mlcanopy_inst.dpai_profile[p])
-        _h2ocan = np.asarray(mlcanopy_inst.h2ocan_profile[p])
-        _dlai   = np.asarray(mlcanopy_inst.dlai_profile[p])
+        # Use full layer slices — dpai==0 on inactive layers acts as mask
+        dpai_v   = mlcanopy_inst.dpai_profile[p, 1:]    # (nlevmlcan,)
+        h2ocan_v = mlcanopy_inst.h2ocan_profile[p, 1:]
+        dlai_v   = mlcanopy_inst.dlai_profile[p, 1:]
 
-        ics      = np.arange(1, _ncan + 1)
-        dpai_v   = _dpai[ics]
-        h2ocan_v = _h2ocan[ics]
-        dlai_v   = _dlai[ics]
-
-        has_pai  = dpai_v > 0.0
-        dpai_safe  = np.where(has_pai, dpai_v, 1.0)   # avoid div-by-zero
+        has_pai    = dpai_v > 0.0
+        dpai_safe  = jnp.where(has_pai, dpai_v, 1.0)    # avoid /0
         h2ocanmx   = dewmx * dpai_safe
-        fwet_v = np.where(
+
+        # Fortran lines 63-68
+        fwet_v = jnp.where(
             has_pai,
-            np.minimum(
-                np.maximum(h2ocan_v / h2ocanmx, 0.0) ** fwet_exponent,
+            jnp.minimum(
+                jnp.maximum(h2ocan_v / h2ocanmx, 0.0) ** fwet_exponent,
                 maximum_leaf_wetted_fraction,
             ),
             0.0,
         )
-        fdry_v = np.where(
-            has_pai,
-            (1.0 - fwet_v) * dlai_v / dpai_safe,
-            0.0,
-        )
+        fdry_v = jnp.where(has_pai, (1.0 - fwet_v) * dlai_v / dpai_safe, 0.0)
 
-        _fwet_new        = np.zeros(_ncan + 2)
-        _fdry_new        = np.zeros(_ncan + 2)
-        _fwet_new[ics]   = fwet_v
-        _fdry_new[ics]   = fdry_v
-
-        _sl = slice(1, _ncan + 1)
-        fwet = fwet.at[p, _sl].set(jnp.array(_fwet_new[_sl]))
-        fdry = fdry.at[p, _sl].set(jnp.array(_fdry_new[_sl]))
+        fwet = fwet.at[p, 1:].set(fwet_v)
+        fdry = fdry.at[p, 1:].set(fdry_v)
 
     return mlcanopy_inst._replace(
-        fwet_profile = fwet,
-        fdry_profile = fdry,
+        fwet_profile=fwet,
+        fdry_profile=fdry,
     )
 
 
@@ -162,7 +158,7 @@ def CanopyInterception(
 
     Args:
         num_filter: Number of patches in the filter.
-        filter_patch: Patch index filter (1-based values).
+        filter_patch: Patch index filter (0-based values, length num_filter).
         mlcanopy_inst: Canopy container; ``h2ocan_profile``,
             ``qflx_intr_canopy``, ``qflx_tflrain_canopy``, and
             ``qflx_tflsnow_canopy`` are updated.
@@ -170,32 +166,30 @@ def CanopyInterception(
     Returns:
         Updated :class:`mlcanopy_type`.
     """
-    dtime: float = float(dtime_ml)
+    dtime = dtime_ml    # Python float constant — no cast needed
 
-    h2ocan      = mlcanopy_inst.h2ocan_profile
-    qflx_intr   = mlcanopy_inst.qflx_intr_canopy
+    h2ocan       = mlcanopy_inst.h2ocan_profile
+    qflx_intr    = mlcanopy_inst.qflx_intr_canopy
     qflx_tflrain = mlcanopy_inst.qflx_tflrain_canopy
     qflx_tflsnow = mlcanopy_inst.qflx_tflsnow_canopy
 
-    for fp in range(1, num_filter + 1):                # Fortran: do fp = 1, num_filter
-        p = int(filter_patch[fp - 1])
+    for fp in range(num_filter):                   # Fortran: do fp = 1, num_filter
+        p = filter_patch[fp]
 
-        rain_p = float(mlcanopy_inst.qflx_rain_forcing[p])
-        snow_p = float(mlcanopy_inst.qflx_snow_forcing[p])
+        rain_p = mlcanopy_inst.qflx_rain_forcing[p]
+        snow_p = mlcanopy_inst.qflx_snow_forcing[p]
 
         # Rain/snow fractions — Fortran lines 120-125
-        total_precip = snow_p + rain_p
-        if total_precip > 0.0:
-            fracrain = rain_p / total_precip
-            fracsnow = snow_p / total_precip
-        else:
-            fracrain = 0.0
-            fracsnow = 0.0
+        # jnp.where replaces Python if on JAX value
+        total_precip  = snow_p + rain_p
+        total_safe    = jnp.where(total_precip > 0.0, total_precip, 1.0)
+        fracrain      = jnp.where(total_precip > 0.0, rain_p / total_safe, 0.0)
+        fracsnow      = jnp.where(total_precip > 0.0, snow_p / total_safe, 0.0)
 
         # Intercepted fraction (CLM5 form) — Fortran line 127
-        lai_p = float(mlcanopy_inst.lai_canopy[p])
-        sai_p = float(mlcanopy_inst.sai_canopy[p])
-        fpi = interception_fraction * math.tanh(lai_p + sai_p)
+        lai_p = mlcanopy_inst.lai_canopy[p]
+        sai_p = mlcanopy_inst.sai_canopy[p]
+        fpi   = interception_fraction * jnp.tanh(lai_p + sai_p)
 
         # Direct throughfall — Fortran lines 129-130
         qflx_through_rain = rain_p * (1.0 - fpi)
@@ -203,32 +197,30 @@ def CanopyInterception(
 
         # Intercepted precipitation — Fortran line 132
         qflx_intr_p = total_precip * fpi
-        qflx_intr = qflx_intr.at[p].set(qflx_intr_p)
+        qflx_intr   = qflx_intr.at[p].set(qflx_intr_p)
 
-        # Count layers with dpai > 0 and pre-extract arrays — Fortran lines 134-136
-        ncan_p  = int(mlcanopy_inst.ncan_canopy[p])
-        _dpai_p = np.asarray(mlcanopy_inst.dpai_profile[p])
-        _h2ocan_bef_p = np.asarray(mlcanopy_inst.h2ocan_bef_profile[p])
-        ics     = np.arange(1, ncan_p + 1)
-        dpai_v  = _dpai_p[ics]
-        has_pai = dpai_v > 0.0
-        n       = int(np.sum(has_pai))
+        # Per-layer water balance — Fortran lines 134-153
+        dpai_v       = mlcanopy_inst.dpai_profile[p, 1:]
+        h2ocan_bef_v = mlcanopy_inst.h2ocan_bef_profile[p, 1:]
 
-        # Per-layer water balance — vectorised — Fortran lines 138-153
-        h2ocan_bef_v = _h2ocan_bef_p[ics]
-        dpai_safe    = np.where(has_pai, dpai_v, 1.0)
+        has_pai  = dpai_v > 0.0
+        n_active = jnp.sum(has_pai.astype(jnp.float32))   # JAX scalar
+        n_safe   = jnp.maximum(n_active, 1.0)              # avoid /0
+
+        dpai_safe    = jnp.where(has_pai, dpai_v, 1.0)
         h2ocanmx_v   = dewmx * dpai_safe
-        add_per_layer = (qflx_intr_p * dtime / float(n)) if n > 0 else 0.0
-        h2ocan_v     = np.where(has_pai, h2ocan_bef_v + add_per_layer, 0.0)
-        xrun_v       = np.where(has_pai, (h2ocan_v - h2ocanmx_v) / dtime, 0.0)
-        drip_mask    = xrun_v > 0.0
-        qflx_candrip = float(np.sum(np.where(drip_mask, xrun_v, 0.0)))
-        h2ocan_v     = np.where(drip_mask, h2ocanmx_v, h2ocan_v)
+        # Distribute interception equally across active layers
+        add_per_layer = jnp.where(n_active > 0.0,
+                                  qflx_intr_p * dtime / n_safe, 0.0)
+        h2ocan_v  = jnp.where(has_pai, h2ocan_bef_v + add_per_layer, 0.0)
+        xrun_v    = jnp.where(has_pai, (h2ocan_v - h2ocanmx_v) / dtime, 0.0)
+        drip_mask = xrun_v > 0.0
 
-        _h2ocan_new      = np.zeros(ncan_p + 2)
-        _h2ocan_new[ics] = h2ocan_v
-        _sl = slice(1, ncan_p + 1)
-        h2ocan = h2ocan.at[p, _sl].set(jnp.array(_h2ocan_new[_sl]))
+        # Collect canopy drip and cap h2ocan at maximum — Fortran lines 149-152
+        qflx_candrip = jnp.sum(jnp.where(drip_mask, xrun_v, 0.0))
+        h2ocan_v     = jnp.where(drip_mask, h2ocanmx_v, h2ocan_v)
+
+        h2ocan = h2ocan.at[p, 1:].set(h2ocan_v)
 
         # Total throughfall — Fortran lines 157-158
         qflx_tflrain = qflx_tflrain.at[p].set(
@@ -239,10 +231,10 @@ def CanopyInterception(
         )
 
     return mlcanopy_inst._replace(
-        h2ocan_profile       = h2ocan,
-        qflx_intr_canopy     = qflx_intr,
-        qflx_tflrain_canopy  = qflx_tflrain,
-        qflx_tflsnow_canopy  = qflx_tflsnow,
+        h2ocan_profile      =h2ocan,
+        qflx_intr_canopy    =qflx_intr,
+        qflx_tflrain_canopy =qflx_tflrain,
+        qflx_tflsnow_canopy =qflx_tflsnow,
     )
 
 
@@ -284,54 +276,46 @@ def CanopyEvaporation(
 
     Args:
         num_filter: Number of patches in the filter.
-        filter_patch: Patch index filter (1-based values).
+        filter_patch: Patch index filter (0-based values, length num_filter).
         mlcanopy_inst: Canopy container; ``h2ocan_profile`` is updated
             in-place (input/output field).
 
     Returns:
         Updated :class:`mlcanopy_type`.
     """
-    dtime: float = float(dtime_ml)
-
+    dtime  = dtime_ml    # Python float constant
     h2ocan = mlcanopy_inst.h2ocan_profile
 
-    for fp in range(1, num_filter + 1):                # Fortran: do fp = 1, num_filter
-        p = int(filter_patch[fp - 1])
-        _ncan = int(mlcanopy_inst.ncan_canopy[p])
+    for fp in range(num_filter):                   # Fortran: do fp = 1, num_filter
+        p = filter_patch[fp]
 
-        # Pre-extract as numpy — one sync per array
-        _dpai    = np.asarray(mlcanopy_inst.dpai_profile[p])
-        _fracsun = np.asarray(mlcanopy_inst.fracsun_profile[p])
-        _h2ocan  = np.asarray(h2ocan[p])
-        _evleaf  = np.asarray(mlcanopy_inst.evleaf_leaf[p])   # shape (nlevmlcan+1, nleaf+1)
-        _trleaf  = np.asarray(mlcanopy_inst.trleaf_leaf[p])
+        dpai_v    = mlcanopy_inst.dpai_profile[p, 1:]
+        fracsun_v = mlcanopy_inst.fracsun_profile[p, 1:]
+        h2o_v     = h2ocan[p, 1:]
 
-        ics      = np.arange(1, _ncan + 1)
-        dpai_v   = _dpai[ics]
-        fs_v     = _fracsun[ics]
-        h2o_v    = _h2ocan[ics]
-        has_pai  = dpai_v > 0.0
-        dpai_safe = np.where(has_pai, dpai_v, 0.0)
-        factor_v = dpai_safe * mmh2o * dtime
+        has_pai   = dpai_v > 0.0
+        # factor = dpai * mmh2o * dtime; zero on empty layers (no division)
+        factor_v  = jnp.where(has_pai, dpai_v, 0.0) * mmh2o * dtime
 
-        evleaf_sun_v = _evleaf[ics, isun]
-        trleaf_sun_v = _trleaf[ics, isun]
-        evleaf_sha_v = _evleaf[ics, isha]
-        trleaf_sha_v = _trleaf[ics, isha]
+        evleaf_sun_v = mlcanopy_inst.evleaf_leaf[p, 1:, isun]
+        trleaf_sun_v = mlcanopy_inst.trleaf_leaf[p, 1:, isun]
+        evleaf_sha_v = mlcanopy_inst.evleaf_leaf[p, 1:, isha]
+        trleaf_sha_v = mlcanopy_inst.trleaf_leaf[p, 1:, isha]
 
         # Dew (negative flux adds to h2ocan) — Fortran lines 195-203
-        dew_sun_v = (evleaf_sun_v + trleaf_sun_v) * fs_v * factor_v
-        dew_sha_v = (evleaf_sha_v + trleaf_sha_v) * (1.0 - fs_v) * factor_v
-        h2o_v = h2o_v - np.where(dew_sun_v < 0.0, dew_sun_v, 0.0)
-        h2o_v = h2o_v - np.where(dew_sha_v < 0.0, dew_sha_v, 0.0)
+        dew_sun_v = (evleaf_sun_v + trleaf_sun_v) * fracsun_v         * factor_v
+        dew_sha_v = (evleaf_sha_v + trleaf_sha_v) * (1.0 - fracsun_v) * factor_v
+        h2o_v = h2o_v - jnp.where(dew_sun_v < 0.0, dew_sun_v, 0.0)
+        h2o_v = h2o_v - jnp.where(dew_sha_v < 0.0, dew_sha_v, 0.0)
 
         # Evaporation (positive flux removes from h2ocan) — Fortran lines 205-211
-        h2o_v = h2o_v - np.where(evleaf_sun_v > 0.0, evleaf_sun_v * fs_v * factor_v, 0.0)
-        h2o_v = h2o_v - np.where(evleaf_sha_v > 0.0, evleaf_sha_v * (1.0 - fs_v) * factor_v, 0.0)
+        h2o_v = h2o_v - jnp.where(
+            evleaf_sun_v > 0.0, evleaf_sun_v * fracsun_v         * factor_v, 0.0)
+        h2o_v = h2o_v - jnp.where(
+            evleaf_sha_v > 0.0, evleaf_sha_v * (1.0 - fracsun_v) * factor_v, 0.0)
 
-        _h2ocan_new      = np.zeros(_ncan + 2)
-        _h2ocan_new[ics] = np.where(has_pai, h2o_v, _h2ocan[ics])
-        _sl = slice(1, _ncan + 1)
-        h2ocan = h2ocan.at[p, _sl].set(jnp.array(_h2ocan_new[_sl]))
+        # Preserve unchanged values for inactive layers
+        h2o_v  = jnp.where(has_pai, h2o_v, h2ocan[p, 1:])
+        h2ocan = h2ocan.at[p, 1:].set(h2o_v)
 
-    return mlcanopy_inst._replace(h2ocan_profile = h2ocan)
+    return mlcanopy_inst._replace(h2ocan_profile=h2ocan)
