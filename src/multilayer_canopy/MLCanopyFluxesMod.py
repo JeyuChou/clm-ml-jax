@@ -22,7 +22,9 @@ Fortran lines 1-400
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, List, Sequence, Tuple
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -70,6 +72,40 @@ from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type                  
 _rk_ark = None
 _rk_brk = None
 _rk_crk = None
+
+
+# ---------------------------------------------------------------------------
+# JIT-compiled bef-state copy helper
+# ---------------------------------------------------------------------------
+
+@partial(jax.jit, static_argnums=(0, 1))
+def _copy_bef_state(
+    filter_mlcan: tuple,
+    ncan_vals: tuple,
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """Copy current-state arrays to their ``*_bef`` counterparts.
+
+    Replaces a Python for-loop of 7 eager ``.at[].set()`` dispatches with a
+    single JIT-compiled kernel.  ``filter_mlcan`` and ``ncan_vals`` are
+    static so slice bounds are concrete at trace time; recompilation only
+    occurs when the canopy structure changes (never for a fixed site).
+
+    Mirrors Fortran lines 272-285 of ``MLCanopyFluxes``.
+    """
+    inst = mlcanopy_inst
+    for p, ncan in zip(filter_mlcan, ncan_vals):
+        _sl = slice(1, ncan + 1)
+        inst = inst._replace(
+            tg_bef_soil        = inst.tg_bef_soil.at[p].set(inst.tg_soil[p]),
+            tair_bef_profile   = inst.tair_bef_profile.at[p, _sl].set(inst.tair_profile[p, _sl]),
+            eair_bef_profile   = inst.eair_bef_profile.at[p, _sl].set(inst.eair_profile[p, _sl]),
+            cair_bef_profile   = inst.cair_bef_profile.at[p, _sl].set(inst.cair_profile[p, _sl]),
+            h2ocan_bef_profile = inst.h2ocan_bef_profile.at[p, _sl].set(inst.h2ocan_profile[p, _sl]),
+            tleaf_bef_leaf     = inst.tleaf_bef_leaf.at[p, _sl, :].set(inst.tleaf_leaf[p, _sl, :]),
+            lwp_bef_leaf       = inst.lwp_bef_leaf.at[p, _sl, :].set(inst.lwp_leaf[p, _sl, :]),
+        )
+    return inst
 
 
 # ---------------------------------------------------------------------------
@@ -238,11 +274,12 @@ def MLCanopyFluxes(
     # Build filter for patches to process — Fortran lines 152-160
     # ------------------------------------------------------------------
     num_mlcan: int = 0
-    filter_mlcan: List[int] = []
+    _filter_mlcan_list: List[int] = []
     for fp in range(1, num_exposedvegp + 1):
         p = int(filter_exposedvegp[fp - 1])
         num_mlcan  += 1
-        filter_mlcan.append(p)
+        _filter_mlcan_list.append(p)
+    filter_mlcan: tuple = tuple(_filter_mlcan_list)   # tuple required for jax.jit static_argnums
 
     # ------------------------------------------------------------------
     # First-timestep initialisation — Fortran lines 162-198
@@ -304,15 +341,15 @@ def MLCanopyFluxes(
         lwsky_bef  = mlcanopy_inst.lwsky_bef_forcing
 
         for p in filter_mlcan:
-            uref_bef   = uref_bef.at[p].set(float(mlcanopy_inst.uref_cur_forcing[p]))
-            tref_bef   = tref_bef.at[p].set(float(mlcanopy_inst.tref_cur_forcing[p]))
-            qref_bef   = qref_bef.at[p].set(float(mlcanopy_inst.qref_cur_forcing[p]))
-            pref_bef   = pref_bef.at[p].set(float(mlcanopy_inst.pref_cur_forcing[p]))
-            co2ref_bef = co2ref_bef.at[p].set(float(mlcanopy_inst.co2ref_cur_forcing[p]))
+            uref_bef   = uref_bef.at[p].set(mlcanopy_inst.uref_cur_forcing[p])
+            tref_bef   = tref_bef.at[p].set(mlcanopy_inst.tref_cur_forcing[p])
+            qref_bef   = qref_bef.at[p].set(mlcanopy_inst.qref_cur_forcing[p])
+            pref_bef   = pref_bef.at[p].set(mlcanopy_inst.pref_cur_forcing[p])
+            co2ref_bef = co2ref_bef.at[p].set(mlcanopy_inst.co2ref_cur_forcing[p])
             for ib in (ivis, inir):
-                swskyb_bef = swskyb_bef.at[p, ib].set(float(mlcanopy_inst.swskyb_cur_forcing[p, ib]))
-                swskyd_bef = swskyd_bef.at[p, ib].set(float(mlcanopy_inst.swskyd_cur_forcing[p, ib]))
-            lwsky_bef = lwsky_bef.at[p].set(float(mlcanopy_inst.lwsky_cur_forcing[p]))
+                swskyb_bef = swskyb_bef.at[p, ib].set(mlcanopy_inst.swskyb_cur_forcing[p, ib])
+                swskyd_bef = swskyd_bef.at[p, ib].set(mlcanopy_inst.swskyd_cur_forcing[p, ib])
+            lwsky_bef = lwsky_bef.at[p].set(mlcanopy_inst.lwsky_cur_forcing[p])
 
         mlcanopy_inst = mlcanopy_inst._replace(
             uref_bef_forcing   = uref_bef,
@@ -335,15 +372,15 @@ def MLCanopyFluxes(
     dpai  = mlcanopy_inst.dpai_profile
 
     for p in filter_mlcan:
-        lai_val = float(canopystate_inst.elai_patch[p])
-        sai_val = float(canopystate_inst.esai_patch[p])
+        lai_val = canopystate_inst.elai_patch[p]
+        sai_val = canopystate_inst.esai_patch[p]
         lai = lai.at[p].set(lai_val)
         sai = sai.at[p].set(sai_val)
 
         _ncan = int(mlcanopy_inst.ncan_canopy[p])
         for ic in range(1, _ncan + 1):
-            dlai_val = float(mlcanopy_inst.dlai_frac_profile[p, ic]) * lai_val
-            dsai_val = float(mlcanopy_inst.dsai_frac_profile[p, ic]) * sai_val
+            dlai_val = mlcanopy_inst.dlai_frac_profile[p, ic] * lai_val
+            dsai_val = mlcanopy_inst.dsai_frac_profile[p, ic] * sai_val
             dpai_val = dlai_val + dsai_val
             dlai = dlai.at[p, ic].set(dlai_val)
             dsai = dsai.at[p, ic].set(dsai_val)
@@ -353,7 +390,7 @@ def MLCanopyFluxes(
         totpai = sum(
             float(dpai[p, ic]) for ic in range(1, _ncan + 1)
         )
-        if abs(totpai - (lai_val + sai_val)) > 1.0e-6:
+        if abs(totpai - float(lai_val + sai_val)) > 1.0e-6:
             endrun(msg=' ERROR: MLCanopyFluxes: plant area index not updated correctly')
 
     mlcanopy_inst = mlcanopy_inst._replace(
@@ -377,11 +414,11 @@ def MLCanopyFluxes(
     rhg = mlcanopy_inst.rhg_soil
     for p in filter_mlcan:
         c = int(patch.column[p])
-        smp1  = float(soilstate_inst.smp_l_col[c, 1])      # mm
-        tsoi1 = float(temperature_inst.t_soisno_col[c, 1])  # K
-        rhg_val = float(jnp.exp(
+        smp1  = soilstate_inst.smp_l_col[c, 1]      # mm
+        tsoi1 = temperature_inst.t_soisno_col[c, 1]  # K
+        rhg_val = jnp.exp(
             grav * mmh2o * smp1 * 1.0e-3 / (rgas * tsoi1)
-        ))
+        )
         rhg = rhg.at[p].set(rhg_val)
     mlcanopy_inst = mlcanopy_inst._replace(rhg_soil = rhg)
 
@@ -418,6 +455,11 @@ def MLCanopyFluxes(
     # Keep heartbeat output bounded while still proving forward progress.
     progress_stride = max(1, num_ml_steps // 10)
 
+    # Pre-compute ncan for each active patch once — avoids int() device-to-host
+    # sync inside the hot ML sub-step loop.  ncan is constant for a fixed site
+    # so this tuple is computed only once per CLM timestep.
+    ncan_vals: tuple = tuple(int(mlcanopy_inst.ncan_canopy[p]) for p in filter_mlcan)
+
     # ==================================================================
     # Multilayer canopy time-stepping loop — Fortran lines 261-330
     # ==================================================================
@@ -438,35 +480,9 @@ def MLCanopyFluxes(
                                 + (float(nstep_ml) - 0.5) * (dtime_ml / 86400.0))
 
         # Save previous-step state — Fortran lines 272-285
-        tg_bef     = mlcanopy_inst.tg_bef_soil
-        tair_bef   = mlcanopy_inst.tair_bef_profile
-        eair_bef   = mlcanopy_inst.eair_bef_profile
-        cair_bef   = mlcanopy_inst.cair_bef_profile
-        h2ocan_bef = mlcanopy_inst.h2ocan_bef_profile
-        tleaf_bef  = mlcanopy_inst.tleaf_bef_leaf
-        lwp_bef    = mlcanopy_inst.lwp_bef_leaf
-
-        # Vectorized bef-state save — bulk slice writes instead of per-element
-        for p in filter_mlcan:
-            _ncan = int(mlcanopy_inst.ncan_canopy[p])
-            _sl   = slice(1, _ncan + 1)
-            tg_bef     = tg_bef.at[p].set(mlcanopy_inst.tg_soil[p])
-            tair_bef   = tair_bef.at[p, _sl].set(mlcanopy_inst.tair_profile[p, _sl])
-            eair_bef   = eair_bef.at[p, _sl].set(mlcanopy_inst.eair_profile[p, _sl])
-            cair_bef   = cair_bef.at[p, _sl].set(mlcanopy_inst.cair_profile[p, _sl])
-            h2ocan_bef = h2ocan_bef.at[p, _sl].set(mlcanopy_inst.h2ocan_profile[p, _sl])
-            tleaf_bef  = tleaf_bef.at[p, _sl, :].set(mlcanopy_inst.tleaf_leaf[p, _sl, :])
-            lwp_bef    = lwp_bef.at[p, _sl, :].set(mlcanopy_inst.lwp_leaf[p, _sl, :])
-
-        mlcanopy_inst = mlcanopy_inst._replace(
-            tg_bef_soil          = tg_bef,
-            tair_bef_profile     = tair_bef,
-            eair_bef_profile     = eair_bef,
-            cair_bef_profile     = cair_bef,
-            h2ocan_bef_profile   = h2ocan_bef,
-            tleaf_bef_leaf       = tleaf_bef,
-            lwp_bef_leaf         = lwp_bef,
-        )
+        # Single JIT-compiled call: eliminates 1 int() sync + 7 eager dispatches
+        # per sub-step by fusing all 7 .at[].set() ops into one compiled kernel.
+        mlcanopy_inst = _copy_bef_state(filter_mlcan, ncan_vals, mlcanopy_inst)
 
         # Atmospheric forcing for this ML timestep — Fortran line 287
         mlcanopy_inst = GetAtmForcing(
@@ -640,19 +656,19 @@ def MLCanopyFluxes(
                 surfalb_inst.albi_patch[p, ib] = 0.0
             energyflux_inst.taux_patch[p]             = 0.0
             energyflux_inst.tauy_patch[p]             = 0.0
-            energyflux_inst.eflx_lh_tot_patch[p]      = float(mlcanopy_inst.lhflx_canopy[p])
-            energyflux_inst.eflx_sh_tot_patch[p]      = float(mlcanopy_inst.shflx_canopy[p])
-            energyflux_inst.eflx_lwrad_out_patch[p]   = float(mlcanopy_inst.lwup_canopy[p])
-            waterfluxbulk_inst.qflx_evap_tot_patch[p] = float(mlcanopy_inst.etflx_canopy[p]) * mmh2o
-            frictionvel_inst.fv_patch[p]               = float(mlcanopy_inst.ustar_canopy[p])
+            energyflux_inst.eflx_lh_tot_patch[p]      = mlcanopy_inst.lhflx_canopy[p]
+            energyflux_inst.eflx_sh_tot_patch[p]      = mlcanopy_inst.shflx_canopy[p]
+            energyflux_inst.eflx_lwrad_out_patch[p]   = mlcanopy_inst.lwup_canopy[p]
+            waterfluxbulk_inst.qflx_evap_tot_patch[p] = mlcanopy_inst.etflx_canopy[p] * mmh2o
+            frictionvel_inst.fv_patch[p]               = mlcanopy_inst.ustar_canopy[p]
             frictionvel_inst.u10_clm_patch[p]          = 0.0
             temperature_inst.t_ref2m_patch[p]          = 0.0
             waterdiagnosticbulk_inst.q_ref2m_patch[p]  = 0.0
             solarabs_inst.fsa_patch[p] = (
-                float(mlcanopy_inst.swveg_canopy[p, ivis])
-                + float(mlcanopy_inst.swveg_canopy[p, inir])
-                + float(mlcanopy_inst.swsoi_soil[p, ivis])
-                + float(mlcanopy_inst.swsoi_soil[p, inir])
+                mlcanopy_inst.swveg_canopy[p, ivis]
+                + mlcanopy_inst.swveg_canopy[p, inir]
+                + mlcanopy_inst.swsoi_soil[p, ivis]
+                + mlcanopy_inst.swsoi_soil[p, inir]
             )
 
     return mlcanopy_inst
@@ -758,7 +774,6 @@ def _GetCLMVar(
         ``*_soil``, and ``solar_zen_forcing`` fields set for the
         current CLM timestep.
     """
-    import math
     from clm_src_main.clm_varpar import ivis, inir                              # noqa: F401
     from clm_src_main.clm_varpar import nlevsno                                 # noqa: F401
     from clm_src_main.clm_varcon import pi                                      # noqa: F401 (pi = rpi)
@@ -827,39 +842,39 @@ def _GetCLMVar(
 
         # Wind: resultant from east/north components — Fortran line 67
         uref_cur = uref_cur.at[p].set(
-            math.sqrt(float(forc_u[g])**2 + float(forc_v[g])**2)
+            jnp.sqrt(forc_u[g]**2 + forc_v[g]**2)
         )
 
         # Diffuse solar (grid cell g → patch p) — Fortran lines 68-69
-        swskyd_cur = swskyd_cur.at[p, ivis].set(float(forc_solai[g, ivis]))
-        swskyd_cur = swskyd_cur.at[p, inir].set(float(forc_solai[g, inir]))
+        swskyd_cur = swskyd_cur.at[p, ivis].set(forc_solai[g, ivis])
+        swskyd_cur = swskyd_cur.at[p, inir].set(forc_solai[g, inir])
 
         # Column (c) → patch (p) scalars — Fortran lines 72-80
-        tref_cur  = tref_cur.at[p].set(float(forc_t[c]))
-        qref_cur  = qref_cur.at[p].set(float(forc_q[c]))
-        pref_cur  = pref_cur.at[p].set(float(forc_pbot[c]))
-        lwsky_cur = lwsky_cur.at[p].set(float(forc_lwrad[c]))
-        qflx_rain = qflx_rain.at[p].set(float(forc_rain[c]))
-        qflx_snow = qflx_snow.at[p].set(float(forc_snow[c]))
-        swskyb_cur = swskyb_cur.at[p, ivis].set(float(forc_solad_col[c, ivis]))
-        swskyb_cur = swskyb_cur.at[p, inir].set(float(forc_solad_col[c, inir]))
+        tref_cur  = tref_cur.at[p].set(forc_t[c])
+        qref_cur  = qref_cur.at[p].set(forc_q[c])
+        pref_cur  = pref_cur.at[p].set(forc_pbot[c])
+        lwsky_cur = lwsky_cur.at[p].set(forc_lwrad[c])
+        qflx_rain = qflx_rain.at[p].set(forc_rain[c])
+        qflx_snow = qflx_snow.at[p].set(forc_snow[c])
+        swskyb_cur = swskyb_cur.at[p, ivis].set(forc_solad_col[c, ivis])
+        swskyb_cur = swskyb_cur.at[p, inir].set(forc_solad_col[c, inir])
 
         # CO2 and O2 unit conversions — Fortran lines 83-84
-        pbot_val = float(forc_pbot[c])
-        co2ref_cur = co2ref_cur.at[p].set(float(forc_pco2[g]) / pbot_val * 1.0e6)  # Pa -> umol/mol
-        o2ref      = o2ref.at[p].set(float(forc_po2[g]) / pbot_val * 1.0e3)        # Pa -> mmol/mol
+        pbot_val = forc_pbot[c]
+        co2ref_cur = co2ref_cur.at[p].set(forc_pco2[g] / pbot_val * 1.0e6)  # Pa -> umol/mol
+        o2ref      = o2ref.at[p].set(forc_po2[g] / pbot_val * 1.0e3)        # Pa -> mmol/mol
 
         # Acclimation temperature — Fortran line 87
-        tacclim = tacclim.at[p].set(float(t_a10_patch[p]))
+        tacclim = tacclim.at[p].set(t_a10_patch[p])
 
         # Ground albedos: column (c) → patch (p) — Fortran lines 89-90
-        albsoib = albsoib.at[p, ivis].set(float(albgrd[c, ivis]))
-        albsoib = albsoib.at[p, inir].set(float(albgrd[c, inir]))
-        albsoid = albsoid.at[p, ivis].set(float(albgri[c, ivis]))
-        albsoid = albsoid.at[p, inir].set(float(albgri[c, inir]))
+        albsoib = albsoib.at[p, ivis].set(albgrd[c, ivis])
+        albsoib = albsoib.at[p, inir].set(albgrd[c, inir])
+        albsoid = albsoid.at[p, ivis].set(albgri[c, ivis])
+        albsoid = albsoid.at[p, inir].set(albgri[c, inir])
 
         # Soil evaporative resistance — Fortran line 93
-        soilres = soilres.at[p].set(float(soilresis[c]))
+        soilres = soilres.at[p].set(soilresis[c])
 
         # First snow/soil layer properties — Fortran lines 99-101
         # snl(c) is the number of snow layers (negative value in CLM);
@@ -868,13 +883,9 @@ def _GetCLMVar(
         # All arrays use direct j indexing (1:nlevgrnd), no nlevsno offset.
         j = int(snl[c]) + 1                                  # Fortran index = Python index
 
-        soil_t_val  = float(t_soisno[c, j])                              # K
-        soil_dz_val = float(z[c, j]) - float(zi[c, int(snl[c])])         # m
-        soil_tk_val = float(thk[c, j])                                    # W/m/K
-
-        soil_t  = soil_t.at[p].set(soil_t_val)
-        soil_dz = soil_dz.at[p].set(soil_dz_val)
-        soil_tk = soil_tk.at[p].set(soil_tk_val)
+        soil_t  = soil_t.at[p].set(t_soisno[c, j])
+        soil_dz = soil_dz.at[p].set(z[c, j] - zi[c, int(snl[c])])
+        soil_tk = soil_tk.at[p].set(thk[c, j])
 
     # ------------------------------------------------------------------
     # Solar zenith angle — Fortran lines 92-110
@@ -896,10 +907,10 @@ def _GetCLMVar(
         lon = float(grc.londeg[g]) * pi / 180.0
 
         # Cosine of solar zenith angle — Fortran line 109
-        coszen = float(shr_orb_cosz(caldaym1, lat, lon, declinm1))
+        coszen = shr_orb_cosz(caldaym1, lat, lon, declinm1)
 
         # Zenith angle: floor coszen at 0.01 to avoid acos(≤0) — Fortran line 110
-        solar_zen_val = math.acos(max(0.01, coszen))
+        solar_zen_val = jnp.arccos(jnp.maximum(jnp.asarray(0.01), jnp.asarray(coszen)))
         solar_zen = solar_zen.at[p].set(solar_zen_val)
 
     # ------------------------------------------------------------------

@@ -49,9 +49,9 @@ from multilayer_canopy.MLclm_varctl import (                         # noqa: F40
     gs_type, acclim_type, gspot_type, colim_type, gs_solver,
 )
 from multilayer_canopy.MLpftconMod import MLpftcon                   # noqa: F401
-from multilayer_canopy.MLMathToolsMod import (hybrid, quadratic, zbrent, bisection,  # noqa: F401
+from multilayer_canopy.MLMathToolsMod import (hybrid, quadratic, quadratic_py, zbrent, bisection,  # noqa: F401
                                               hybrid_scalar, zbrent_scalar, bisection_scalar)
-from multilayer_canopy.MLWaterVaporMod import SatVap                 # noqa: F401
+from multilayer_canopy.MLWaterVaporMod import SatVap, SatVap_py      # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type       # noqa: F401
 
 
@@ -76,7 +76,7 @@ def _ft(tl: float, ha: float) -> float:
     Returns:
         Dimensionless temperature response factor.
     """
-    return math.exp(ha / (rgas * (tfrz + 25.0)) * (1.0 - (tfrz + 25.0) / tl))
+    return jnp.exp(ha / (rgas * (tfrz + 25.0)) * (1.0 - (tfrz + 25.0) / tl))
 
 
 def _fth(tl: float, hd: float, se: float, c: float) -> float:
@@ -98,7 +98,7 @@ def _fth(tl: float, hd: float, se: float, c: float) -> float:
     Returns:
         Dimensionless deactivation factor.
     """
-    return c / (1.0 + math.exp((-hd + se * tl) / (rgas * tl)))
+    return c / (1.0 + jnp.exp((-hd + se * tl) / (rgas * tl)))
 
 
 def _fth25(hd: float, se: float) -> float:
@@ -119,7 +119,52 @@ def _fth25(hd: float, se: float) -> float:
         Dimensionless scaling factor ``c`` for :func:`_fth`.
     """
     t25 = tfrz + 25.0
+    return 1.0 + jnp.exp((-hd + se * t25) / (rgas * t25))
+
+
+# ---------------------------------------------------------------------------
+# Private: pure-Python scalar versions of temperature response functions
+# ---------------------------------------------------------------------------
+
+def _ft_py(tl: float, ha: float) -> float:
+    """Pure-Python (math.exp) version of :func:`_ft` for per-layer loops."""
+    return math.exp(ha / (rgas * (tfrz + 25.0)) * (1.0 - (tfrz + 25.0) / tl))
+
+
+def _fth_py(tl: float, hd: float, se: float, c: float) -> float:
+    """Pure-Python (math.exp) version of :func:`_fth` for per-layer loops."""
+    return c / (1.0 + math.exp((-hd + se * tl) / (rgas * tl)))
+
+
+def _fth25_py(hd: float, se: float) -> float:
+    """Pure-Python (math.exp) version of :func:`_fth25` for per-layer loops."""
+    t25 = tfrz + 25.0
     return 1.0 + math.exp((-hd + se * t25) / (rgas * t25))
+
+
+def _RealizedRate_py(c3psn_val: float, ac: float, aj: float, ap: float) -> float:
+    """Pure-Python version of :func:`_RealizedRate` — no JAX ops."""
+    is_c3 = round(c3psn_val) == 1
+    if colim_type == 0:
+        if is_c3:
+            return min(ac, aj)
+        else:
+            return min(min(ac, aj), ap)
+    elif colim_type == 1:
+        aq = colim_c3a if is_c3 else colim_c4a
+        bq = -(ac + aj)
+        cq = ac * aj
+        r1, r2 = quadratic_py(aq, bq, cq)
+        ai = min(r1, r2)
+        if is_c3:
+            return ai
+        else:
+            bq2 = -(ai + ap)
+            cq2 = ai * ap
+            r1b, r2b = quadratic_py(colim_c4b, bq2, cq2)
+            return min(r1b, r2b)
+    else:
+        return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -151,32 +196,30 @@ def _RealizedRate(
     Returns:
         ``agross``: Gross photosynthesis (umol CO2/m2/s).
     """
-    is_c3 = round(c3psn_val) == 1                  # Fortran: nint(c3psn) == 1
+    is_c3 = jnp.round(jnp.asarray(c3psn_val)) == 1   # Fortran: nint(c3psn) == 1
 
-    if colim_type == 0:                            # Fortran lines 465-474
-        if is_c3:
-            return min(ac, aj)
-        else:
-            return min(ac, aj, ap)
+    if colim_type == 0:                            # Fortran lines 465-474 (static Python branch)
+        c3_val = jnp.minimum(ac, aj)
+        c4_val = jnp.minimum(jnp.minimum(ac, aj), ap)
+        return jnp.where(is_c3, c3_val, c4_val)
 
-    elif colim_type == 1:                          # Fortran lines 476-496
-        aquad = colim_c3a if is_c3 else colim_c4a
+    elif colim_type == 1:                          # Fortran lines 476-496 (static Python branch)
+        aquad = jnp.where(is_c3, colim_c3a, colim_c4a)
         bquad = -(ac + aj)
         cquad = ac * aj
         r1, r2 = quadratic(aquad, bquad, cquad)
-        ai = min(r1, r2)
-        if is_c3:
-            return ai
-        else:
-            aquad = colim_c4b
-            bquad = -(ai + ap)
-            cquad = ai * ap
-            r1, r2 = quadratic(aquad, bquad, cquad)
-            return min(r1, r2)
+        ai = jnp.minimum(r1, r2)
+        # C4 second co-limitation
+        aquad2 = colim_c4b
+        bquad2 = -(ai + ap)
+        cquad2 = ai * ap
+        r1b, r2b = quadratic(aquad2, bquad2, cquad2)
+        ai_c4 = jnp.minimum(r1b, r2b)
+        return jnp.where(is_c3, ai, ai_c4)
 
     else:
         endrun(msg=' ERROR: RealizedRate: colim_type not valid')
-        return 0.0    # Unreachable
+        return jnp.zeros(())    # Unreachable
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +262,10 @@ def _CiFuncGs(
     """
     c3psn  = pftcon.c3psn
     pft    = int(patch.itype[p])
-    is_c3  = round(float(c3psn[pft])) == 1
+    is_c3  = jnp.round(c3psn[pft]) == 1
 
-    dpai_ic = float(mlcanopy_inst.dpai_profile[p, ic])
+    dpai_ic  = mlcanopy_inst.dpai_profile[p, ic]
+    active   = dpai_ic > 0.0
     ac  = mlcanopy_inst.ac_leaf
     aj  = mlcanopy_inst.aj_leaf
     ap  = mlcanopy_inst.ap_leaf
@@ -229,70 +273,72 @@ def _CiFuncGs(
     anet   = mlcanopy_inst.anet_leaf
     cs     = mlcanopy_inst.cs_leaf
 
-    if dpai_ic > 0.0:                              # Fortran lines 378-418
-        gbc_ic = float(mlcanopy_inst.gbc_leaf[p, ic, il])
-        gs_ic  = float(mlcanopy_inst.gs_leaf[p, ic, il])
-        cair_ic = float(mlcanopy_inst.cair_profile[p, ic])
-        vcmax_ic = float(mlcanopy_inst.vcmax_leaf[p, ic, il])
-        je_ic    = float(mlcanopy_inst.je_leaf[p, ic, il])
-        kp_ic    = float(mlcanopy_inst.kp_leaf[p, ic, il])
-        rd_ic    = float(mlcanopy_inst.rd_leaf[p, ic, il])
-        kc_ic    = float(mlcanopy_inst.kc_leaf[p, ic, il])
-        ko_ic    = float(mlcanopy_inst.ko_leaf[p, ic, il])
-        cp_ic    = float(mlcanopy_inst.cp_leaf[p, ic, il])
-        o2ref_p  = float(mlcanopy_inst.o2ref_forcing[p])
-        apar_ic  = float(mlcanopy_inst.apar_leaf[p, ic, il])
+    # Unpack all inputs as JAX scalars — always computed (masked below)
+    gbc_ic   = mlcanopy_inst.gbc_leaf[p, ic, il]
+    gs_ic    = mlcanopy_inst.gs_leaf[p, ic, il]
+    cair_ic  = mlcanopy_inst.cair_profile[p, ic]
+    vcmax_ic = mlcanopy_inst.vcmax_leaf[p, ic, il]
+    je_ic    = mlcanopy_inst.je_leaf[p, ic, il]
+    kp_ic    = mlcanopy_inst.kp_leaf[p, ic, il]
+    rd_ic    = mlcanopy_inst.rd_leaf[p, ic, il]
+    kc_ic    = mlcanopy_inst.kc_leaf[p, ic, il]
+    ko_ic    = mlcanopy_inst.ko_leaf[p, ic, il]
+    cp_ic    = mlcanopy_inst.cp_leaf[p, ic, il]
+    o2ref_p  = mlcanopy_inst.o2ref_forcing[p]
+    apar_ic  = mlcanopy_inst.apar_leaf[p, ic, il]
 
-        gleaf = 1.0 / (1.0 / gbc_ic + dh2o_to_dco2 / gs_ic)
+    gs_safe  = jnp.where(active, gs_ic,  1.0)
+    gbc_safe = jnp.where(active, gbc_ic, 1.0)
+    gleaf = 1.0 / (1.0 / gbc_safe + dh2o_to_dco2 / gs_safe)
 
-        if is_c3:
-            # C3 Rubisco-limited — Fortran lines 386-392
-            a0 = vcmax_ic
-            b0 = kc_ic * (1.0 + o2ref_p / ko_ic)
-            aq = 1.0 / gleaf
-            bq = -(cair_ic + b0) - (a0 - rd_ic) / gleaf
-            cq = a0 * (cair_ic - cp_ic) - rd_ic * (cair_ic + b0)
-            r1, r2 = quadratic(aq, bq, cq)
-            ac_val = min(r1, r2) + rd_ic
+    # C3 Rubisco-limited — Fortran lines 386-392
+    a0_c  = vcmax_ic
+    b0_c  = kc_ic * (1.0 + o2ref_p / ko_ic)
+    aq_c  = 1.0 / gleaf
+    bq_c  = -(cair_ic + b0_c) - (a0_c - rd_ic) / gleaf
+    cq_c  = a0_c * (cair_ic - cp_ic) - rd_ic * (cair_ic + b0_c)
+    r1, r2 = quadratic(aq_c, bq_c, cq_c)
+    ac_c3  = jnp.minimum(r1, r2) + rd_ic
 
-            # C3 RuBP-regeneration-limited — Fortran lines 394-400
-            a0 = je_ic / 4.0
-            b0 = 2.0 * cp_ic
-            aq = 1.0 / gleaf
-            bq = -(cair_ic + b0) - (a0 - rd_ic) / gleaf
-            cq = a0 * (cair_ic - cp_ic) - rd_ic * (cair_ic + b0)
-            r1, r2 = quadratic(aq, bq, cq)
-            aj_val = min(r1, r2) + rd_ic
+    # C3 RuBP-regeneration-limited — Fortran lines 394-400
+    a0_j  = je_ic / 4.0
+    b0_j  = 2.0 * cp_ic
+    aq_j  = 1.0 / gleaf
+    bq_j  = -(cair_ic + b0_j) - (a0_j - rd_ic) / gleaf
+    cq_j  = a0_j * (cair_ic - cp_ic) - rd_ic * (cair_ic + b0_j)
+    r1j, r2j = quadratic(aq_j, bq_j, cq_j)
+    aj_c3  = jnp.minimum(r1j, r2j) + rd_ic
 
-            ap_val = 0.0                           # Fortran line 402
+    # C4 — Fortran lines 404-409
+    ac_c4  = vcmax_ic
+    aj_c4  = qe_c4 * apar_ic
+    ap_c4  = kp_ic * (cair_ic * gleaf + rd_ic) / (gleaf + kp_ic)
 
-        else:
-            # C4 — Fortran lines 404-409
-            ac_val = vcmax_ic
-            aj_val = qe_c4 * apar_ic
-            ap_val = kp_ic * (cair_ic * gleaf + rd_ic) / (gleaf + kp_ic)
+    ac_val = jnp.where(is_c3, ac_c3, ac_c4)
+    aj_val = jnp.where(is_c3, aj_c3, aj_c4)
+    ap_val = jnp.where(is_c3, 0.0,   ap_c4)
 
-        agross_val = _RealizedRate(float(c3psn[pft]), ac_val, aj_val, ap_val)
-        anet_val   = agross_val - rd_ic
+    agross_val = _RealizedRate(c3psn[pft], ac_val, aj_val, ap_val)
+    anet_val   = agross_val - rd_ic
 
-        cs_val = max(cair_ic - anet_val / gbc_ic, 1.0)
-        ci_val = cair_ic - anet_val / gleaf
+    cs_val = jnp.maximum(cair_ic - anet_val / gbc_safe, 1.0)
+    ci_val = cair_ic - anet_val / gleaf
 
-        ac     = ac.at[p, ic, il].set(ac_val)
-        aj     = aj.at[p, ic, il].set(aj_val)
-        ap     = ap.at[p, ic, il].set(ap_val)
-        agross = agross.at[p, ic, il].set(agross_val)
-        anet   = anet.at[p, ic, il].set(anet_val)
-        cs     = cs.at[p, ic, il].set(cs_val)
+    # Mask results for empty layers — Fortran lines 420-427
+    ac_val     = jnp.where(active, ac_val,     0.0)
+    aj_val     = jnp.where(active, aj_val,     0.0)
+    ap_val     = jnp.where(active, ap_val,     0.0)
+    agross_val = jnp.where(active, agross_val, 0.0)
+    anet_val   = jnp.where(active, anet_val,   0.0)
+    cs_val     = jnp.where(active, cs_val,     0.0)
+    ci_val     = jnp.where(active, ci_val,     0.0)
 
-    else:                                          # Fortran lines 420-427
-        ac     = ac.at[p, ic, il].set(0.0)
-        aj     = aj.at[p, ic, il].set(0.0)
-        ap     = ap.at[p, ic, il].set(0.0)
-        agross = agross.at[p, ic, il].set(0.0)
-        anet   = anet.at[p, ic, il].set(0.0)
-        cs     = cs.at[p, ic, il].set(0.0)
-        ci_val = 0.0
+    ac     = ac.at[p, ic, il].set(ac_val)
+    aj     = aj.at[p, ic, il].set(aj_val)
+    ap     = ap.at[p, ic, il].set(ap_val)
+    agross = agross.at[p, ic, il].set(agross_val)
+    anet   = anet.at[p, ic, il].set(anet_val)
+    cs     = cs.at[p, ic, il].set(cs_val)
 
     mlcanopy_inst = mlcanopy_inst._replace(
         ac_leaf     = ac,
@@ -343,7 +389,7 @@ def _CiFuncGsPure(
             aq = 1.0 / gleaf
             bq = -(cair_ic + b0) - (a0 - rd_ic) / gleaf
             cq = a0 * (cair_ic - cp_ic) - rd_ic * (cair_ic + b0)
-            r1, r2 = quadratic(aq, bq, cq)
+            r1, r2 = quadratic_py(aq, bq, cq)
             ac_val = min(r1, r2) + rd_ic
 
             a0 = je_ic / 4.0
@@ -351,7 +397,7 @@ def _CiFuncGsPure(
             aq = 1.0 / gleaf
             bq = -(cair_ic + b0) - (a0 - rd_ic) / gleaf
             cq = a0 * (cair_ic - cp_ic) - rd_ic * (cair_ic + b0)
-            r1, r2 = quadratic(aq, bq, cq)
+            r1, r2 = quadratic_py(aq, bq, cq)
             aj_val = min(r1, r2) + rd_ic
 
             ap_val = 0.0
@@ -360,7 +406,7 @@ def _CiFuncGsPure(
             aj_val = qe_c4 * apar_ic
             ap_val = kp_ic * (cair_ic * gleaf + rd_ic) / (gleaf + kp_ic)
 
-        agross_val = _RealizedRate(c3psn_pft_val, ac_val, aj_val, ap_val)
+        agross_val = _RealizedRate_py(c3psn_pft_val, ac_val, aj_val, ap_val)
         anet_val   = agross_val - rd_ic
         cs_val     = max(cair_ic - anet_val / gbc_ic, 1.0)
         ci_val     = cair_ic - anet_val / gleaf
@@ -576,7 +622,7 @@ def _CiFuncPure(
         aj_val = qe_c4 * apar_ic
         ap_val = kp_ic * max(ci_val, 0.0)
 
-    agross_val = _RealizedRate(c3psn_pft_val, ac_val, aj_val, ap_val)
+    agross_val = _RealizedRate_py(c3psn_pft_val, ac_val, aj_val, ap_val)
     ac_val     = max(ac_val, 0.0)
     aj_val     = max(aj_val, 0.0)
     ap_val     = max(ap_val, 0.0)
@@ -591,7 +637,7 @@ def _CiFuncPure(
             aq    = 1.0
             bq    = gbv_ic - g0_p - g1_p * term
             cq    = -gbv_ic * (g0_p + g1_p * term * ceair_ic / lesat_ic)
-            r1, r2 = quadratic(aq, bq, cq)
+            r1, r2 = quadratic_py(aq, bq, cq)
             gs_val = max(r1, r2)
         else:
             gs_val = g0_p
@@ -605,7 +651,7 @@ def _CiFuncPure(
             cq       = (g0_p * g0_p
                         + (2.0 * g0_p
                            + term * (1.0 - g1_p * g1_p / vpd_term)) * term)
-            r1, r2   = quadratic(aq, bq, cq)
+            r1, r2   = quadratic_py(aq, bq, cq)
             gs_val   = max(r1, r2)
         else:
             gs_val = g0_p
@@ -973,9 +1019,9 @@ def LeafPhotosynthesis(
             vcmaxha = vcmaxhd = vcmaxse = jmaxha = jmaxhd = jmaxse = 0.0
 
         # High-temperature scaling factors — Fortran lines 155-157
-        vcmaxc = _fth25(vcmaxhd, vcmaxse)
-        jmaxc  = _fth25(jmaxhd, jmaxse)
-        rdc    = _fth25(rdhd, rdse)
+        vcmaxc = _fth25_py(vcmaxhd, vcmaxse)
+        jmaxc  = _fth25_py(jmaxhd, jmaxse)
+        rdc    = _fth25_py(rdhd, rdse)
 
         # --- Stomatal model parameters — same for all ic ---
         if gs_type == 0:
@@ -1028,15 +1074,15 @@ def LeafPhotosynthesis(
                 _tl = float(_tleaf_p[ic])
 
                 # --- C3 temperature response — Fortran lines 161-166 ---
-                kc_val    = kc25    * _ft(_tl, kcha)
-                ko_val    = ko25    * _ft(_tl, koha)
-                cp_val    = cp25    * _ft(_tl, cpha)
+                kc_val    = kc25    * _ft_py(_tl, kcha)
+                ko_val    = ko25    * _ft_py(_tl, koha)
+                cp_val    = cp25    * _ft_py(_tl, cpha)
                 vcmax_val = (float(_vcmax25_p[ic])
-                             * _ft(_tl, vcmaxha) * _fth(_tl, vcmaxhd, vcmaxse, vcmaxc))
+                             * _ft_py(_tl, vcmaxha) * _fth_py(_tl, vcmaxhd, vcmaxse, vcmaxc))
                 jmax_val  = (float(_jmax25_p[ic])
-                             * _ft(_tl, jmaxha)  * _fth(_tl, jmaxhd,  jmaxse,  jmaxc))
+                             * _ft_py(_tl, jmaxha)  * _fth_py(_tl, jmaxhd,  jmaxse,  jmaxc))
                 rd_val    = (float(_rd25_p[ic])
-                             * _ft(_tl, rdha) * _fth(_tl, rdhd, rdse, rdc))
+                             * _ft_py(_tl, rdha) * _fth_py(_tl, rdhd, rdse, rdc))
                 kp_val    = 0.0
 
                 # --- C4 temperature response override — Fortran lines 168-175 ---
@@ -1053,7 +1099,7 @@ def LeafPhotosynthesis(
                 vcmax_val *= 1.0   # btran = 1.0
 
                 # --- Saturation vapour pressure — Fortran lines 190-198 ---
-                lesat_val, _desat = SatVap(_tl)
+                lesat_val, _desat = SatVap_py(_tl)
                 _eair_ic  = float(_eair_p[ic])
                 ceair_val = min(_eair_ic, lesat_val)
                 if gs_type == 1:
@@ -1064,7 +1110,7 @@ def LeafPhotosynthesis(
                 qabs = 0.5 * phi_psII * _apar_ic
                 bq   = -(qabs + jmax_val)
                 cq   = qabs * jmax_val
-                r1, r2 = quadratic(theta_j, bq, cq)
+                r1, r2 = quadratic_py(theta_j, bq, cq)
                 je_val = min(r1, r2)
 
                 # Store temperature-response values
@@ -1109,7 +1155,7 @@ def LeafPhotosynthesis(
                         _ac = vcmax_val
                         _aj = qe_c4 * _apar_ic
                         _ap = kp_val * max(ci_root, 0.0)
-                    _agross = _RealizedRate(_c3psn_val, _ac, _aj, _ap)
+                    _agross = _RealizedRate_py(_c3psn_val, _ac, _aj, _ap)
                     _ac = max(_ac, 0.0); _aj = max(_aj, 0.0); _ap = max(_ap, 0.0)
                     _agross = max(_agross, 0.0)
                     _anet  = _agross - rd_val
@@ -1121,7 +1167,7 @@ def LeafPhotosynthesis(
                             _term = _anet / _cs
                             _bq2  = _gbv_ic - g0_val - g1_val * _term
                             _cq2  = -_gbv_ic * (g0_val + g1_val * _term * ceair_val / lesat_val)
-                            r1, r2 = quadratic(1.0, _bq2, _cq2)
+                            r1, r2 = quadratic_py(1.0, _bq2, _cq2)
                             _gs = max(r1, r2)
                         else:
                             _gs = g0_val
@@ -1134,7 +1180,7 @@ def LeafPhotosynthesis(
                             _cq2  = (g0_val * g0_val
                                      + (2.0 * g0_val
                                         + _term * (1.0 - g1_val * g1_val / _vpdt)) * _term)
-                            r1, r2 = quadratic(1.0, _bq2, _cq2)
+                            r1, r2 = quadratic_py(1.0, _bq2, _cq2)
                             _gs = max(r1, r2)
                         else:
                             _gs = g0_val
@@ -1212,7 +1258,7 @@ def LeafPhotosynthesis(
                 elif gs_type == 0:
                     if (_lesat_chk - _ceair_chk) > vpd_min_MED:
                         gs_err = (g0_val
-                                  + dh2o_to_dco2 * (1.0 + g1_val / math.sqrt(_vpd_chk))
+                                  + dh2o_to_dco2 * (1.0 + g1_val / math.sqrt(max(_vpd_chk, 1e-30)))
                                   * max(_anet_chk, 0.0) / _cs_chk)
                         if abs(_gs_chk - gs_err) > 1.0e-6:
                             endrun(msg=' ERROR: LeafPhotosynthesis: failed Medlyn error check')

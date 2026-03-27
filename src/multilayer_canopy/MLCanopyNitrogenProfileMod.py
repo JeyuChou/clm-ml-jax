@@ -19,9 +19,10 @@ Differentiability notes
 
 from __future__ import annotations
 
-import math
+from functools import partial
 from typing import Sequence
 
+import jax
 import jax.numpy as jnp
 
 from clm_src_main.abortutils import endrun                           # noqa: F401
@@ -38,6 +39,7 @@ from multilayer_canopy.MLpftconMod import MLpftcon                       # noqa:
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type           # noqa: F401
 
 
+@partial(jax.jit, static_argnums=(0, 1))
 def CanopyNitrogenProfile(
     num_filter: int,
     filter_patch: Sequence[int],
@@ -197,12 +199,16 @@ def CanopyNitrogenProfile(
         tbi_v    = _tbi[ics]
         fs_v     = _fracsun[ics]
 
-        # pai_above[j] = cumulative dpai of layers above layer ics[j]
-        # = sum(dpai_v[0:j])  →  shifted cumsum — Fortran line 148
-        pai_above_v = jnp.concatenate([jnp.zeros(1), jnp.cumsum(dpai_v[:-1])])
-
         has_pai   = active & (dpai_v > 0.0)
         dpai_safe = jnp.where(has_pai, dpai_v, 1.0)    # avoid /0
+
+        # pai_above[j] = cumulative dpai of layers above layer ics[j]
+        # = sum(dpai_v[0:j])  →  shifted cumsum — Fortran line 148
+        # Mask inactive layers to 0 BEFORE cumsum: inactive slots have
+        # dpai = spval (1e36), which would poison exp(-kn*pai_above) → 0
+        # for all active layers downstream.
+        dpai_cumsum = jnp.where(active, dpai_v, 0.0)
+        pai_above_v = jnp.concatenate([jnp.zeros(1), jnp.cumsum(dpai_cumsum[:-1])])
 
         # Integrated nitrogen factor — Fortran line 130
         exp_kn_above = jnp.exp(-kn * pai_above_v)
@@ -241,10 +247,15 @@ def CanopyNitrogenProfile(
         kp25_sha_v    = jnp.where(has_pai, kp25top    * nscale_sha, 0.0)
 
         # Layer weighted mean — Fortran lines 150-154
-        vcmax25_profile_v = vcmax25_sun_v * fs_v + vcmax25_sha_v * (1.0 - fs_v)
-        jmax25_profile_v  = jmax25_sun_v  * fs_v + jmax25_sha_v  * (1.0 - fs_v)
-        rd25_profile_v    = rd25_sun_v    * fs_v + rd25_sha_v    * (1.0 - fs_v)
-        kp25_profile_v    = kp25_sun_v    * fs_v + kp25_sha_v    * (1.0 - fs_v)
+        # Direct form vcmax25top * fn / dpai is algebraically equivalent to
+        # vcmax25_sun * fracsun + vcmax25_sha * (1-fracsun) but avoids
+        # precision loss when fracsun == 0 or fracsun == 1 exactly, which
+        # would cause the safe-denominator substitutions to drop a term and
+        # break the conservation check below.
+        vcmax25_profile_v = jnp.where(has_pai, vcmax25top * fn / dpai_safe, 0.0)
+        jmax25_profile_v  = jnp.where(has_pai, jmax25top  * fn / dpai_safe, 0.0)
+        rd25_profile_v    = jnp.where(has_pai, rd25top    * fn / dpai_safe, 0.0)
+        kp25_profile_v    = jnp.where(has_pai, kp25top    * fn / dpai_safe, 0.0)
 
         # Reorder from top→bottom (ics order) back to ic=1..nlevmlcan order
         # ics = [nlevmlcan, ..., 1] reversed → [ic=1, ..., ic=nlevmlcan]
@@ -275,11 +286,14 @@ def CanopyNitrogenProfile(
         rd25_profile    = rd25_profile.at[p, 1:].set(rd25_prof_ord)
         kp25_profile    = kp25_profile.at[p, 1:].set(kp25_prof_ord)
 
-        # Conservation check — Fortran lines 156-160
+        # Conservation check — JIT-compatible via debug.callback
         numerical  = jnp.sum(vcmax25_prof_ord * _dpai[1:])
         analytical = vcmax25top * (1.0 - jnp.exp(-kn * (lai_p + sai_p))) / kn
-        if jnp.abs(numerical - analytical) > 1.0e-6:
-            endrun(msg='ERROR: CanopyNitrogenProfile: canopy integration error')
+        jax.debug.callback(
+            lambda n, a: endrun(msg='ERROR: CanopyNitrogenProfile: canopy integration error')
+            if abs(float(n) - float(a)) > 1.0e-6 else None,
+            numerical, analytical,
+        )
 
     return mlcanopy_inst._replace(
         vcmax25_leaf    = vcmax25_leaf,

@@ -16,6 +16,7 @@ when running under ``jax.jit``; use ``jax.debug.callback`` for
 JIT-compatible checking if needed).
 """
 
+import jax
 import jax.numpy as jnp
 
 from multilayer_canopy.MLWaterVaporMod import SatVap, LatVap    # noqa: F401
@@ -147,8 +148,12 @@ def SoilFluxes(
     # ``if`` on the JAX scalar is skipped under jax.jit.
     # ------------------------------------------------------------------
     err = rnsoi_p - shsoi_p - lhsoi_p - gsoi_p
-    if jnp.abs(err) > 0.001:
-        endrun(msg=' ERROR: SoilFluxes: energy balance error')
+    # JIT-compatible diagnostic: callback runs host-side with concrete value
+    jax.debug.callback(
+        lambda e: endrun(msg=' ERROR: SoilFluxes: energy balance error')
+        if abs(float(e)) > 0.001 else None,
+        err,
+    )
 
     # ------------------------------------------------------------------
     # Water vapour flux: W/m2 → mol H2O/m2/s — Fortran line 92

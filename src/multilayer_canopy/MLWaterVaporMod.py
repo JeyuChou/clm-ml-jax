@@ -125,6 +125,35 @@ def SatVap(t):
     return es, desdt
 
 
+def SatVap_py(t: float):
+    """Pure-Python version of :func:`SatVap` for plain float inputs.
+
+    Uses the same 8th-order polynomial fits but with Python arithmetic
+    and ``if/else`` branching.  No JAX dispatch overhead — safe for use
+    inside per-layer Python loops.
+
+    Returns ``(es, desdt)`` as plain Python floats (Pa and Pa/K).
+    """
+    tc = t - tfrz
+    if tc < -75.0:
+        tc = -75.0
+    elif tc > 100.0:
+        tc = 100.0
+
+    if tc >= 0.0:
+        es    = _a0 + tc*(_a1 + tc*(_a2 + tc*(_a3 + tc*(_a4
+                  + tc*(_a5 + tc*(_a6 + tc*(_a7 + tc*_a8)))))))
+        desdt = _b0 + tc*(_b1 + tc*(_b2 + tc*(_b3 + tc*(_b4
+                  + tc*(_b5 + tc*(_b6 + tc*(_b7 + tc*_b8)))))))
+    else:
+        es    = _c0 + tc*(_c1 + tc*(_c2 + tc*(_c3 + tc*(_c4
+                  + tc*(_c5 + tc*(_c6 + tc*(_c7 + tc*_c8)))))))
+        desdt = _d0 + tc*(_d1 + tc*(_d2 + tc*(_d3 + tc*(_d4
+                  + tc*(_d5 + tc*(_d6 + tc*(_d7 + tc*_d8)))))))
+
+    return es * 100.0, desdt * 100.0
+
+
 # ---------------------------------------------------------------------------
 # Public: molar latent heat of vaporization
 # ---------------------------------------------------------------------------

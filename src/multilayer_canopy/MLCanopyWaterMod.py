@@ -26,8 +26,10 @@ Differentiability notes
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Sequence
 
+import jax
 import jax.numpy as jnp
 
 from multilayer_canopy.MLclm_varcon import (                              # noqa: F401
@@ -46,6 +48,7 @@ from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type           # noqa:
 # Public: wetted fraction of canopy
 # ---------------------------------------------------------------------------
 
+@partial(jax.jit, static_argnums=(0, 1))
 def CanopyWettedFraction(
     num_filter: int,
     filter_patch: Sequence[int],
@@ -116,6 +119,7 @@ def CanopyWettedFraction(
 # Public: interception and throughfall
 # ---------------------------------------------------------------------------
 
+@partial(jax.jit, static_argnums=(0, 1))
 def CanopyInterception(
     num_filter: int,
     filter_patch: Sequence[int],
@@ -242,6 +246,7 @@ def CanopyInterception(
 # Public: update intercepted water for evaporation and dew
 # ---------------------------------------------------------------------------
 
+@partial(jax.jit, static_argnums=(0, 1))
 def CanopyEvaporation(
     num_filter: int,
     filter_patch: Sequence[int],

@@ -117,3 +117,6 @@ Thumbs.db
 
 #plots
 comparison_plots/
+
+#claude files
+CLAUDE.md

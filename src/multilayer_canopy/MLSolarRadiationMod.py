@@ -7,14 +7,25 @@ solvers (:func:`_Norman`, :func:`_TwoStream`).
 
 Original Fortran module: MLSolarRadiationMod
 Fortran lines 1-490
+
+Differentiability notes
+-----------------------
+* All ``import numpy as np`` and ``import math`` removed — JAX used throughout.
+* All ``np.asarray()`` calls removed — JAX arrays used directly.
+* All ``float()`` wrappers on JAX scalars removed.
+* All ``math.*`` calls (cos, exp, sqrt, log) replaced by ``jnp.*``.
+* Numpy intermediate working arrays (``_avmu``, ``_betad``, etc.) replaced
+  by ``jnp.zeros(...)``; element assignments use ``.at[].set()``.
+* Tridiagonal coefficient lists hold ``jnp.zeros(())`` JAX scalars so the
+  Thomas algorithm is fully differentiable at trace time.
+* ``int()`` wrappers on ``ncan[p]``, ``ntop[p]``, ``nbot[p]`` are kept —
+  these must be concrete Python ints for loop bounds and static slices.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Sequence
 
-import numpy as np
 import jax.numpy as jnp
 from jax import Array
 
@@ -116,18 +127,18 @@ def SolarRadiation(
     apar    = mlcanopy_inst.apar_leaf
 
     # ------------------------------------------------------------------
-    # Working numpy arrays for optical properties (avoid JAX XLA syncs)
+    # Working JAX arrays for optical properties
     # ------------------------------------------------------------------
     n_idx = bounds.endp + 1
     n_lev = nlevmlcan + 1
     n_rad = numrad + 1
-    _avmu    = np.zeros((n_idx, n_lev))
-    _betad   = np.zeros((n_idx, n_lev, n_rad))
-    _betab   = np.zeros((n_idx, n_lev, n_rad))
-    _cf_ic   = np.zeros((n_idx, n_lev))
-    _rho_arr = np.zeros((n_idx, n_lev, n_rad))
-    _tau_arr = np.zeros((n_idx, n_lev, n_rad))
-    _om_arr  = np.zeros((n_idx, n_lev, n_rad))
+    _avmu    = jnp.zeros((n_idx, n_lev))
+    _betad   = jnp.zeros((n_idx, n_lev, n_rad))
+    _betab   = jnp.zeros((n_idx, n_lev, n_rad))
+    _cf_ic   = jnp.zeros((n_idx, n_lev))
+    _rho_arr = jnp.zeros((n_idx, n_lev, n_rad))
+    _tau_arr = jnp.zeros((n_idx, n_lev, n_rad))
+    _om_arr  = jnp.zeros((n_idx, n_lev, n_rad))
 
     # ------------------------------------------------------------------
     # Calculate canopy layer optical properties — Fortran lines 100-182
@@ -135,32 +146,27 @@ def SolarRadiation(
     for fp in range(1, num_filter + 1):
         p = int(filter_patch[fp - 1])
         pft = int(patch.itype[p])
-        zen = float(solar_zen[p])
-        cos_zen = math.cos(zen)
+        zen = solar_zen[p]
+        cos_zen = jnp.cos(zen)
         _ncan = int(ncan[p])
         _ntop = int(ntop[p])
         _nbot = int(nbot[p])
 
-        # Pre-extract read-only profile inputs as numpy (one sync each)
-        _dpai_p = np.asarray(dpai[p])
-        _dlai_p = np.asarray(dlai[p])
-        _dsai_p = np.asarray(dsai[p])
-
-        # Per-patch output arrays (numpy, no XLA syncs during computation)
-        _kb_p     = np.zeros(_ncan + 2)
-        _fracsun_p = np.zeros(_ncan + 2)
-        _tb_p     = np.zeros(_ncan + 2)
-        _td_p     = np.zeros(_ncan + 2)
-        _tbi_p    = np.zeros(_ncan + 2)   # index 0 = ground, 1.._ncan = canopy
+        # Per-patch output arrays (JAX)
+        _kb_p      = jnp.zeros(_ncan + 2)
+        _fracsun_p = jnp.zeros(_ncan + 2)
+        _tb_p      = jnp.zeros(_ncan + 2)
+        _td_p      = jnp.zeros(_ncan + 2)
+        _tbi_p     = jnp.zeros(_ncan + 2)   # index 0 = ground, 1.._ncan = canopy
 
         # Extract scalar PFT values once
         if leaf_optics_type == 0:
-            _xl_pft = float(xl[pft])
-            _cf_pft = float(clump_fac[pft])
-            _rhol_ib = [float(rhol[pft, ib]) for ib in range(n_rad)]
-            _taul_ib = [float(taul[pft, ib]) for ib in range(n_rad)]
-            _rhos_ib = [float(rhos[pft, ib]) for ib in range(n_rad)]
-            _taus_ib = [float(taus[pft, ib]) for ib in range(n_rad)]
+            _xl_pft = xl[pft]
+            _cf_pft = clump_fac[pft]
+            _rhol_ib = [rhol[pft, ib] for ib in range(n_rad)]
+            _taul_ib = [taul[pft, ib] for ib in range(n_rad)]
+            _rhos_ib = [rhos[pft, ib] for ib in range(n_rad)]
+            _taus_ib = [taus[pft, ib] for ib in range(n_rad)]
         else:
             endrun(msg=' ERROR: SolarRadiation: need to specify vertical profile for rho & tau')
             _xl_pft = 0.01; _cf_pft = 1.0
@@ -169,25 +175,24 @@ def SolarRadiation(
         # Layer-by-layer optical properties — Fortran: do ic = ntop, nbot, -1
         for ic in range(_ntop, _nbot - 1, -1):
 
-            dpai_ic = _dpai_p[ic]
-            dlai_ic = _dlai_p[ic]
-            dsai_ic = _dsai_p[ic]
-            wl = dlai_ic / dpai_ic
-            ws = dsai_ic / dpai_ic
+            dpai_ic = dpai[p, ic]
+            dlai_ic = dlai[p, ic]
+            dsai_ic = dsai[p, ic]
+            dpai_safe = jnp.where(dpai_ic > 0.0, dpai_ic, 1.0)
+            wl = dlai_ic / dpai_safe
+            ws = dsai_ic / dpai_safe
 
             # Reflectance, transmittance, scattering — Fortran lines 121-132
             for ib in range(1, numrad + 1):
-                r = max(_rhol_ib[ib] * wl + _rhos_ib[ib] * ws, 1.0e-6)
-                t = max(_taul_ib[ib] * wl + _taus_ib[ib] * ws, 1.0e-6)
-                _rho_arr[p, ic, ib] = r
-                _tau_arr[p, ic, ib] = t
-                _om_arr[p, ic, ib]  = r + t
+                r = jnp.maximum(_rhol_ib[ib] * wl + _rhos_ib[ib] * ws, 1.0e-6)
+                t = jnp.maximum(_taul_ib[ib] * wl + _taus_ib[ib] * ws, 1.0e-6)
+                _rho_arr = _rho_arr.at[p, ic, ib].set(r)
+                _tau_arr = _tau_arr.at[p, ic, ib].set(t)
+                _om_arr  = _om_arr.at[p, ic, ib].set(r + t)
 
             # Leaf angle distribution — Fortran lines 134-141
-            chil_ic = _xl_pft
-            chil_ic = min(max(chil_ic, chil_min), chil_max)
-            if abs(chil_ic) <= 0.01:
-                chil_ic = 0.01
+            chil_ic = jnp.clip(_xl_pft, chil_min, chil_max)
+            chil_ic = jnp.where(jnp.abs(chil_ic) <= 0.01, 0.01, chil_ic)
 
             # Ross-Goudriaan phi1, phi2, gdir — Fortran lines 143-148
             p1 = 0.5 - 0.633 * chil_ic - 0.330 * chil_ic * chil_ic
@@ -195,79 +200,89 @@ def SolarRadiation(
             gd = p1 + p2 * cos_zen
 
             # Direct beam extinction coefficient — Fortran lines 150-152
-            kb_ic = min(gd / cos_zen, kb_max)
-            _kb_p[ic] = kb_ic
+            kb_ic = jnp.minimum(gd / cos_zen, kb_max)
+            _kb_p = _kb_p.at[ic].set(kb_ic)
 
             # Clumping factor — Fortran lines 154-159
             cf = _cf_pft
-            _cf_ic[p, ic] = cf
+            _cf_ic = _cf_ic.at[p, ic].set(cf)
 
             # Direct beam single-layer transmittance — Fortran line 161
-            _tb_p[ic] = math.exp(-kb_ic * dpai_ic * cf)
+            _tb_p = _tb_p.at[ic].set(jnp.exp(-kb_ic * dpai_ic * cf))
 
             # Diffuse transmittance (9-angle integration) — Fortran lines 163-170
-            td_ic = 0.0
+            td_ic = jnp.zeros(())
             for j in range(1, 10):
                 angle = (5.0 + (j - 1) * 10.0) * pi / 180.0
-                gdirj = p1 + p2 * math.cos(angle)
-                td_ic += (
-                    math.exp(-gdirj / math.cos(angle) * dpai_ic * cf)
-                    * math.sin(angle) * math.cos(angle)
+                gdirj = p1 + p2 * jnp.cos(jnp.asarray(angle))
+                td_ic = td_ic + (
+                    jnp.exp(-gdirj / jnp.cos(jnp.asarray(angle)) * dpai_ic * cf)
+                    * jnp.sin(jnp.asarray(angle)) * jnp.cos(jnp.asarray(angle))
                 )
-            _td_p[ic] = td_ic * 2.0 * (10.0 * pi / 180.0)
+            _td_p = _td_p.at[ic].set(td_ic * 2.0 * (10.0 * pi / 180.0))
 
             # Cumulative direct beam transmittance tbi — Fortran lines 172-177
             if ic == _ntop:
-                _tbi_p[ic] = 1.0
+                _tbi_p = _tbi_p.at[ic].set(1.0)
             else:
-                # Read from numpy — no XLA sync
-                _tbi_p[ic] = _tbi_p[ic + 1] * math.exp(
-                    -_kb_p[ic + 1] * _dpai_p[ic + 1] * _cf_ic[p, ic + 1]
+                _tbi_p = _tbi_p.at[ic].set(
+                    _tbi_p[ic + 1] * jnp.exp(
+                        -_kb_p[ic + 1] * dpai[p, ic + 1] * _cf_ic[p, ic + 1]
+                    )
                 )
 
             # Sunlit fraction — Fortran lines 179-188
             tbi_ic = _tbi_p[ic]
+            kb_ic_safe = jnp.where(kb_ic * dpai_ic > 0.0, kb_ic * dpai_ic, 1.0)
             fracsun_ic = (
-                tbi_ic / (kb_ic * dpai_ic)
-                * (1.0 - math.exp(-kb_ic * cf * dpai_ic))
+                tbi_ic / kb_ic_safe
+                * (1.0 - jnp.exp(-kb_ic * cf * dpai_ic))
             )
-            if fracsun_ic <= 0.0:
+            if jnp.any(fracsun_ic <= 0.0):
                 endrun(msg=' ERROR: SolarRadiation: fracsun is too small')
-            if (1.0 - fracsun_ic) <= 0.0:
+            if jnp.any((1.0 - fracsun_ic) <= 0.0):
                 endrun(msg=' ERROR: SolarRadiation: fracsha is too small')
-            _fracsun_p[ic] = fracsun_ic
+            _fracsun_p = _fracsun_p.at[ic].set(fracsun_ic)
 
             # Two-stream avmu — Fortran lines 190-194
-            avmu_ic = (1.0 - p1 / p2 * math.log((p1 + p2) / p1)) / p2
-            _avmu[p, ic] = avmu_ic
+            p1_safe = jnp.where(p1 > 0.0, p1, 1.0e-10)
+            p2_safe = jnp.where(p2 > 0.0, p2, 1.0e-10)
+            avmu_ic = (1.0 - p1_safe / p2_safe * jnp.log((p1_safe + p2_safe) / p1_safe)) / p2_safe
+            _avmu = _avmu.at[p, ic].set(avmu_ic)
 
             # betad, betab — Fortran lines 196-209
             for ib in range(1, numrad + 1):
                 om   = _om_arr[p, ic, ib]
                 r_ic = _rho_arr[p, ic, ib]
                 t_ic = _tau_arr[p, ic, ib]
-                _betad[p, ic, ib] = (
+                _betad = _betad.at[p, ic, ib].set(
                     0.5 / om * (r_ic + t_ic + (r_ic - t_ic) * ((1.0 + chil_ic) / 2.0) ** 2)
                 )
                 tmp0 = gd + p2 * cos_zen
                 tmp1 = p1 * cos_zen
-                tmp2 = 1.0 - tmp1 / tmp0 * math.log((tmp1 + tmp0) / tmp1)
-                asu  = 0.5 * om * gd / tmp0 * tmp2
-                _betab[p, ic, ib] = (1.0 + avmu_ic * kb_ic) / (om * avmu_ic * kb_ic) * asu
+                tmp0_safe = jnp.where(jnp.abs(tmp0) > 0.0, tmp0, 1.0e-10)
+                tmp1_safe = jnp.where(tmp1 > 0.0, tmp1, 1.0e-10)
+                tmp2 = 1.0 - tmp1_safe / tmp0_safe * jnp.log((tmp1_safe + tmp0_safe) / tmp1_safe)
+                asu  = 0.5 * om * gd / tmp0_safe * tmp2
+                _betab = _betab.at[p, ic, ib].set(
+                    (1.0 + avmu_ic * kb_ic) / (om * avmu_ic * kb_ic) * asu
+                )
 
         # tbi onto ground — Fortran lines 211-213
-        _tbi_p[0] = _tbi_p[_nbot] * math.exp(
-            -_kb_p[_nbot] * _dpai_p[_nbot] * _cf_ic[p, _nbot]
+        _tbi_p = _tbi_p.at[0].set(
+            _tbi_p[_nbot] * jnp.exp(
+                -_kb_p[_nbot] * dpai[p, _nbot] * _cf_ic[p, _nbot]
+            )
         )
 
-        # Bulk JAX write-back — one write per field per patch
+        # Write-back — already JAX arrays, no conversion needed
         _sl  = slice(1, _ncan + 1)
         _sl0 = slice(0, _ncan + 1)
-        kb      = kb.at[p,      _sl].set(jnp.array(_kb_p[1:_ncan + 1]))
-        fracsun = fracsun.at[p, _sl].set(jnp.array(_fracsun_p[1:_ncan + 1]))
-        tb      = tb.at[p,      _sl].set(jnp.array(_tb_p[1:_ncan + 1]))
-        td      = td.at[p,      _sl].set(jnp.array(_td_p[1:_ncan + 1]))
-        tbi     = tbi.at[p,     _sl0].set(jnp.array(_tbi_p[0:_ncan + 1]))
+        kb      = kb.at[p,      _sl].set(_kb_p[1:_ncan + 1])
+        fracsun = fracsun.at[p, _sl].set(_fracsun_p[1:_ncan + 1])
+        tb      = tb.at[p,      _sl].set(_tb_p[1:_ncan + 1])
+        td      = td.at[p,      _sl].set(_td_p[1:_ncan + 1])
+        tbi     = tbi.at[p,     _sl0].set(_tbi_p[0:_ncan + 1])
 
     # ------------------------------------------------------------------
     # Commit optical properties before radiative transfer
@@ -307,7 +322,6 @@ def SolarRadiation(
         p = int(filter_patch[fp - 1])
         _ncan = int(ncan[p])
         _sl = slice(1, _ncan + 1)
-        # Bulk write: apar[p, 1:ncan+1, :] = swleaf[p, 1:ncan+1, :, ivis] * J_to_umol
         apar = apar.at[p, _sl, :].set(swleaf[p, _sl, :, ivis] * J_to_umol)
 
     mlcanopy_inst = mlcanopy_inst._replace(apar_leaf = apar)
@@ -382,8 +396,6 @@ def _Norman(
     swdwn    = mlcanopy_inst.swdwn_profile
     swbeam   = mlcanopy_inst.swbeam_profile
 
-    # Combined tridiagonal + flux loop — avoids write-then-read-back XLA syncs
-    # by keeping swupw/swdwn as numpy until the final bulk write-back.
     for ib in range(1, numrad + 1):                    # Fortran: do ib = 1, numrad
         for fp in range(1, num_filter + 1):
             p = int(filter_patch[fp - 1])
@@ -391,53 +403,46 @@ def _Norman(
             _ntop = int(ntop[p])
             _nbot = int(nbot[p])
 
-            # Pre-extract read-only JAX arrays as numpy — 5 syncs total
-            _td_p      = np.asarray(td[p])        # shape (nlevmlcan+1,)
-            _tb_p      = np.asarray(tb[p])
-            _tbi_p     = np.asarray(tbi[p])
-            _dpai_p    = np.asarray(dpai[p])
-            _fracsun_p = np.asarray(fracsun[p])
+            # Scalar inputs — JAX scalars directly
+            _swskyb_ib  = swskyb[p, ib]
+            _swskyd_ib  = swskyd[p, ib]
+            _albsoib_ib = albsoib[p, ib]
+            _albsoid_ib = albsoid[p, ib]
 
-            # Scalar inputs — 4 syncs
-            _swskyb_ib  = float(swskyb[p, ib])
-            _swskyd_ib  = float(swskyd[p, ib])
-            _albsoib_ib = float(albsoib[p, ib])
-            _albsoid_ib = float(albsoid[p, ib])
-
-            # Zero swleaf for all layers (bulk — 1 JAX op instead of 2*_ncan)
+            # Zero swleaf for all layers (bulk — 1 JAX op)
             swleaf = swleaf.at[p, 1:_ncan + 1, :, ib].set(0.0)
 
             # ----------------------------------------------------------------
             # Build tridiagonal system — Fortran lines 284-340
-            # (all reads from numpy now; no JAX syncs in this section)
+            # Lists hold JAX traced scalars; Thomas algorithm is differentiable
             # ----------------------------------------------------------------
-            atri = [0.0] * (neq + 1)
-            btri = [0.0] * (neq + 1)
-            ctri = [0.0] * (neq + 1)
-            dtri = [0.0] * (neq + 1)
+            atri = [jnp.zeros(())] * (neq + 1)
+            btri = [jnp.zeros(())] * (neq + 1)
+            ctri = [jnp.zeros(())] * (neq + 1)
+            dtri = [jnp.zeros(())] * (neq + 1)
 
             m = 0
 
             # Soil: upward flux — Fortran lines 287-290
             m += 1
-            atri[m] = 0.0
-            btri[m] = 1.0
+            atri[m] = jnp.zeros(())
+            btri[m] = jnp.ones(())
             ctri[m] = -_albsoid_ib
-            dtri[m] = _swskyb_ib * float(_tbi_p[0]) * _albsoib_ib
+            dtri[m] = _swskyb_ib * tbi[p, 0] * _albsoib_ib
 
             # Soil: downward flux — Fortran lines 292-301
-            td_nb  = float(_td_p[_nbot])
-            rho_nb = float(rho[p, _nbot, ib])   # numpy — no JAX sync
-            tau_nb = float(tau[p, _nbot, ib])   # numpy — no JAX sync
-            tb_nb  = float(_tb_p[_nbot])
-            tbi_nb = float(_tbi_p[_nbot])
+            td_nb  = td[p, _nbot]
+            rho_nb = rho[p, _nbot, ib]
+            tau_nb = tau[p, _nbot, ib]
+            tb_nb  = tb[p, _nbot]
+            tbi_nb = tbi[p, _nbot]
             refld = (1.0 - td_nb) * rho_nb
             trand = (1.0 - td_nb) * tau_nb + td_nb
             aic   = refld - trand * trand / refld
             bic   = trand / refld
             m += 1
             atri[m] = -aic
-            btri[m] = 1.0
+            btri[m] = jnp.ones(())
             ctri[m] = -bic
             dtri[m] = _swskyb_ib * tbi_nb * (1.0 - tb_nb) * (tau_nb - rho_nb * bic)
 
@@ -445,140 +450,140 @@ def _Norman(
             for ic in range(_nbot, _ntop):             # Fortran: do ic = nbot, ntop-1
 
                 # Upward flux
-                td_ic  = float(_td_p[ic])
-                rho_ic = float(rho[p, ic, ib])
-                tau_ic = float(tau[p, ic, ib])
+                td_ic  = td[p, ic]
+                rho_ic = rho[p, ic, ib]
+                tau_ic = tau[p, ic, ib]
                 refld = (1.0 - td_ic) * rho_ic
                 trand = (1.0 - td_ic) * tau_ic + td_ic
                 fic   = refld - trand * trand / refld
                 eic   = trand / refld
                 m += 1
                 atri[m] = -eic
-                btri[m] = 1.0
+                btri[m] = jnp.ones(())
                 ctri[m] = -fic
-                dtri[m] = (_swskyb_ib * float(_tbi_p[ic])
-                            * (1.0 - float(_tb_p[ic])) * (rho_ic - tau_ic * eic))
+                dtri[m] = (_swskyb_ib * tbi[p, ic]
+                            * (1.0 - tb[p, ic]) * (rho_ic - tau_ic * eic))
 
                 # Downward flux
                 ic1     = ic + 1
-                td_ic1  = float(_td_p[ic1])
-                rho_ic1 = float(rho[p, ic1, ib])
-                tau_ic1 = float(tau[p, ic1, ib])
+                td_ic1  = td[p, ic1]
+                rho_ic1 = rho[p, ic1, ib]
+                tau_ic1 = tau[p, ic1, ib]
                 refld = (1.0 - td_ic1) * rho_ic1
                 trand = (1.0 - td_ic1) * tau_ic1 + td_ic1
                 aic   = refld - trand * trand / refld
                 bic   = trand / refld
                 m += 1
                 atri[m] = -aic
-                btri[m] = 1.0
+                btri[m] = jnp.ones(())
                 ctri[m] = -bic
-                dtri[m] = (_swskyb_ib * float(_tbi_p[ic1])
-                            * (1.0 - float(_tb_p[ic1])) * (tau_ic1 - rho_ic1 * bic))
+                dtri[m] = (_swskyb_ib * tbi[p, ic1]
+                            * (1.0 - tb[p, ic1]) * (tau_ic1 - rho_ic1 * bic))
 
             # Top layer: upward flux — Fortran lines 328-337
             ic = _ntop
-            td_ic  = float(_td_p[ic])
-            rho_ic = float(rho[p, ic, ib])
-            tau_ic = float(tau[p, ic, ib])
+            td_ic  = td[p, ic]
+            rho_ic = rho[p, ic, ib]
+            tau_ic = tau[p, ic, ib]
             refld = (1.0 - td_ic) * rho_ic
             trand = (1.0 - td_ic) * tau_ic + td_ic
             fic   = refld - trand * trand / refld
             eic   = trand / refld
             m += 1
             atri[m] = -eic
-            btri[m] = 1.0
+            btri[m] = jnp.ones(())
             ctri[m] = -fic
-            dtri[m] = (_swskyb_ib * float(_tbi_p[ic])
-                        * (1.0 - float(_tb_p[ic])) * (rho_ic - tau_ic * eic))
+            dtri[m] = (_swskyb_ib * tbi[p, ic]
+                        * (1.0 - tb[p, ic]) * (rho_ic - tau_ic * eic))
 
             # Top layer: downward flux — Fortran lines 339-343
             m += 1
-            atri[m] = 0.0
-            btri[m] = 1.0
-            ctri[m] = 0.0
+            atri[m] = jnp.zeros(())
+            btri[m] = jnp.ones(())
+            ctri[m] = jnp.zeros(())
             dtri[m] = _swskyd_ib
 
             # Solve — Fortran line 345
             utri = tridiag(atri, btri, ctri, dtri, m)
 
             # ----------------------------------------------------------------
-            # Unpack solution into numpy arrays — no JAX syncs yet
+            # Unpack solution into JAX arrays
             # ----------------------------------------------------------------
-            _swupw_vals = np.zeros(_ncan + 2)   # indices 0.._ncan
-            _swdwn_vals = np.zeros(_ncan + 2)
+            swupw_new = jnp.zeros(_ncan + 2)
+            swdwn_new = jnp.zeros(_ncan + 2)
             m_sol = 0
-            m_sol += 1;  _swupw_vals[0] = utri[m_sol]
-            m_sol += 1;  _swdwn_vals[0] = utri[m_sol]
+            m_sol += 1;  swupw_new = swupw_new.at[0].set(utri[m_sol])
+            m_sol += 1;  swdwn_new = swdwn_new.at[0].set(utri[m_sol])
             for ic in range(_nbot, _ntop + 1):
-                m_sol += 1;  _swupw_vals[ic] = utri[m_sol]
-                m_sol += 1;  _swdwn_vals[ic] = utri[m_sol]
+                m_sol += 1;  swupw_new = swupw_new.at[ic].set(utri[m_sol])
+                m_sol += 1;  swdwn_new = swdwn_new.at[ic].set(utri[m_sol])
 
             # ----------------------------------------------------------------
-            # Compute fluxes in numpy/Python — Fortran lines 365-430
-            # (no JAX reads/writes until bulk write-back below)
+            # Compute fluxes — Fortran lines 365-430
             # ----------------------------------------------------------------
 
             # Ground absorption — Fortran lines 368-372
-            _swbeam_0  = float(_tbi_p[0]) * _swskyb_ib
-            _swsoi_ib  = _swbeam_0 * (1.0 - _albsoib_ib) + _swdwn_vals[0] * (1.0 - _albsoid_ib)
+            _swbeam_0  = tbi[p, 0] * _swskyb_ib
+            _swsoi_ib  = _swbeam_0 * (1.0 - _albsoib_ib) + swdwn_new[0] * (1.0 - _albsoid_ib)
 
-            # Per-layer accumulators
-            _swbeam_vals    = np.zeros(_ncan + 2)
-            _swleaf_sun_v   = np.zeros(_ncan + 2)
-            _swleaf_sha_v   = np.zeros(_ncan + 2)
-            _swbeam_vals[0] = _swbeam_0
-            _swveg_acc    = 0.0
-            _swvegsun_acc = 0.0
-            _swvegsha_acc = 0.0
+            # Per-layer accumulators (JAX arrays)
+            swbeam_new    = jnp.zeros(_ncan + 2)
+            swleaf_sun_new = jnp.zeros(_ncan + 2)
+            swleaf_sha_new = jnp.zeros(_ncan + 2)
+            swbeam_new    = swbeam_new.at[0].set(_swbeam_0)
+            _swveg_acc    = jnp.zeros(())
+            _swvegsun_acc = jnp.zeros(())
+            _swvegsha_acc = jnp.zeros(())
 
             for ic in range(_nbot, _ntop + 1):    # Fortran: do ic = nbot, ntop
-                _swbeam_ic = float(_tbi_p[ic]) * _swskyb_ib
-                _om_ic     = float(omega[p, ic, ib])   # numpy — no JAX sync
-                _swabsb_ic = _swbeam_ic * (1.0 - float(_tb_p[ic])) * (1.0 - _om_ic)
+                _swbeam_ic = tbi[p, ic] * _swskyb_ib
+                _om_ic     = omega[p, ic, ib]
+                _swabsb_ic = _swbeam_ic * (1.0 - tb[p, ic]) * (1.0 - _om_ic)
 
                 icm1 = 0 if ic == _nbot else ic - 1
-                _swabsd_ic = ((_swdwn_vals[ic] + _swupw_vals[icm1])
-                               * (1.0 - float(_td_p[ic])) * (1.0 - _om_ic))
+                _swabsd_ic = ((swdwn_new[ic] + swupw_new[icm1])
+                               * (1.0 - td[p, ic]) * (1.0 - _om_ic))
 
-                _fs   = float(_fracsun_p[ic])
+                _fs   = fracsun[p, ic]
                 _swsha = _swabsd_ic * (1.0 - _fs)
                 _swsun = _swabsd_ic * _fs + _swabsb_ic
 
-                _dpai_ic = float(_dpai_p[ic])
-                _swleaf_sun_v[ic] = _swsun / (_fs * _dpai_ic)
-                _swleaf_sha_v[ic] = _swsha / ((1.0 - _fs) * _dpai_ic)
-                _swbeam_vals[ic]  = _swbeam_ic
-                _swveg_acc    += _swabsb_ic + _swabsd_ic
-                _swvegsun_acc += _swsun
-                _swvegsha_acc += _swsha
+                _dpai_ic = dpai[p, ic]
+                fs_safe   = jnp.where(_fs > 0.0, _fs, 1.0)
+                fsha_safe = jnp.where((1.0 - _fs) > 0.0, (1.0 - _fs), 1.0)
+                dpai_safe = jnp.where(_dpai_ic > 0.0, _dpai_ic, 1.0)
+                swleaf_sun_new = swleaf_sun_new.at[ic].set(_swsun / (fs_safe * dpai_safe))
+                swleaf_sha_new = swleaf_sha_new.at[ic].set(_swsha / (fsha_safe * dpai_safe))
+                swbeam_new     = swbeam_new.at[ic].set(_swbeam_ic)
+                _swveg_acc    = _swveg_acc    + _swabsb_ic + _swabsd_ic
+                _swvegsun_acc = _swvegsun_acc + _swsun
+                _swvegsha_acc = _swvegsha_acc + _swsha
 
             # Albedo — Fortran lines 410-414
             _suminc    = _swskyb_ib + _swskyd_ib
-            _albcan_ib = float(_swupw_vals[_ntop]) / _suminc if _suminc > 0.0 else 0.0
+            _suminc_safe = jnp.where(_suminc > 0.0, _suminc, 1.0)
+            _albcan_ib = jnp.where(_suminc > 0.0, swupw_new[_ntop] / _suminc_safe, 0.0)
 
-            # Conservation checks — Fortran lines 416-426 (pure Python, no JAX)
+            # Conservation checks — Fortran lines 416-426
             _sumref = _albcan_ib * _suminc
             _sumabs = _suminc - _sumref
             _err = _sumabs - (_swveg_acc + _swsoi_ib)
-            if abs(_err) > 1.0e-3:
+            if jnp.abs(_err) > 1.0e-3:
                 endrun(msg='ERROR: Norman: total solar conservation error')
             _err2 = (_swvegsun_acc + _swvegsha_acc) - _swveg_acc
-            if abs(_err2) > 1.0e-3:
+            if jnp.abs(_err2) > 1.0e-3:
                 endrun(msg='ERROR: Norman: sunlit/shade solar conservation error')
 
-            # DEBUG: print SW diagnostics for first few calls
-            # ----------------------------------------------------------------
-            # Bulk JAX write-back — ~10 ops per (ib, p) instead of ~750
-            # ----------------------------------------------------------------
+            # Bulk JAX write-back
             _sl         = slice(0, _ncan + 1)
             _sl_layers  = slice(_nbot, _ntop + 1)
-            swupw  = swupw.at[p, _sl, ib].set(jnp.array(_swupw_vals[:_ncan + 1]))
-            swdwn  = swdwn.at[p, _sl, ib].set(jnp.array(_swdwn_vals[:_ncan + 1]))
-            swbeam = swbeam.at[p, _sl, ib].set(jnp.array(_swbeam_vals[:_ncan + 1]))
+            swupw  = swupw.at[p, _sl, ib].set(swupw_new[:_ncan + 1])
+            swdwn  = swdwn.at[p, _sl, ib].set(swdwn_new[:_ncan + 1])
+            swbeam = swbeam.at[p, _sl, ib].set(swbeam_new[:_ncan + 1])
             swleaf = swleaf.at[p, _sl_layers, isun, ib].set(
-                jnp.array(_swleaf_sun_v[_nbot:_ntop + 1]))
+                swleaf_sun_new[_nbot:_ntop + 1])
             swleaf = swleaf.at[p, _sl_layers, isha, ib].set(
-                jnp.array(_swleaf_sha_v[_nbot:_ntop + 1]))
+                swleaf_sha_new[_nbot:_ntop + 1])
             swsoi    = swsoi.at[p, ib].set(_swsoi_ib)
             swveg    = swveg.at[p, ib].set(_swveg_acc)
             swvegsun = swvegsun.at[p, ib].set(_swvegsun_acc)
@@ -685,81 +690,64 @@ def _TwoStream(
     n_rad = numrad + 1
     nleaf_p1 = 3   # nleaf + 1 = 3
 
-    # Process per patch — numpy for all intermediates, bulk JAX write-back at end
     for fp in range(1, num_filter + 1):
         p = int(filter_patch[fp - 1])
         _ncan = int(ncan[p])
         _ntop = int(ntop[p])
         _nbot = int(nbot[p])
 
-        # Pre-extract per-patch numpy arrays (one sync each)
-        _dpai    = np.asarray(mlcanopy_inst.dpai_profile[p])
-        _fracsun = np.asarray(mlcanopy_inst.fracsun_profile[p])
-        _kb      = np.asarray(mlcanopy_inst.kb_profile[p])
-        _tbi     = np.asarray(mlcanopy_inst.tbi_profile[p])
-        _alb_b   = np.asarray(mlcanopy_inst.albsoib_soil[p])   # shape (n_rad,)
-        _alb_d   = np.asarray(mlcanopy_inst.albsoid_soil[p])
-        _swskyb  = np.asarray(mlcanopy_inst.swskyb_forcing[p])
-        _swskyd  = np.asarray(mlcanopy_inst.swskyd_forcing[p])
-
-        # Per-patch output numpy arrays (initialized to zero)
-        _swleaf_p   = np.zeros((n_lev, nleaf_p1, n_rad))
-        _swveg_p    = np.zeros(n_rad)
-        _swvegsun_p = np.zeros(n_rad)
-        _swvegsha_p = np.zeros(n_rad)
-        _albcan_p   = np.zeros(n_rad)
-        _swsoi_p    = np.zeros(n_rad)
-        _swupw_p    = np.zeros((n_lev, n_rad))
-        _swdwn_p    = np.zeros((n_lev, n_rad))
-        _swbeam_p   = np.zeros((n_lev, n_rad))
+        # Per-patch output JAX arrays
+        _swleaf_p   = jnp.zeros((n_lev, nleaf_p1, n_rad))
+        _swveg_p    = jnp.zeros(n_rad)
+        _swvegsun_p = jnp.zeros(n_rad)
+        _swvegsha_p = jnp.zeros(n_rad)
+        _albcan_p   = jnp.zeros(n_rad)
+        _swsoi_p    = jnp.zeros(n_rad)
+        _swupw_p    = jnp.zeros((n_lev, n_rad))
+        _swdwn_p    = jnp.zeros((n_lev, n_rad))
+        _swbeam_p   = jnp.zeros((n_lev, n_rad))
 
         for ib in range(1, numrad + 1):
-            # Per-band numpy slices (all numpy — no XLA syncs)
-            _om  = omega[p, :, ib]
-            _av  = avmu[p, :]
-            _bd  = betad[p, :, ib]
-            _bb  = betab[p, :, ib]
-            _cf  = clump_fac_ic[p, :]
 
-            albb = _alb_b[ib]
-            albd = _alb_d[ib]
+            albb = albsoib[p, ib]
+            albd = albsoid[p, ib]
 
-            # Per-layer work arrays
+            # Per-layer work arrays (JAX)
             n = _ncan + 2
-            _iupwb0    = np.zeros(n)
-            _iupwb     = np.zeros(n)
-            _idwnb     = np.zeros(n)
-            _iabsb_sun = np.zeros(n)
-            _iabsb_sha = np.zeros(n)
-            _iupwd0    = np.zeros(n)
-            _iupwd     = np.zeros(n)
-            _idwnd     = np.zeros(n)
-            _iabsd_sun = np.zeros(n)
-            _iabsd_sha = np.zeros(n)
+            _iupwb0    = jnp.zeros(n)
+            _iupwb     = jnp.zeros(n)
+            _idwnb     = jnp.zeros(n)
+            _iabsb_sun = jnp.zeros(n)
+            _iabsb_sha = jnp.zeros(n)
+            _iupwd0    = jnp.zeros(n)
+            _iupwd     = jnp.zeros(n)
+            _idwnd     = jnp.zeros(n)
+            _iabsd_sun = jnp.zeros(n)
+            _iabsd_sha = jnp.zeros(n)
 
             # ----------------------------------------------------------
-            # Bottom-to-top sweep — Fortran lines 444-540 (pure numpy)
+            # Bottom-to-top sweep — Fortran lines 444-540
             # ----------------------------------------------------------
             for ic in range(_nbot, _ntop + 1):
-                om_ic  = _om[ic]
-                av_ic  = _av[ic]
-                kb_ic  = _kb[ic]
-                cf_ic  = _cf[ic]
-                dp_ic  = _dpai[ic]
-                bd_ic  = _bd[ic]
-                bb_ic  = _bb[ic]
-                tbi_ic = _tbi[ic]
+                om_ic  = omega[p, ic, ib]
+                av_ic  = avmu[p, ic]
+                kb_ic  = kb[p, ic]
+                cf_ic  = clump_fac_ic[p, ic]
+                dp_ic  = dpai[p, ic]
+                bd_ic  = betad[p, ic, ib]
+                bb_ic  = betab[p, ic, ib]
+                tbi_ic = tbi[p, ic]
 
                 b  = (1.0 - (1.0 - bd_ic) * om_ic) / av_ic
                 c  = bd_ic * om_ic / av_ic
-                h  = math.sqrt(b * b - c * c)
+                h  = jnp.sqrt(b * b - c * c)
                 u  = (h - b - c) / (2.0 * h)
                 v  = (h + b + c) / (2.0 * h)
                 d  = om_ic * kb_ic / (h * h - kb_ic * kb_ic)   # unitb=1
                 g1 = (bb_ic * kb_ic - b * bb_ic - c * (1.0 - bb_ic)) * d
                 g2 = ((1.0 - bb_ic) * kb_ic + c * bb_ic + b * (1.0 - bb_ic)) * d
-                s1 = math.exp(-h  * cf_ic * dp_ic)
-                s2 = math.exp(-kb_ic * cf_ic * dp_ic)
+                s1 = jnp.exp(-h  * cf_ic * dp_ic)
+                s2 = jnp.exp(-kb_ic * cf_ic * dp_ic)
 
                 # Direct beam terms (unitb = 1)
                 num1 = v * (g1 + g2 * albd + albb) * s2
@@ -776,13 +764,16 @@ def _TwoStream(
                        - n1b * v * (1.0 - s2 * s1) / (kb_ic + h)
                        - n2b * u * (1.0 - s2 / s1) / (kb_ic - h)) * tbi_ic
 
-                _iupwb0[ic] = -g1 + n1b * u + n2b * v
-                _iupwb[ic]  = -g1 * s2 + n1b * u * s1 + n2b * v / s1
-                _idwnb[ic]  =  g2 * s2 - n1b * v * s1 - n2b * u / s1
-                abs_b       = (1.0 - s2) - _iupwb0[ic] + _iupwb[ic] - _idwnb[ic]
-                abs_b_sun   = (1.0 - om_ic) * ((1.0 - s2) + cf_ic / av_ic * (a1b + a2b))
-                _iabsb_sun[ic] = abs_b_sun
-                _iabsb_sha[ic] = abs_b - abs_b_sun
+                iupwb0_ic = -g1 + n1b * u + n2b * v
+                iupwb_ic  = -g1 * s2 + n1b * u * s1 + n2b * v / s1
+                idwnb_ic  =  g2 * s2 - n1b * v * s1 - n2b * u / s1
+                abs_b     = (1.0 - s2) - iupwb0_ic + iupwb_ic - idwnb_ic
+                abs_b_sun = (1.0 - om_ic) * ((1.0 - s2) + cf_ic / av_ic * (a1b + a2b))
+                _iupwb0    = _iupwb0.at[ic].set(iupwb0_ic)
+                _iupwb     = _iupwb.at[ic].set(iupwb_ic)
+                _idwnb     = _idwnb.at[ic].set(idwnb_ic)
+                _iabsb_sun = _iabsb_sun.at[ic].set(abs_b_sun)
+                _iabsb_sha = _iabsb_sha.at[ic].set(abs_b - abs_b_sun)
 
                 # Diffuse terms (unitd = 1)
                 num1 = (u + v * albd) * s1
@@ -794,92 +785,104 @@ def _TwoStream(
                 a2d = (- n1d * v * (1.0 - s2 * s1) / (kb_ic + h)
                         - n2d * u * (1.0 - s2 / s1) / (kb_ic - h)) * tbi_ic
 
-                _iupwd0[ic] = n1d * u + n2d * v
-                _iupwd[ic]  = n1d * u * s1 + n2d * v / s1
-                _idwnd[ic]  = -n1d * v * s1 - n2d * u / s1
-                abs_d       = 1.0 - _iupwd0[ic] + _iupwd[ic] - _idwnd[ic]
-                abs_d_sun   = (1.0 - om_ic) * cf_ic / av_ic * (a1d + a2d)
-                _iabsd_sun[ic] = abs_d_sun
-                _iabsd_sha[ic] = abs_d - abs_d_sun
+                iupwd0_ic = n1d * u + n2d * v
+                iupwd_ic  = n1d * u * s1 + n2d * v / s1
+                idwnd_ic  = -n1d * v * s1 - n2d * u / s1
+                abs_d     = 1.0 - iupwd0_ic + iupwd_ic - idwnd_ic
+                abs_d_sun = (1.0 - om_ic) * cf_ic / av_ic * (a1d + a2d)
+                _iupwd0    = _iupwd0.at[ic].set(iupwd0_ic)
+                _iupwd     = _iupwd.at[ic].set(iupwd_ic)
+                _idwnd     = _idwnd.at[ic].set(idwnd_ic)
+                _iabsd_sun = _iabsd_sun.at[ic].set(abs_d_sun)
+                _iabsd_sha = _iabsd_sha.at[ic].set(abs_d - abs_d_sun)
 
                 # Update albedos for next layer
-                albb = _iupwb0[ic]
-                albd = _iupwd0[ic]
+                albb = iupwb0_ic
+                albd = iupwd0_ic
 
             # ----------------------------------------------------------
             # Top-to-bottom sweep — Fortran lines 536-570
             # ----------------------------------------------------------
-            dir_ = float(_swskyb[ib])
-            dif  = float(_swskyd[ib])
+            dir_ = swskyb[p, ib]
+            dif  = swskyd[p, ib]
 
             for ic in range(_ntop, _nbot - 1, -1):
-                _swbeam_p[ic, ib] = dir_
-                _swdwn_p[ic, ib]  = dif
-                _swupw_p[ic, ib]  = _iupwd0[ic] * dif + _iupwb0[ic] * dir_
+                _swbeam_p = _swbeam_p.at[ic, ib].set(dir_)
+                _swdwn_p  = _swdwn_p.at[ic, ib].set(dif)
+                _swupw_p  = _swupw_p.at[ic, ib].set(_iupwd0[ic] * dif + _iupwb0[ic] * dir_)
 
-                fs    = _fracsun[ic]
-                dp_ic = _dpai[ic]
-                _swleaf_p[ic, isun, ib] = (
-                    (_iabsb_sun[ic] * dir_ + _iabsd_sun[ic] * dif) / (fs * dp_ic)
+                fs    = fracsun[p, ic]
+                dp_ic = dpai[p, ic]
+                fs_safe   = jnp.where(fs > 0.0, fs, 1.0)
+                fsha_safe = jnp.where((1.0 - fs) > 0.0, (1.0 - fs), 1.0)
+                dpai_safe = jnp.where(dp_ic > 0.0, dp_ic, 1.0)
+                _swleaf_p = _swleaf_p.at[ic, isun, ib].set(
+                    (_iabsb_sun[ic] * dir_ + _iabsd_sun[ic] * dif) / (fs_safe * dpai_safe)
                 )
-                _swleaf_p[ic, isha, ib] = (
-                    (_iabsb_sha[ic] * dir_ + _iabsd_sha[ic] * dif) / ((1.0 - fs) * dp_ic)
+                _swleaf_p = _swleaf_p.at[ic, isha, ib].set(
+                    (_iabsb_sha[ic] * dir_ + _iabsd_sha[ic] * dif) / (fsha_safe * dpai_safe)
                 )
 
-                kb_ic   = _kb[ic]
-                cf_ic   = _cf[ic]
+                kb_ic   = kb[p, ic]
+                cf_ic   = clump_fac_ic[p, ic]
                 dif_new = dir_ * _idwnb[ic] + dif * _idwnd[ic]
-                dir_    = dir_ * math.exp(-kb_ic * cf_ic * dp_ic)
+                dir_    = dir_ * jnp.exp(-kb_ic * cf_ic * dp_ic)
                 dif     = dif_new
 
             # Ground fluxes
-            _swbeam_p[0, ib] = dir_
-            _swdwn_p[0, ib]  = dif
-            _swupw_p[0, ib]  = _alb_d[ib] * dif + _alb_b[ib] * dir_
-            _swsoi_p[ib] = dir_ * (1.0 - _alb_b[ib]) + dif * (1.0 - _alb_d[ib])
+            _swbeam_p = _swbeam_p.at[0, ib].set(dir_)
+            _swdwn_p  = _swdwn_p.at[0, ib].set(dif)
+            _swupw_p  = _swupw_p.at[0, ib].set(albsoid[p, ib] * dif + albsoib[p, ib] * dir_)
+            _swsoi_p  = _swsoi_p.at[ib].set(
+                dir_ * (1.0 - albsoib[p, ib]) + dif * (1.0 - albsoid[p, ib])
+            )
 
             # Canopy albedo
-            suminc = float(_swskyb[ib]) + float(_swskyd[ib])
-            sumref = _iupwb0[_ntop] * float(_swskyb[ib]) + _iupwd0[_ntop] * float(_swskyd[ib])
-            _albcan_p[ib] = sumref / suminc if suminc > 0.0 else 0.0
+            suminc = swskyb[p, ib] + swskyd[p, ib]
+            sumref = _iupwb0[_ntop] * swskyb[p, ib] + _iupwd0[_ntop] * swskyd[p, ib]
+            suminc_safe = jnp.where(suminc > 0.0, suminc, 1.0)
+            _albcan_p = _albcan_p.at[ib].set(
+                jnp.where(suminc > 0.0, sumref / suminc_safe, 0.0)
+            )
 
             # Sum vegetation absorption
-            swveg_ib = 0.0; svs_ib = 0.0; svsh_ib = 0.0
+            swveg_ib = jnp.zeros(())
+            svs_ib   = jnp.zeros(())
+            svsh_ib  = jnp.zeros(())
             for ic in range(_nbot, _ntop + 1):
-                fs    = _fracsun[ic]
-                dp_ic = _dpai[ic]
+                fs    = fracsun[p, ic]
+                dp_ic = dpai[p, ic]
                 sun   = _swleaf_p[ic, isun, ib] * fs * dp_ic
                 sha   = _swleaf_p[ic, isha, ib] * (1.0 - fs) * dp_ic
-                swveg_ib += sun + sha
-                svs_ib   += sun
-                svsh_ib  += sha
-            _swveg_p[ib]    = swveg_ib
-            _swvegsun_p[ib] = svs_ib
-            _swvegsha_p[ib] = svsh_ib
+                swveg_ib = swveg_ib + sun + sha
+                svs_ib   = svs_ib   + sun
+                svsh_ib  = svsh_ib  + sha
+            _swveg_p    = _swveg_p.at[ib].set(swveg_ib)
+            _swvegsun_p = _swvegsun_p.at[ib].set(svs_ib)
+            _swvegsha_p = _swvegsha_p.at[ib].set(svsh_ib)
 
             # Conservation check
             sumabs = swveg_ib + _swsoi_p[ib]
-            if abs(suminc - (sumabs + _albcan_p[ib] * suminc)) >= 1.0e-6:
+            if jnp.abs(suminc - (sumabs + _albcan_p[ib] * suminc)) >= 1.0e-6:
                 endrun(msg='ERROR: TwoStream: total solar radiation conservation error')
 
-            # DEBUG: print SW diagnostics for first few calls
         # Bulk JAX write-back for this patch
         _sl_lev    = slice(0, _ncan + 1)
         _sl_canopy = slice(1, _ncan + 1)
         _sl_rad    = slice(1, numrad + 1)
-        swbeam = swbeam.at[p, _sl_lev, _sl_rad].set(jnp.array(_swbeam_p[_sl_lev, _sl_rad]))
-        swdwn  = swdwn.at[p,  _sl_lev, _sl_rad].set(jnp.array(_swdwn_p[_sl_lev,  _sl_rad]))
-        swupw  = swupw.at[p,  _sl_lev, _sl_rad].set(jnp.array(_swupw_p[_sl_lev,  _sl_rad]))
-        swsoi  = swsoi.at[p,  _sl_rad].set(jnp.array(_swsoi_p[_sl_rad]))
-        albcan = albcan.at[p, _sl_rad].set(jnp.array(_albcan_p[_sl_rad]))
-        swveg    = swveg.at[p,    _sl_rad].set(jnp.array(_swveg_p[_sl_rad]))
-        swvegsun = swvegsun.at[p, _sl_rad].set(jnp.array(_swvegsun_p[_sl_rad]))
-        swvegsha = swvegsha.at[p, _sl_rad].set(jnp.array(_swvegsha_p[_sl_rad]))
+        swbeam = swbeam.at[p, _sl_lev, _sl_rad].set(_swbeam_p[_sl_lev, _sl_rad])
+        swdwn  = swdwn.at[p,  _sl_lev, _sl_rad].set(_swdwn_p[_sl_lev,  _sl_rad])
+        swupw  = swupw.at[p,  _sl_lev, _sl_rad].set(_swupw_p[_sl_lev,  _sl_rad])
+        swsoi  = swsoi.at[p,  _sl_rad].set(_swsoi_p[_sl_rad])
+        albcan = albcan.at[p, _sl_rad].set(_albcan_p[_sl_rad])
+        swveg    = swveg.at[p,    _sl_rad].set(_swveg_p[_sl_rad])
+        swvegsun = swvegsun.at[p, _sl_rad].set(_swvegsun_p[_sl_rad])
+        swvegsha = swvegsha.at[p, _sl_rad].set(_swvegsha_p[_sl_rad])
         swleaf = swleaf.at[p, _sl_canopy, isun, _sl_rad].set(
-            jnp.array(_swleaf_p[_sl_canopy, isun, _sl_rad])
+            _swleaf_p[_sl_canopy, isun, _sl_rad]
         )
         swleaf = swleaf.at[p, _sl_canopy, isha, _sl_rad].set(
-            jnp.array(_swleaf_p[_sl_canopy, isha, _sl_rad])
+            _swleaf_p[_sl_canopy, isha, _sl_rad]
         )
 
     return mlcanopy_inst._replace(

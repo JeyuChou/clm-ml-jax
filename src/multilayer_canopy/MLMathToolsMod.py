@@ -283,7 +283,7 @@ def zbrent(
         if abs(d) > tol1:
             b = b + d
         else:
-            b = b + math.copysign(tol1, xm)    # Fortran: b + sign(tol1, xm)
+            b = b + jnp.copysign(tol1, xm)    # Fortran: b + sign(tol1, xm)
 
         fb, mlcanopy_inst = func(p, ic, il, mlcanopy_inst, b)
         if fb == 0.0:
@@ -533,18 +533,47 @@ def quadratic(a: float, b: float, c: float) -> Tuple[float, float]:
     Returns:
         Tuple ``(r1, r2)`` of the two roots.
     """
-    if a == 0.0:
-        print(f'{iulog}: Quadratic solution error: a = {a}')
-        endrun(msg=' ERROR: quadratic error')
+    # Safe sqrt: clamp discriminant to ≥0 to avoid NaN when JAX traces
+    # both branches unconditionally (e.g. inside jnp.where callers).
+    discriminant = jnp.sqrt(jnp.maximum(b * b - 4.0 * a * c, 0.0))
 
+    # Numerically stable branch selection via jnp.where — avoids
+    # Python `if` on potentially JAX-traced `b`.
+    a_safe = jnp.where(jnp.abs(a) > 0.0, a, 1.0)
+    q = jnp.where(
+        b >= 0.0,
+        -0.5 * (b + discriminant),
+        -0.5 * (b - discriminant),
+    )
+    q_safe = jnp.where(q != 0.0, q, 1.0)
+    r1 = q / a_safe
+    r2 = jnp.where(q != 0.0, c / q_safe, jnp.asarray(1.0e36))
+
+    return r1, r2
+
+
+def quadratic_py(a: float, b: float, c: float):
+    """Pure-Python version of :func:`quadratic` using ``math.sqrt``.
+
+    No JAX dispatch overhead — safe for use inside per-layer Python loops
+    where ``a``, ``b``, ``c`` are plain Python floats.
+    """
+    disc = b * b - 4.0 * a * c
+    if disc < 0.0:
+        disc = 0.0
+    sq = math.sqrt(disc)
     if b >= 0.0:
-        q = -0.5 * (b + math.sqrt(b * b - 4.0 * a * c))
+        q = -0.5 * (b + sq)
     else:
-        q = -0.5 * (b - math.sqrt(b * b - 4.0 * a * c))
-
-    r1 = q / a
-    r2 = c / q if q != 0.0 else 1.0e36    # Fortran: 1.e36_r8
-
+        q = -0.5 * (b - sq)
+    if abs(a) > 0.0:
+        r1 = q / a
+    else:
+        r1 = 1.0e36
+    if q != 0.0:
+        r2 = c / q
+    else:
+        r2 = 1.0e36
     return r1, r2
 
 
@@ -640,43 +669,44 @@ def tridiag_2eq(
         Tuple ``(t, q)`` of solution vectors, each of length ``n``, 0-indexed.
     """
     # Working arrays, 0-indexed (length n) — Fortran lines 318-323
-    e11 = [0.0] * n
-    e12 = [0.0] * n
-    e21 = [0.0] * n
-    e22 = [0.0] * n
-    f1  = [0.0] * n
-    f2  = [0.0] * n
+    # Hold JAX traced scalars so the solver is fully differentiable.
+    e11 = [jnp.zeros(())] * n
+    e12 = [jnp.zeros(())] * n
+    e21 = [jnp.zeros(())] * n
+    e22 = [jnp.zeros(())] * n
+    f1  = [jnp.zeros(())] * n
+    f2  = [jnp.zeros(())] * n
 
     # Initial "previous" values (Fortran e(0) = 0) — Fortran lines 325-330
-    e11_prev = 0.0;  e12_prev = 0.0
-    e21_prev = 0.0;  e22_prev = 0.0
-    f1_prev  = 0.0;  f2_prev  = 0.0
+    e11_prev = jnp.zeros(());  e12_prev = jnp.zeros(())
+    e21_prev = jnp.zeros(());  e22_prev = jnp.zeros(())
+    f1_prev  = jnp.zeros(());  f2_prev  = jnp.zeros(())
 
     # Forward elimination — Fortran lines 332-352 (0-based: i=0..n-1)
     for i in range(n):
-        ainv = float(b11[i]) - float(a1[i]) * e11_prev
-        binv = float(b12[i]) - float(a1[i]) * e12_prev
-        cinv = float(b21[i]) - float(a2[i]) * e21_prev
-        dinv = float(b22[i]) - float(a2[i]) * e22_prev
+        ainv = b11[i] - a1[i] * e11_prev
+        binv = b12[i] - a1[i] * e12_prev
+        cinv = b21[i] - a2[i] * e21_prev
+        dinv = b22[i] - a2[i] * e22_prev
         det  = ainv * dinv - binv * cinv
 
-        e11[i] =  dinv * float(c1[i]) / det
-        e12[i] = -binv * float(c2[i]) / det
-        e21[i] = -cinv * float(c1[i]) / det
-        e22[i] =  ainv * float(c2[i]) / det
+        e11[i] =  dinv * c1[i] / det
+        e12[i] = -binv * c2[i] / det
+        e21[i] = -cinv * c1[i] / det
+        e22[i] =  ainv * c2[i] / det
 
-        f1[i] = ( dinv * (float(d1[i]) - float(a1[i]) * f1_prev)
-                - binv * (float(d2[i]) - float(a2[i]) * f2_prev)) / det
-        f2[i] = (-cinv * (float(d1[i]) - float(a1[i]) * f1_prev)
-                + ainv * (float(d2[i]) - float(a2[i]) * f2_prev)) / det
+        f1[i] = ( dinv * (d1[i] - a1[i] * f1_prev)
+                - binv * (d2[i] - a2[i] * f2_prev)) / det
+        f2[i] = (-cinv * (d1[i] - a1[i] * f1_prev)
+                + ainv * (d2[i] - a2[i] * f2_prev)) / det
 
         e11_prev, e12_prev = e11[i], e12[i]
         e21_prev, e22_prev = e21[i], e22[i]
         f1_prev,  f2_prev  = f1[i],  f2[i]
 
     # Top layer solution — Fortran lines 354-356 (top = index n-1)
-    t = [0.0] * n
-    q = [0.0] * n
+    t = [jnp.zeros(())] * n
+    q = [jnp.zeros(())] * n
     t[n - 1] = f1[n - 1]
     q[n - 1] = f2[n - 1]
 
@@ -721,12 +751,12 @@ def log_gamma_function(x: float) -> float:
 
     y   = x
     tmp = x + 5.5
-    tmp = (x + 0.5) * math.log(tmp) - tmp
+    tmp = (x + 0.5) * jnp.log(tmp) - tmp
     ser = 1.000000000190015
     for j in range(6):                  # Fortran: do j = 1, 6; y = y + 1; ser += coef(j)/y
         y   += 1.0
         ser += coef[j] / y
-    return tmp + math.log(stp * ser / x)
+    return tmp + jnp.log(stp * ser / x)
 
 
 # ---------------------------------------------------------------------------
@@ -746,7 +776,7 @@ def beta_function(a: float, b: float) -> float:
     Returns:
         ``B(a, b)``.
     """
-    return math.exp(
+    return jnp.exp(
         log_gamma_function(a)
         + log_gamma_function(b)
         - log_gamma_function(a + b)
@@ -808,12 +838,12 @@ def beta_distribution_cdf(a: float, b: float, x: float) -> float:
     if x == 0.0 or x == 1.0:
         bt = 0.0
     else:
-        bt = math.exp(
+        bt = jnp.exp(
             log_gamma_function(a + b)
             - log_gamma_function(a)
             - log_gamma_function(b)
-            + a * math.log(x)
-            + b * math.log(1.0 - x)
+            + a * jnp.log(x)
+            + b * jnp.log(1.0 - x)
         )
 
     if x < (a + 1.0) / (a + b + 2.0):

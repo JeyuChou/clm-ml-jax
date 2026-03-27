@@ -17,6 +17,7 @@ its ``if/elif`` is evaluated once during tracing — no issue.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Sequence
 
 import jax
@@ -106,6 +107,7 @@ _gb_layers = jax.vmap(
 # Public driver
 # ---------------------------------------------------------------------------
 
+@partial(jax.jit, static_argnums=(0, 1, 2))
 def LeafBoundaryLayer(
     num_filter: int,
     filter_patch: Sequence[int],

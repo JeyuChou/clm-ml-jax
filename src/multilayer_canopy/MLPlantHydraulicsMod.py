@@ -31,6 +31,7 @@ Differentiability notes
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Sequence
 
 import jax
@@ -277,6 +278,7 @@ _lwp_layers = jax.vmap(
 )
 
 
+@partial(jax.jit, static_argnums=(0, 1, 2))
 def LeafWaterPotential(
     num_filter: int,
     filter_patch: Sequence[int],
