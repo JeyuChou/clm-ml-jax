@@ -1030,9 +1030,12 @@ def _ObuFuncPure_jax(
         jnp.maximum(obu_val, obu_min_stable),
         jnp.minimum(obu_val, obu_max_unstable),
     )
-    LcL_val = Lc_p / obu_cur
+    _eps_obu = jnp.asarray(1e-30)
+    obu_cur_safe = jnp.where(jnp.abs(obu_cur) > _eps_obu, obu_cur, _eps_obu)
+    LcL_val = Lc_p / obu_cur_safe
 
-    c1_n         = (vkc / jnp.log((ztop_p + z0mg) / z0mg)) ** 2
+    z0mg_safe = jnp.maximum(z0mg, _eps_obu)
+    c1_n         = (vkc / jnp.log((ztop_p + z0mg_safe) / z0mg_safe)) ** 2
     beta_neutral = jnp.minimum(
         jnp.sqrt(c1_n + cr * (lai_p + sai_p)),
         jnp.asarray(beta_neutral_max),
@@ -1060,13 +1063,17 @@ def _ObuFuncPure_jax(
     psim, psic, _dum1, _dum2 = _GetPsiRSL(
         zref_p, ztop_p, zdisp_val, obu_cur, beta_val, PrSc_val)
 
-    zlog      = jnp.log((zref_p - zdisp_val) / (ztop_p - zdisp_val))
-    ustar_val = uref_p * vkc / (zlog + psim)
-    tstar     = (thref_p - taf_p) * vkc / (zlog + psic)
-    qstar     = (qref_p  - qaf_p) * vkc / (zlog + psic)
+    _hc_d = jnp.maximum(ztop_p - zdisp_val, _eps_obu)
+    zlog      = jnp.log(jnp.maximum((zref_p - zdisp_val) / _hc_d, _eps_obu))
+    _denom_m  = jnp.where(jnp.abs(zlog + psim) > _eps_obu, zlog + psim, _eps_obu)
+    _denom_c  = jnp.where(jnp.abs(zlog + psic) > _eps_obu, zlog + psic, _eps_obu)
+    ustar_val = uref_p * vkc / _denom_m
+    tstar     = (thref_p - taf_p) * vkc / _denom_c
+    qstar     = (qref_p  - qaf_p) * vkc / _denom_c
 
-    tvstar  = tstar + 0.61 * thref_p * qstar
-    obu_new = ustar_val ** 2 * thvref_p / (vkc * grav * tvstar)
+    tvstar    = tstar + 0.61 * thref_p * qstar
+    tvstar_safe = jnp.where(jnp.abs(tvstar) > _eps_obu, tvstar, _eps_obu)
+    obu_new   = ustar_val ** 2 * thvref_p / (vkc * grav * tvstar_safe)
     return obu_new - obu_val
 
 
@@ -1207,9 +1214,12 @@ def _obu_writeback_jax(p, obu_val, kwargs, mlcanopy_inst):
         jnp.maximum(obu_val, obu_min_stable),
         jnp.minimum(obu_val, obu_max_unstable),
     )
-    LcL_val = Lc_p / obu_cur
+    _eps_obu = jnp.asarray(1e-30)
+    obu_cur_safe = jnp.where(jnp.abs(obu_cur) > _eps_obu, obu_cur, _eps_obu)
+    LcL_val = Lc_p / obu_cur_safe
 
-    c1_n         = (vkc / jnp.log((ztop_p + z0mg) / z0mg)) ** 2
+    z0mg_safe = jnp.maximum(z0mg, _eps_obu)
+    c1_n         = (vkc / jnp.log((ztop_p + z0mg_safe) / z0mg_safe)) ** 2
     beta_neutral = jnp.minimum(
         jnp.sqrt(c1_n + cr * (lai_p + sai_p)),
         jnp.asarray(beta_neutral_max),
@@ -1237,9 +1247,12 @@ def _obu_writeback_jax(p, obu_val, kwargs, mlcanopy_inst):
     psim, psic, _, _ = _GetPsiRSL(
         zref_p, ztop_p, zdisp_val, obu_cur, beta_val, PrSc_val)
 
-    zlog        = jnp.log((zref_p - zdisp_val) / (ztop_p - zdisp_val))
-    ustar_val   = uref_p * vkc / (zlog + psim)
-    gac_to_hc_v = rhomol_p * vkc * ustar_val / (zlog + psic)
+    _hc_d2 = jnp.maximum(ztop_p - zdisp_val, _eps_obu)
+    zlog        = jnp.log(jnp.maximum((zref_p - zdisp_val) / _hc_d2, _eps_obu))
+    _dm2 = jnp.where(jnp.abs(zlog + psim) > _eps_obu, zlog + psim, _eps_obu)
+    _dc2 = jnp.where(jnp.abs(zlog + psic) > _eps_obu, zlog + psic, _eps_obu)
+    ustar_val   = uref_p * vkc / _dm2
+    gac_to_hc_v = rhomol_p * vkc * ustar_val / _dc2
 
     return mlcanopy_inst._replace(
         zdisp_canopy     = mlcanopy_inst.zdisp_canopy.at[p].set(zdisp_val),
@@ -1500,11 +1513,12 @@ def _WindProfile_jax(
     for ic in range(ntop + 1, ncan + 1):
         zs_ic = zs_p[ic]
         psim, _, _, _ = _GetPsiRSL(zs_ic, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
-        zlog_m = jnp.log((zs_ic - zdisp_p) / (ztop_p - zdisp_p))
+        _hcd_w = jnp.maximum(ztop_p - zdisp_p, 1e-30)
+        zlog_m = jnp.log(jnp.maximum((zs_ic - zdisp_p) / _hcd_w, 1e-30))
         wind = wind.at[p, ic].set(ustar_p / vkc * (zlog_m + psim))
 
     # Wind at canopy top
-    uaf_val = ustar_p / beta_p
+    uaf_val = ustar_p / jnp.maximum(beta_p, 1e-30)
     uaf = uaf.at[p].set(uaf_val)
 
     # Within-canopy wind
@@ -1729,14 +1743,16 @@ def _AerodynamicConductance_jax(
     zs_p    = mlcanopy_inst.zs_profile[p]
 
     # --- Above-canopy conductances ---
+    _eps_ac = jnp.asarray(1e-30)
     for ic in range(ntop + 1, ncan):
         zs_lo = zs_p[ic]
         zs_hi = zs_p[ic + 1]
         _, psic1, _, _ = _GetPsiRSL(zs_lo, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
         _, psic2, _, _ = _GetPsiRSL(zs_hi, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
         psic_d = psic2 - psic1
-        zlog_c = jnp.log((zs_hi - zdisp_p) / (zs_lo - zdisp_p))
-        gac = gac.at[p, ic].set(rhomol_p * vkc * ustar_p / (zlog_c + psic_d))
+        zlog_c = jnp.log(jnp.maximum((zs_hi - zdisp_p) / jnp.maximum(zs_lo - zdisp_p, _eps_ac), _eps_ac))
+        _dc = jnp.where(jnp.abs(zlog_c + psic_d) > _eps_ac, zlog_c + psic_d, _eps_ac)
+        gac = gac.at[p, ic].set(rhomol_p * vkc * ustar_p / _dc)
 
     # Top layer to reference height
     ic = ncan
@@ -1744,46 +1760,55 @@ def _AerodynamicConductance_jax(
     _, psic1, _, _ = _GetPsiRSL(zs_lo, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
     _, psic2, _, _ = _GetPsiRSL(zref_p, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
     psic_d = psic2 - psic1
-    zlog_c = jnp.log((zref_p - zdisp_p) / (zs_lo - zdisp_p))
-    gac = gac.at[p, ic].set(rhomol_p * vkc * ustar_p / (zlog_c + psic_d))
+    zlog_c = jnp.log(jnp.maximum((zref_p - zdisp_p) / jnp.maximum(zs_lo - zdisp_p, _eps_ac), _eps_ac))
+    _dc = jnp.where(jnp.abs(zlog_c + psic_d) > _eps_ac, zlog_c + psic_d, _eps_ac)
+    gac = gac.at[p, ic].set(rhomol_p * vkc * ustar_p / _dc)
 
     # ztop to zs(ntop+1)
     _, psic1, _, _ = _GetPsiRSL(ztop_p, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
     _, psic2, _, _ = _GetPsiRSL(zs_p[ntop + 1], ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
     psic_d = psic2 - psic1
-    zlog_c = jnp.log((zs_p[ntop + 1] - zdisp_p) / (ztop_p - zdisp_p))
-    gac_above_foliage = rhomol_p * vkc * ustar_p / (zlog_c + psic_d)
+    _hcd_ac = jnp.maximum(ztop_p - zdisp_p, _eps_ac)
+    zlog_c = jnp.log(jnp.maximum((zs_p[ntop + 1] - zdisp_p) / _hcd_ac, _eps_ac))
+    _dc = jnp.where(jnp.abs(zlog_c + psic_d) > _eps_ac, zlog_c + psic_d, _eps_ac)
+    gac_above_foliage = rhomol_p * vkc * ustar_p / _dc
 
     # --- Within-canopy conductances ---
+    _bu_safe = jnp.maximum(beta_p * ustar_p, _eps_ac)
     for ic in range(1, ntop):
         zl = zs_p[ic]     - ztop_p
         zu = zs_p[ic + 1] - ztop_p
-        res = (PrSc_p / (beta_p * ustar_p)
+        res = (PrSc_p / _bu_safe
                * (jnp.exp(-zl / lm_over_beta) - jnp.exp(-zu / lm_over_beta)))
-        gac = gac.at[p, ic].set(rhomol_p / res)
+        res_safe = jnp.maximum(jnp.abs(res), _eps_ac)
+        gac = gac.at[p, ic].set(rhomol_p / res_safe)
 
     # Top foliage layer: combine below and above
     ic = ntop
     zl  = zs_p[ic] - ztop_p
-    res = (PrSc_p / (beta_p * ustar_p)
+    res = (PrSc_p / _bu_safe
            * (jnp.exp(-zl / lm_over_beta) - 1.0))   # exp(0)=1
-    gac_below_foliage = rhomol_p / res
+    res_safe = jnp.maximum(jnp.abs(res), _eps_ac)
+    gac_below_foliage = rhomol_p / res_safe
     gac = gac.at[p, ic].set(1.0 / (1.0 / gac_below_foliage + 1.0 / gac_above_foliage))
 
     # --- Soil surface aerodynamic conductance ---
     z0cg = 0.1 * z0mg
     zs1  = zs_p[1]
+    z0mg_safe = jnp.maximum(z0mg, _eps_ac)
 
     if HF_extension_type == 1:                     # static branch
         zl  = z0cg - ztop_p
         zu  = zs1  - ztop_p
-        res = (PrSc_p / (beta_p * ustar_p)
+        res = (PrSc_p / _bu_safe
                * (jnp.exp(-zl / lm_over_beta) - jnp.exp(-zu / lm_over_beta)))
-        _gac0_val = rhomol_p / res
+        res_safe = jnp.maximum(jnp.abs(res), _eps_ac)
+        _gac0_val = rhomol_p / res_safe
     elif HF_extension_type == 2:                   # static branch
-        zlog_m  = jnp.log(zs1 / z0mg)
-        ustar_g = jnp.maximum(mlcanopy_inst.wind_profile[p, 1], 0.1) * vkc / zlog_m
-        _gac0_val = rhomol_p * vkc * ustar_g / zlog_m
+        zlog_m  = jnp.log(jnp.maximum(zs1 / z0mg_safe, _eps_ac))
+        zlog_m_safe = jnp.maximum(jnp.abs(zlog_m), _eps_ac)
+        ustar_g = jnp.maximum(mlcanopy_inst.wind_profile[p, 1], 0.1) * vkc / zlog_m_safe
+        _gac0_val = rhomol_p * vkc * ustar_g / zlog_m_safe
     else:
         _gac0_val = gac0[p]
 

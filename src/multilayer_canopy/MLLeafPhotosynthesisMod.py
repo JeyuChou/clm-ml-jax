@@ -731,12 +731,16 @@ def _CiFuncPure_jax(
     ap_val     = jnp.maximum(ap_val,     0.0)
     agross_val = jnp.maximum(agross_val, 0.0)
     anet_val   = agross_val - rd_ic
-    cs_val     = jnp.maximum(cair_ic - anet_val / gbc_ic, 1.0)
+    # Guard denominators against zero for NaN-safe backward pass
+    _eps = jnp.asarray(1e-30)
+    gbc_safe = jnp.maximum(gbc_ic, _eps)
+    cs_val   = jnp.maximum(cair_ic - anet_val / gbc_safe, 1.0)
 
     if gs_type == 1:                 # Ball-Berry — static Python branch
         term     = anet_val / cs_val
         bq_gs    = gbv_ic - g0_p - g1_p * term
-        cq_gs    = -gbv_ic * (g0_p + g1_p * term * ceair_ic / lesat_ic)
+        lesat_safe = jnp.maximum(lesat_ic, _eps)
+        cq_gs    = -gbv_ic * (g0_p + g1_p * term * ceair_ic / lesat_safe)
         r1, r2   = quadratic(1.0, bq_gs, cq_gs)
         gs_pos   = jnp.maximum(r1, r2)
         gs_val   = jnp.where(anet_val > 0.0, gs_pos, jnp.asarray(g0_p))
@@ -744,8 +748,9 @@ def _CiFuncPure_jax(
     elif gs_type == 0:               # Medlyn — static Python branch
         vpd_term = jnp.maximum(lesat_ic - ceair_ic, vpd_min_MED) * 0.001
         term     = dh2o_to_dco2 * anet_val / cs_val
+        gbv_safe = jnp.maximum(gbv_ic, _eps)
         bq_gs    = -(2.0 * (g0_p + term)
-                     + (g1_p * term) ** 2 / (gbv_ic * vpd_term))
+                     + (g1_p * term) ** 2 / (gbv_safe * vpd_term))
         cq_gs    = (g0_p * g0_p
                     + (2.0 * g0_p
                        + term * (1.0 - g1_p * g1_p / vpd_term)) * term)
@@ -756,8 +761,9 @@ def _CiFuncPure_jax(
     else:                            # WUE fallback (gs_type == 2)
         gs_val = jnp.asarray(g0_p)
 
-    gleaf  = 1.0 / (1.0 / gbc_ic + dh2o_to_dco2 / gs_val)
-    cinew  = cair_ic - anet_val / gleaf
+    gs_safe = jnp.maximum(gs_val, _eps)
+    gleaf   = 1.0 / (1.0 / gbc_safe + dh2o_to_dco2 / gs_safe)
+    cinew   = cair_ic - anet_val / gleaf
     ci_dif = cinew - ci_val
     # When anet_val < 0: solver sets ci_dif = 0 (Fortran line 330)
     return jnp.where(anet_val < 0.0, jnp.zeros(()), ci_dif)
@@ -881,6 +887,13 @@ def _make_leaf_photo_kernel(
         """Per-layer photosynthesis + stomatal conductance kernel."""
         active = dpai_ic > 0.0
 
+        # Guard against division-by-zero for inactive layers (NaN-safe backward pass)
+        _safe = jnp.asarray(1.0)
+        gbc_ic  = jnp.where(active, gbc_ic, _safe)
+        gbv_ic  = jnp.where(active, gbv_ic, _safe)
+        cair_ic = jnp.where(active, cair_ic, _safe)
+        eair_ic = jnp.where(active, eair_ic, _safe)
+
         # --- Temperature responses — Fortran lines 161-175 ---
         # Uses _ft/_fth (jnp.exp) instead of _ft_py/_fth_py (math.exp)
         # so the kernel is fully JAX-traceable for scan / vmap / jit.
@@ -960,20 +973,23 @@ def _make_leaf_photo_kernel(
         _ap     = jnp.maximum(_ap,     0.0)
         _agross = jnp.maximum(_agross, 0.0)
         _anet   = _agross - rd_val
+        _eps_k  = jnp.asarray(1e-30)
         _cs     = jnp.maximum(cair_ic - _anet / gbc_ic, 1.0)
 
         if gs_type == 1:         # Ball-Berry — static Python branch
             _term    = _anet / _cs
             _bq2     = gbv_ic - g0_val - g1_val * _term
-            _cq2     = -gbv_ic * (g0_val + g1_val * _term * ceair_val / lesat_val)
+            _lesat_safe = jnp.maximum(lesat_val, _eps_k)
+            _cq2     = -gbv_ic * (g0_val + g1_val * _term * ceair_val / _lesat_safe)
             _r1, _r2 = quadratic(1.0, _bq2, _cq2)
             _gs_pos  = jnp.maximum(_r1, _r2)
             _gs      = jnp.where(_anet > 0.0, _gs_pos, jnp.asarray(g0_val))
         else:                    # Medlyn (gs_type == 0) — static Python branch
             _vpdt    = jnp.maximum(lesat_val - ceair_val, vpd_min_MED) * 0.001
             _term    = dh2o_to_dco2 * _anet / _cs
+            _gbv_vpdt = jnp.maximum(gbv_ic * _vpdt, _eps_k)
             _bq2     = -(2.0 * (g0_val + _term)
-                         + (g1_val * _term) ** 2 / (gbv_ic * _vpdt))
+                         + (g1_val * _term) ** 2 / _gbv_vpdt)
             _cq2     = (g0_val * g0_val
                         + (2.0 * g0_val
                            + _term * (1.0 - g1_val * g1_val / _vpdt)) * _term)
@@ -1166,11 +1182,15 @@ def _CiFuncGsJax(
     c3psn_pft_val,
 ):
     """JAX-traceable version of _CiFuncGsPure. Uses jnp ops throughout."""
-    gleaf = 1.0 / (1.0 / gbc_ic + dh2o_to_dco2 / gs_val)
+    _eps = jnp.asarray(1e-30)
+    gbc_safe = jnp.maximum(gbc_ic, _eps)
+    gs_safe  = jnp.maximum(gs_val, _eps)
+    gleaf = 1.0 / (1.0 / gbc_safe + dh2o_to_dco2 / gs_safe)
 
     if is_c3:
         a0 = vcmax_ic
-        b0 = kc_ic * (1.0 + o2ref_p / ko_ic)
+        ko_safe = jnp.maximum(ko_ic, _eps)
+        b0 = kc_ic * (1.0 + o2ref_p / ko_safe)
         aq = 1.0 / gleaf
         bq = -(cair_ic + b0) - (a0 - rd_ic) / gleaf
         cq = a0 * (cair_ic - cp_ic) - rd_ic * (cair_ic + b0)
@@ -1193,7 +1213,7 @@ def _CiFuncGsJax(
 
     agross_val = _RealizedRate(c3psn_pft_val, ac_val, aj_val, ap_val)
     anet_val   = agross_val - rd_ic
-    cs_val     = jnp.maximum(cair_ic - anet_val / gbc_ic, 1.0)
+    cs_val     = jnp.maximum(cair_ic - anet_val / gbc_safe, 1.0)
     ci_val     = cair_ic - anet_val / gleaf
 
     return ci_val, ac_val, aj_val, ap_val, agross_val, anet_val, cs_val
@@ -1210,15 +1230,18 @@ def _StomataEfficiencyJax(
     **ci_kwargs,
 ):
     """JAX-traceable version of _StomataEfficiencyPure."""
+    _eps = jnp.asarray(1e-30)
     delta = 0.001
     _, _, _, _, _, an_low, _  = _CiFuncGsJax(gs_val - delta, **ci_kwargs)
     _, _, _, _, _, an_high, _ = _CiFuncGsJax(gs_val, **ci_kwargs)
 
-    hs  = ((gbv_ic * eair_ic + gs_val * lesat_ic)
-           / ((gbv_ic + gs_val) * lesat_ic))
-    vpd = jnp.maximum(lesat_ic - hs * lesat_ic, vpd_min_MED)
+    lesat_safe = jnp.maximum(lesat_ic, _eps)
+    denom = jnp.maximum((gbv_ic + gs_val) * lesat_safe, _eps)
+    hs  = (gbv_ic * eair_ic + gs_val * lesat_safe) / denom
+    vpd = jnp.maximum(lesat_safe - hs * lesat_safe, vpd_min_MED)
 
-    return (an_high - an_low) - iota * delta * (vpd / pref_p)
+    pref_safe = jnp.maximum(pref_p, _eps)
+    return (an_high - an_low) - iota * delta * (vpd / pref_safe)
 
 
 def _bisect_gs_jax(gsmin, gs_upper, se_kwargs, n_iter=20):
@@ -1264,6 +1287,14 @@ def _make_leaf_photo_kernel_wue(
         eair_ic, apar_ic, gbc_ic, gbv_ic, cair_ic,
     ):
         active = dpai_ic > 0.0
+
+        # Guard against division-by-zero for inactive layers (NaN-safe backward pass)
+        _safe = jnp.asarray(1.0)
+        gbc_ic  = jnp.where(active, gbc_ic, _safe)
+        gbv_ic  = jnp.where(active, gbv_ic, _safe)
+        cair_ic = jnp.where(active, cair_ic, _safe)
+        eair_ic = jnp.where(active, eair_ic, _safe)
+        apar_ic = jnp.where(active, apar_ic, _safe)
 
         # Temperature responses (JAX)
         kc_val    = kc25   * _ft(tleaf_ic, kcha)
