@@ -37,6 +37,7 @@ from multilayer_canopy.MLclm_varcon import mmh2o, rgas                  # noqa: 
 from multilayer_canopy.MLclm_varctl import (                            # noqa: F401
     mlcan_to_clm, dtime_ml, ml_vert_init,
     runge_kutta_type, nrk, met_type,
+    GridInfo,
 )
 from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan, nleaf  # noqa: F401
 from clm_src_main.PatchType import patch                           # noqa: F401
@@ -129,6 +130,7 @@ def MLCanopyFluxes(
     mlcanopy_inst: mlcanopy_type,
     wateratm2lndbulk_inst: Any,
     waterdiagnosticbulk_inst: Any,
+    grid: 'GridInfo | None' = None,
 ) -> mlcanopy_type:
     """
     Compute all multilayer canopy fluxes for one CLM timestep.
@@ -236,6 +238,8 @@ def MLCanopyFluxes(
     from clm_src_utils.clm_time_manager import get_nstep, get_step_size, get_curr_calday  # noqa: F401
     import multilayer_canopy.MLclm_varctl as _ml_ctl   # for ml_vert_init mutation
 
+    _diff_mode = grid is not None
+
     # Declare module-level RK coefficient cache as global so assignments
     # inside the if-block persist across calls.
     global _rk_ark, _rk_brk, _rk_crk
@@ -286,10 +290,11 @@ def MLCanopyFluxes(
     # Triggered when any zref == spval (unset sentinel)
     # ------------------------------------------------------------------
     _ml_vert_init = 0
-    for p in filter_mlcan:
-        if float(mlcanopy_inst.zref_forcing[p]) == spval:
-            _ml_vert_init = 1
-            break
+    if not _diff_mode:
+        for p in filter_mlcan:
+            if float(mlcanopy_inst.zref_forcing[p]) == spval:
+                _ml_vert_init = 1
+                break
     _ml_ctl.ml_vert_init = _ml_vert_init        # expose to other modules
 
     if _ml_vert_init == 1:
@@ -377,7 +382,7 @@ def MLCanopyFluxes(
         lai = lai.at[p].set(lai_val)
         sai = sai.at[p].set(sai_val)
 
-        _ncan = int(mlcanopy_inst.ncan_canopy[p])
+        _ncan = grid.ncan if _diff_mode else int(mlcanopy_inst.ncan_canopy[p])
         for ic in range(1, _ncan + 1):
             dlai_val = mlcanopy_inst.dlai_frac_profile[p, ic] * lai_val
             dsai_val = mlcanopy_inst.dsai_frac_profile[p, ic] * sai_val
@@ -387,11 +392,12 @@ def MLCanopyFluxes(
             dpai = dpai.at[p, ic].set(dpai_val)
 
         # PAI conservation check — Fortran lines 239-242
-        totpai = sum(
-            float(dpai[p, ic]) for ic in range(1, _ncan + 1)
-        )
-        if abs(totpai - float(lai_val + sai_val)) > 1.0e-6:
-            endrun(msg=' ERROR: MLCanopyFluxes: plant area index not updated correctly')
+        if not _diff_mode:
+            totpai = sum(
+                float(dpai[p, ic]) for ic in range(1, _ncan + 1)
+            )
+            if abs(totpai - float(lai_val + sai_val)) > 1.0e-6:
+                endrun(msg=' ERROR: MLCanopyFluxes: plant area index not updated correctly')
 
     mlcanopy_inst = mlcanopy_inst._replace(
         lai_canopy    = lai,
@@ -424,16 +430,18 @@ def MLCanopyFluxes(
 
     # ------------------------------------------------------------------
     # Flux accumulators — Fortran lines 57-64 (local arrays)
+    # Skipped in differentiable mode (diagnostics only).
     # ------------------------------------------------------------------
-    nvar1d = 23
-    nvar2d = 14
-    nvar3d = 12
-    begp   = bounds.begp
-    endp   = bounds.endp
-    import numpy as np
-    flux_accumulator         = np.zeros((endp + 1, nvar1d))
-    flux_accumulator_profile = np.zeros((endp + 1, nlevmlcan + 2, nvar2d))
-    flux_accumulator_leaf    = np.zeros((endp + 1, nlevmlcan + 1, nleaf + 1, nvar3d))
+    if not _diff_mode:
+        nvar1d = 23
+        nvar2d = 14
+        nvar3d = 12
+        begp   = bounds.begp
+        endp   = bounds.endp
+        import numpy as np
+        flux_accumulator         = np.zeros((endp + 1, nvar1d))
+        flux_accumulator_profile = np.zeros((endp + 1, nlevmlcan + 2, nvar2d))
+        flux_accumulator_leaf    = np.zeros((endp + 1, nlevmlcan + 1, nleaf + 1, nvar3d))
 
     # ------------------------------------------------------------------
     # Runge-Kutta configuration — Fortran lines 265-271
@@ -458,7 +466,10 @@ def MLCanopyFluxes(
     # Pre-compute ncan for each active patch once — avoids int() device-to-host
     # sync inside the hot ML sub-step loop.  ncan is constant for a fixed site
     # so this tuple is computed only once per CLM timestep.
-    ncan_vals: tuple = tuple(int(mlcanopy_inst.ncan_canopy[p]) for p in filter_mlcan)
+    if _diff_mode:
+        ncan_vals: tuple = tuple(grid.ncan for _ in filter_mlcan)
+    else:
+        ncan_vals: tuple = tuple(int(mlcanopy_inst.ncan_canopy[p]) for p in filter_mlcan)
 
     # ==================================================================
     # Multilayer canopy time-stepping loop — Fortran lines 261-330
@@ -487,7 +498,8 @@ def MLCanopyFluxes(
         # Atmospheric forcing for this ML timestep — Fortran line 287
         mlcanopy_inst = GetAtmForcing(
             calday_interp_bef, calday_interp_cur, calday_interp_next,
-            calday_interp_ml, num_mlcan, filter_mlcan, mlcanopy_inst
+            calday_interp_ml, num_mlcan, filter_mlcan, mlcanopy_inst,
+            grid=grid,
         )
 
         # Solar radiation — Fortran line 290
@@ -506,7 +518,7 @@ def MLCanopyFluxes(
             mlcanopy_inst = CanopyWettedFraction(num_mlcan, filter_mlcan, mlcanopy_inst)
 
             # Longwave radiation — Fortran line 303
-            mlcanopy_inst = LongwaveRadiation(bounds, num_mlcan, filter_mlcan, mlcanopy_inst)
+            mlcanopy_inst = LongwaveRadiation(bounds, num_mlcan, filter_mlcan, mlcanopy_inst, grid=grid)
 
             # Net radiation — Fortran lines 305-311 (vectorized)
             mlcanopy_inst = mlcanopy_inst._replace(
@@ -519,18 +531,18 @@ def MLCanopyFluxes(
             )
 
             # Canopy turbulence — Fortran line 320
-            mlcanopy_inst = CanopyTurbulence(nstep_ml, num_mlcan, filter_mlcan, mlcanopy_inst)
+            mlcanopy_inst = CanopyTurbulence(nstep_ml, num_mlcan, filter_mlcan, mlcanopy_inst, grid=grid)
 
             # Leaf boundary layer conductance — Fortran lines 326-327
             mlcanopy_inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isun, mlcanopy_inst)
             mlcanopy_inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isha, mlcanopy_inst)
 
             # Photosynthesis and stomatal conductance — Fortran lines 334-335
-            mlcanopy_inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isun, mlcanopy_inst)
-            mlcanopy_inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isha, mlcanopy_inst)
+            mlcanopy_inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isun, mlcanopy_inst, grid=grid)
+            mlcanopy_inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isha, mlcanopy_inst, grid=grid)
 
             # Flux-profile solution — Fortran line 344
-            mlcanopy_inst = FluxProfileSolution(num_mlcan, filter_mlcan, mlcanopy_inst)
+            mlcanopy_inst = FluxProfileSolution(num_mlcan, filter_mlcan, mlcanopy_inst, grid=grid)
 
             # Leaf water potential — Fortran lines 350-351
             mlcanopy_inst = LeafWaterPotential(num_mlcan, filter_mlcan, isun, mlcanopy_inst)
@@ -542,15 +554,16 @@ def MLCanopyFluxes(
 
             # Runge-Kutta state update (not on the final step) — Fortran lines 359-361
             if nrk_steps > 0 and irk <= nrk_steps:
-                mlcanopy_inst = RungeKuttaUpdate(irk, ark, brk, crk, num_mlcan, filter_mlcan, mlcanopy_inst)
+                mlcanopy_inst = RungeKuttaUpdate(irk, ark, brk, crk, num_mlcan, filter_mlcan, mlcanopy_inst, grid=grid)
 
         # Accumulate fluxes over ML sub-steps — Fortran line 372
-        flux_accumulator, flux_accumulator_profile, flux_accumulator_leaf, mlcanopy_inst = \
-            _MLTimeStepFluxIntegration(
-                nstep_ml, num_ml_steps, num_mlcan, filter_mlcan,
-                flux_accumulator, flux_accumulator_profile,
-                flux_accumulator_leaf, mlcanopy_inst
-            )
+        if not _diff_mode:
+            flux_accumulator, flux_accumulator_profile, flux_accumulator_leaf, mlcanopy_inst = \
+                _MLTimeStepFluxIntegration(
+                    nstep_ml, num_ml_steps, num_mlcan, filter_mlcan,
+                    flux_accumulator, flux_accumulator_profile,
+                    flux_accumulator_leaf, mlcanopy_inst
+                )
 
     # End multilayer time-stepping loop
     # ------------------------------------------------------------------
@@ -592,13 +605,18 @@ def MLCanopyFluxes(
     # ------------------------------------------------------------------
     # Canopy-level diagnostics — Fortran line 346
     # ------------------------------------------------------------------
-    mlcanopy_inst = _CanopyFluxesDiagnostics(num_mlcan, filter_mlcan, mlcanopy_inst)
+    if not _diff_mode:
+        mlcanopy_inst = _CanopyFluxesDiagnostics(num_mlcan, filter_mlcan, mlcanopy_inst)
 
     # ------------------------------------------------------------------
     # Merge sun/shade leaf temperature and water potential — Fortran lines 355-375
     # State is prognostic; sun/shade fraction changes between CLM steps,
     # so merge to a layer-mean before the next timestep.
+    # Skipped in differentiable mode (uses np.asarray; not needed for loss).
     # ------------------------------------------------------------------
+    if _diff_mode:
+        return mlcanopy_inst
+
     tleaf = mlcanopy_inst.tleaf_leaf
     tleaf_hist = mlcanopy_inst.tleaf_hist_leaf
     lwp   = mlcanopy_inst.lwp_leaf
@@ -1909,3 +1927,81 @@ def _CanopyFluxesDiagnostics(
         tleaf_mean_profile   = tleaf_mean,
         lwp_mean_profile     = lwp_mean,
     )
+
+
+# ---------------------------------------------------------------------------
+# Differentiable forward pass factory
+# ---------------------------------------------------------------------------
+
+def make_clm_ml_forward(
+    mlcanopy_inst_template: mlcanopy_type,
+    bounds: Any,
+    num_exposedvegp: int,
+    filter_exposedvegp: Sequence[int],
+    atm2lnd_inst: Any,
+    canopystate_inst: Any,
+    soilstate_inst: Any,
+    temperature_inst: Any,
+    waterstatebulk_inst: Any,
+    waterfluxbulk_inst: Any,
+    energyflux_inst: Any,
+    frictionvel_inst: Any,
+    surfalb_inst: Any,
+    solarabs_inst: Any,
+    wateratm2lndbulk_inst: Any,
+    waterdiagnosticbulk_inst: Any,
+):
+    """Create a differentiable forward function with baked-in structural params.
+
+    Usage::
+
+        forward_fn = make_clm_ml_forward(mlcanopy_inst, bounds, ...)
+        grads = jax.grad(forward_fn)(mlcanopy_inst)
+
+    Structural parameters (ncan, ntop, nbot, p) are extracted from the
+    template instance as concrete Python ints *before* ``jax.grad`` tracing.
+    All other CLM instances are captured via closure and treated as constants
+    (not differentiated).  Only ``mlcanopy_inst`` is the differentiation
+    variable.
+
+    Returns:
+        A function ``forward(mlcanopy_inst) -> scalar`` suitable for
+        ``jax.grad``.
+    """
+    _p = int(filter_exposedvegp[0])
+    grid = GridInfo(
+        p=_p,
+        ncan=int(mlcanopy_inst_template.ncan_canopy[_p]),
+        ntop=int(mlcanopy_inst_template.ntop_canopy[_p]),
+        nbot=int(mlcanopy_inst_template.nbot_canopy[_p]),
+    )
+
+    def forward(mlcanopy_inst: mlcanopy_type) -> jnp.ndarray:
+        """Differentiable CLM-ML forward pass. Returns scalar loss."""
+        inst = MLCanopyFluxes(
+            bounds=bounds,
+            num_exposedvegp=num_exposedvegp,
+            filter_exposedvegp=filter_exposedvegp,
+            atm2lnd_inst=atm2lnd_inst,
+            canopystate_inst=canopystate_inst,
+            soilstate_inst=soilstate_inst,
+            temperature_inst=temperature_inst,
+            waterstatebulk_inst=waterstatebulk_inst,
+            waterfluxbulk_inst=waterfluxbulk_inst,
+            energyflux_inst=energyflux_inst,
+            frictionvel_inst=frictionvel_inst,
+            surfalb_inst=surfalb_inst,
+            solarabs_inst=solarabs_inst,
+            mlcanopy_inst=mlcanopy_inst,
+            wateratm2lndbulk_inst=wateratm2lndbulk_inst,
+            waterdiagnosticbulk_inst=waterdiagnosticbulk_inst,
+            grid=grid,
+        )
+        p = grid.p
+        n = grid.ncan
+        # Scalar loss: sum of sensible + latent heat flux profiles
+        loss = (jnp.sum(inst.shair_profile[p, 1:n + 1])
+                + jnp.sum(inst.etair_profile[p, 1:n + 1]))
+        return loss
+
+    return forward

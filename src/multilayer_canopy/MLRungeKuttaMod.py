@@ -35,6 +35,7 @@ def RungeKuttaUpdate(
     num_filter: int,
     filter: Array,
     mlcanopy_inst: mlcanopy_type,
+    grid: 'GridInfo | None' = None,
 ) -> mlcanopy_type:
     """
     Runge-Kutta state update: update states for the next Runge-Kutta step.
@@ -94,33 +95,63 @@ def RungeKuttaUpdate(
     # ------------------------------------------------------------------
     # Per-patch loop — Fortran lines 95-136
     # ------------------------------------------------------------------
+    _diff_mode = grid is not None
+
     for fp in range(num_filter):
-        p = int(filter[fp])
-        n = int(mlcanopy_inst.ncan_canopy[p])
+        if _diff_mode:
+            p = grid.p
+            n = grid.ncan
+        else:
+            p = int(filter[fp])
+            n = int(mlcanopy_inst.ncan_canopy[p])
 
-        # Pre-extract all needed slices as numpy — one sync per array
-        _tair_cur    = np.asarray(tair_arr[p, :n])
-        _eair_cur    = np.asarray(eair_arr[p, :n])
-        _h2ocan_cur  = np.asarray(h2ocan_arr[p, :n])
-        _tleaf_cur   = np.asarray(tleaf_arr[p, :n, :])      # (n, nleaf+1)
-        _lwp_cur     = np.asarray(lwp_arr[p, :n, :])
+        if _diff_mode:
+            # --- Differentiable path: keep everything as JAX arrays ---
+            _tair_cur    = tair_arr[p, :n]
+            _eair_cur    = eair_arr[p, :n]
+            _h2ocan_cur  = h2ocan_arr[p, :n]
+            _tleaf_cur   = tleaf_arr[p, :n, :]
+            _lwp_cur     = lwp_arr[p, :n, :]
 
-        _tair_bef    = np.asarray(mlcanopy_inst.tair_bef_profile[p, :n])
-        _eair_bef    = np.asarray(mlcanopy_inst.eair_bef_profile[p, :n])
-        _h2ocan_bef  = np.asarray(mlcanopy_inst.h2ocan_bef_profile[p, :n])
-        _tleaf_bef   = np.asarray(mlcanopy_inst.tleaf_bef_leaf[p, :n, :])
-        _lwp_bef     = np.asarray(mlcanopy_inst.lwp_bef_leaf[p, :n, :])
+            _tair_bef    = mlcanopy_inst.tair_bef_profile[p, :n]
+            _eair_bef    = mlcanopy_inst.eair_bef_profile[p, :n]
+            _h2ocan_bef  = mlcanopy_inst.h2ocan_bef_profile[p, :n]
+            _tleaf_bef   = mlcanopy_inst.tleaf_bef_leaf[p, :n, :]
+            _lwp_bef     = mlcanopy_inst.lwp_bef_leaf[p, :n, :]
 
-        # Previous RK steps' deltas (indices 0..irk0-1 are valid; irk0 is stale)
-        _dtair_prev  = np.asarray(dtair_arr[p, :n, :])      # (n, nrk)
-        _deair_prev  = np.asarray(deair_arr[p, :n, :])
-        _dh2ocan_prev = np.asarray(dh2ocan_arr[p, :n, :])
-        _dtleaf_prev = np.asarray(dtleaf_arr[p, :n, :, :])  # (n, nleaf+1, nrk)
-        _dlwp_prev   = np.asarray(dlwp_arr[p, :n, :, :])
+            _dtair_prev   = dtair_arr[p, :n, :]
+            _deair_prev   = deair_arr[p, :n, :]
+            _dh2ocan_prev = dh2ocan_arr[p, :n, :]
+            _dtleaf_prev  = dtleaf_arr[p, :n, :, :]
+            _dlwp_prev    = dlwp_arr[p, :n, :, :]
 
-        _tg_cur      = float(tg_arr[p])
-        _tg_bef_val  = float(mlcanopy_inst.tg_bef_soil[p])
-        _dtg_prev    = np.asarray(dtg_arr[p])                # (nrk,)
+            _tg_cur       = tg_arr[p]
+            _tg_bef_val   = mlcanopy_inst.tg_bef_soil[p]
+            _dtg_prev     = dtg_arr[p]
+        else:
+            # --- Original path: numpy for speed ---
+            _tair_cur    = np.asarray(tair_arr[p, :n])
+            _eair_cur    = np.asarray(eair_arr[p, :n])
+            _h2ocan_cur  = np.asarray(h2ocan_arr[p, :n])
+            _tleaf_cur   = np.asarray(tleaf_arr[p, :n, :])      # (n, nleaf+1)
+            _lwp_cur     = np.asarray(lwp_arr[p, :n, :])
+
+            _tair_bef    = np.asarray(mlcanopy_inst.tair_bef_profile[p, :n])
+            _eair_bef    = np.asarray(mlcanopy_inst.eair_bef_profile[p, :n])
+            _h2ocan_bef  = np.asarray(mlcanopy_inst.h2ocan_bef_profile[p, :n])
+            _tleaf_bef   = np.asarray(mlcanopy_inst.tleaf_bef_leaf[p, :n, :])
+            _lwp_bef     = np.asarray(mlcanopy_inst.lwp_bef_leaf[p, :n, :])
+
+            # Previous RK steps' deltas (indices 0..irk0-1 are valid; irk0 is stale)
+            _dtair_prev  = np.asarray(dtair_arr[p, :n, :])      # (n, nrk)
+            _deair_prev  = np.asarray(deair_arr[p, :n, :])
+            _dh2ocan_prev = np.asarray(dh2ocan_arr[p, :n, :])
+            _dtleaf_prev = np.asarray(dtleaf_arr[p, :n, :, :])  # (n, nleaf+1, nrk)
+            _dlwp_prev   = np.asarray(dlwp_arr[p, :n, :, :])
+
+            _tg_cur      = float(tg_arr[p])
+            _tg_bef_val  = float(mlcanopy_inst.tg_bef_soil[p])
+            _dtg_prev    = np.asarray(dtg_arr[p])                # (nrk,)
 
         # ------------------------------------------------------------------
         # Current step's deltas — pure numpy
@@ -199,19 +230,35 @@ def RungeKuttaUpdate(
         # ------------------------------------------------------------------
         # Write back to JAX arrays — bulk slice updates (few JAX ops total)
         # ------------------------------------------------------------------
-        dtair_arr   = dtair_arr.at[p, :n, irk0].set(jnp.array(_dtair_new))
-        deair_arr   = deair_arr.at[p, :n, irk0].set(jnp.array(_deair_new))
-        dh2ocan_arr = dh2ocan_arr.at[p, :n, irk0].set(jnp.array(_dh2ocan_new))
-        dtleaf_arr  = dtleaf_arr.at[p, :n, :, irk0].set(jnp.array(_dtleaf_new))
-        dlwp_arr    = dlwp_arr.at[p, :n, :, irk0].set(jnp.array(_dlwp_new))
-        dtg_arr     = dtg_arr.at[p, irk0].set(_dtg_new)
+        if _diff_mode:
+            # Differentiable path — data is already JAX, no jnp.array() needed
+            dtair_arr   = dtair_arr.at[p, :n, irk0].set(_dtair_new)
+            deair_arr   = deair_arr.at[p, :n, irk0].set(_deair_new)
+            dh2ocan_arr = dh2ocan_arr.at[p, :n, irk0].set(_dh2ocan_new)
+            dtleaf_arr  = dtleaf_arr.at[p, :n, :, irk0].set(_dtleaf_new)
+            dlwp_arr    = dlwp_arr.at[p, :n, :, irk0].set(_dlwp_new)
+            dtg_arr     = dtg_arr.at[p, irk0].set(_dtg_new)
 
-        tair_arr    = tair_arr.at[p, :n].set(jnp.array(_tair_new))
-        eair_arr    = eair_arr.at[p, :n].set(jnp.array(_eair_new))
-        h2ocan_arr  = h2ocan_arr.at[p, :n].set(jnp.array(_h2ocan_new))
-        tleaf_arr   = tleaf_arr.at[p, :n, :].set(jnp.array(_tleaf_new))
-        lwp_arr     = lwp_arr.at[p, :n, :].set(jnp.array(_lwp_new))
-        tg_arr      = tg_arr.at[p].set(_tg_new)
+            tair_arr    = tair_arr.at[p, :n].set(_tair_new)
+            eair_arr    = eair_arr.at[p, :n].set(_eair_new)
+            h2ocan_arr  = h2ocan_arr.at[p, :n].set(_h2ocan_new)
+            tleaf_arr   = tleaf_arr.at[p, :n, :].set(_tleaf_new)
+            lwp_arr     = lwp_arr.at[p, :n, :].set(_lwp_new)
+            tg_arr      = tg_arr.at[p].set(_tg_new)
+        else:
+            dtair_arr   = dtair_arr.at[p, :n, irk0].set(jnp.array(_dtair_new))
+            deair_arr   = deair_arr.at[p, :n, irk0].set(jnp.array(_deair_new))
+            dh2ocan_arr = dh2ocan_arr.at[p, :n, irk0].set(jnp.array(_dh2ocan_new))
+            dtleaf_arr  = dtleaf_arr.at[p, :n, :, irk0].set(jnp.array(_dtleaf_new))
+            dlwp_arr    = dlwp_arr.at[p, :n, :, irk0].set(jnp.array(_dlwp_new))
+            dtg_arr     = dtg_arr.at[p, irk0].set(_dtg_new)
+
+            tair_arr    = tair_arr.at[p, :n].set(jnp.array(_tair_new))
+            eair_arr    = eair_arr.at[p, :n].set(jnp.array(_eair_new))
+            h2ocan_arr  = h2ocan_arr.at[p, :n].set(jnp.array(_h2ocan_new))
+            tleaf_arr   = tleaf_arr.at[p, :n, :].set(jnp.array(_tleaf_new))
+            lwp_arr     = lwp_arr.at[p, :n, :].set(jnp.array(_lwp_new))
+            tg_arr      = tg_arr.at[p].set(_tg_new)
 
     # ------------------------------------------------------------------
     # Write all updated arrays back into the immutable state container

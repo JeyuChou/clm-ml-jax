@@ -49,7 +49,7 @@ from clm_src_main.decompMod import bounds_type                      # noqa: F401
 from clm_src_main.clm_varcon import sb                              # noqa: F401
 from clm_src_main.PatchType import patch                            # noqa: F401
 from multilayer_canopy.MLclm_varcon import emg                           # noqa: F401
-from multilayer_canopy.MLclm_varctl import longwave_type                 # noqa: F401
+from multilayer_canopy.MLclm_varctl import longwave_type, GridInfo       # noqa: F401
 from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan         # noqa: F401
 from multilayer_canopy.MLMathToolsMod import tridiag                     # noqa: F401
 from multilayer_canopy.MLpftconMod import MLpftcon                       # noqa: F401
@@ -65,6 +65,7 @@ def LongwaveRadiation(
     num_filter: int,
     filter_patch: Sequence[int],
     mlcanopy_inst: mlcanopy_type,
+    grid: GridInfo = None,
 ) -> mlcanopy_type:
     """
     Longwave radiation transfer through the multilayer canopy.
@@ -85,7 +86,7 @@ def LongwaveRadiation(
         Updated :class:`mlcanopy_type`.
     """
     if longwave_type == 1:
-        return _Norman(bounds, num_filter, filter_patch, mlcanopy_inst)
+        return _Norman(bounds, num_filter, filter_patch, mlcanopy_inst, grid=grid)
     else:
         endrun(msg=' ERROR: LongwaveRadiation: longwave_type not valid')
         return mlcanopy_inst    # Unreachable; satisfies type checker
@@ -246,6 +247,7 @@ def _Norman(
     num_filter: int,
     filter_patch: Sequence[int],
     mlcanopy_inst: mlcanopy_type,
+    grid: GridInfo = None,
 ) -> mlcanopy_type:
     """
     Norman (1979) tridiagonal longwave radiative transfer.
@@ -311,8 +313,8 @@ def _Norman(
     bounds and ``jnp.arange(nbot, ntop+1)`` inside the kernel.
     """
     for fp in range(num_filter):
-        p    = filter_patch[fp]
-        ntop = int(mlcanopy_inst.ntop_canopy[p])
-        nbot = int(mlcanopy_inst.nbot_canopy[p])
+        p    = grid.p if grid is not None else filter_patch[fp]
+        ntop = grid.ntop if grid is not None else int(mlcanopy_inst.ntop_canopy[p])
+        nbot = grid.nbot if grid is not None else int(mlcanopy_inst.nbot_canopy[p])
         mlcanopy_inst = _Norman_patch(p, ntop, nbot, mlcanopy_inst)
     return mlcanopy_inst

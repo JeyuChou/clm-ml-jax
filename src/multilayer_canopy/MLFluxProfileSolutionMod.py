@@ -43,6 +43,7 @@ def FluxProfileSolution(
     num_filter: int,
     filter: Array,
     mlcanopy_inst: mlcanopy_type,
+    grid=None,
 ) -> mlcanopy_type:
     """
     Source/sink fluxes for leaves and soil, and concentration profiles.
@@ -78,12 +79,15 @@ def FluxProfileSolution(
     elif flux_profile_type == 1:
         # Implicit flux-profile solution — Fortran lines 62-74
         for fp in range(num_filter):
-            p = int(filter[fp])
-            mlcanopy_inst = ImplicitFluxProfileSolution(p, mlcanopy_inst)
+            if grid is not None:
+                p = grid.p
+                n = grid.ncan
+            else:
+                p = int(filter[fp])
+                n = int(ncan[p])
+            mlcanopy_inst = ImplicitFluxProfileSolution(p, mlcanopy_inst, n=n)
 
             # No profile for CO2: set every layer to reference value
-            # Fortran lines 68-70
-            n = int(ncan[p])
             cair = cair.at[p, :n].set(co2ref[p])
             mlcanopy_inst = mlcanopy_inst._replace(cair_profile=cair)
 
@@ -542,6 +546,7 @@ def _implicit_fps_jit(
 def ImplicitFluxProfileSolution(
     p: int,
     mlcanopy_inst: mlcanopy_type,
+    n: int = None,
 ) -> mlcanopy_type:
     """
     Implicit solution for source/sink fluxes and concentration profiles.
@@ -557,7 +562,8 @@ def ImplicitFluxProfileSolution(
        default because each call requires 9 ``np.asarray()`` host-device
        syncs that dominate the cost of the flux-profile step.
     """
-    n = int(mlcanopy_inst.ncan_canopy[p])          # concrete before JIT boundary
+    if n is None:
+        n = int(mlcanopy_inst.ncan_canopy[p])      # concrete before JIT boundary
     mlcanopy_inst, aux = _implicit_fps_jit(p, n, mlcanopy_inst)
     if DEBUG_FPS_CHECKS:
         (lambda_, shsrc, etsrc, stveg, tleaf_implic,

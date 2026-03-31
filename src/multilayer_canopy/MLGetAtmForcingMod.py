@@ -9,12 +9,13 @@ Original Fortran module: MLGetAtmForcingMod
 Fortran lines 1-175
 """
 
+import jax.numpy as jnp
 from jax import Array
 
 from clm_src_main.abortutils import endrun                                          # noqa: F401
 from clm_src_main.clm_varctl import iulog                                          # noqa: F401
 from clm_src_main.clm_varpar import ivis, inir                                     # noqa: F401
-from multilayer_canopy.MLclm_varctl import met_type                                     # noqa: F401
+from multilayer_canopy.MLclm_varctl import met_type, GridInfo                           # noqa: F401
 from multilayer_canopy.MLclm_varcon import (                                            # noqa: F401
     mmh2o, mmdry, cpd, cpw, rgas, lapse_rate, wind_forc_min,
 )
@@ -112,6 +113,7 @@ def GetAtmForcing(
     num_filter: int,
     filter: Array,
     mlcanopy_inst: mlcanopy_type,
+    grid: 'GridInfo | None' = None,
 ) -> mlcanopy_type:
     """
     Interpolate and derive atmospheric forcing for the current multilayer
@@ -205,68 +207,68 @@ def GetAtmForcing(
     # Per-patch loop — Fortran lines 156-167
     # ------------------------------------------------------------------
     for fp in range(num_filter):
-        p = int(filter[fp])
+        if grid is not None:
+            p = grid.p
+        else:
+            p = int(filter[fp])
 
         # --------------------------------------------------------------
-        # Atmospheric forcing interpolation — read all inputs as Python
-        # floats (independent JAX syncs), then compute in pure Python to
-        # avoid chained XLA dependency: reading qref[p] after writing it
-        # forces XLA to drain; using pre-read Python scalars avoids that.
+        # Atmospheric forcing interpolation — values stay as JAX scalars
+        # when grid is provided (differentiable mode).
         # --------------------------------------------------------------
         if met_type == 0:
             # No interpolation: use current CLM timestep values
             # Fortran lines 122-131
-            _uref_p     = float(uref_cur[p])
-            _tref_p     = float(tref_cur[p])
-            _qref_p     = float(qref_cur[p])
-            _pref_p     = float(pref_cur[p])
-            _co2ref_p   = float(co2ref_cur[p])
-            _swskyb_vis = float(swskyb_cur[p, ivis])
-            _swskyd_vis = float(swskyd_cur[p, ivis])
-            _swskyb_nir = float(swskyb_cur[p, inir])
-            _swskyd_nir = float(swskyd_cur[p, inir])
-            _lwsky_p    = float(lwsky_cur[p])
+            _uref_p     = uref_cur[p]
+            _tref_p     = tref_cur[p]
+            _qref_p     = qref_cur[p]
+            _pref_p     = pref_cur[p]
+            _co2ref_p   = co2ref_cur[p]
+            _swskyb_vis = swskyb_cur[p, ivis]
+            _swskyd_vis = swskyd_cur[p, ivis]
+            _swskyb_nir = swskyb_cur[p, inir]
+            _swskyd_nir = swskyd_cur[p, inir]
+            _lwsky_p    = lwsky_cur[p]
 
         elif met_type == 2:
             # 2-point linear interpolation from bef to cur
             # Fortran lines 133-145  (endrun guard preserved)
             endrun(msg=' ERROR: met_type not valid')
-            _uref_p     = TimeInterpolation2(float(uref_bef[p]),   float(uref_cur[p]),   time_bef, time_cur, time_ml)
-            _tref_p     = TimeInterpolation2(float(tref_bef[p]),   float(tref_cur[p]),   time_bef, time_cur, time_ml)
-            _qref_p     = TimeInterpolation2(float(qref_bef[p]),   float(qref_cur[p]),   time_bef, time_cur, time_ml)
-            _pref_p     = TimeInterpolation2(float(pref_bef[p]),   float(pref_cur[p]),   time_bef, time_cur, time_ml)
-            _co2ref_p   = TimeInterpolation2(float(co2ref_bef[p]), float(co2ref_cur[p]), time_bef, time_cur, time_ml)
-            _swskyb_vis = TimeInterpolation2(float(swskyb_bef[p, ivis]), float(swskyb_cur[p, ivis]), time_bef, time_cur, time_ml)
-            _swskyd_vis = TimeInterpolation2(float(swskyd_bef[p, ivis]), float(swskyd_cur[p, ivis]), time_bef, time_cur, time_ml)
-            _swskyb_nir = TimeInterpolation2(float(swskyb_bef[p, inir]), float(swskyb_cur[p, inir]), time_bef, time_cur, time_ml)
-            _swskyd_nir = TimeInterpolation2(float(swskyd_bef[p, inir]), float(swskyd_cur[p, inir]), time_bef, time_cur, time_ml)
-            _lwsky_p    = TimeInterpolation2(float(lwsky_bef[p]),  float(lwsky_cur[p]),  time_bef, time_cur, time_ml)
+            _uref_p     = TimeInterpolation2(uref_bef[p],   uref_cur[p],   time_bef, time_cur, time_ml)
+            _tref_p     = TimeInterpolation2(tref_bef[p],   tref_cur[p],   time_bef, time_cur, time_ml)
+            _qref_p     = TimeInterpolation2(qref_bef[p],   qref_cur[p],   time_bef, time_cur, time_ml)
+            _pref_p     = TimeInterpolation2(pref_bef[p],   pref_cur[p],   time_bef, time_cur, time_ml)
+            _co2ref_p   = TimeInterpolation2(co2ref_bef[p], co2ref_cur[p], time_bef, time_cur, time_ml)
+            _swskyb_vis = TimeInterpolation2(swskyb_bef[p, ivis], swskyb_cur[p, ivis], time_bef, time_cur, time_ml)
+            _swskyd_vis = TimeInterpolation2(swskyd_bef[p, ivis], swskyd_cur[p, ivis], time_bef, time_cur, time_ml)
+            _swskyb_nir = TimeInterpolation2(swskyb_bef[p, inir], swskyb_cur[p, inir], time_bef, time_cur, time_ml)
+            _swskyd_nir = TimeInterpolation2(swskyd_bef[p, inir], swskyd_cur[p, inir], time_bef, time_cur, time_ml)
+            _lwsky_p    = TimeInterpolation2(lwsky_bef[p],  lwsky_cur[p],  time_bef, time_cur, time_ml)
 
         elif met_type == 3:
             # 3-point piecewise linear interpolation across bef, cur, next
             # Fortran lines 147-158
-            _uref_p     = TimeInterpolation3(float(uref_bef[p]),   float(uref_cur[p]),   float(uref_next[p]),   time_bef, time_cur, time_next, time_ml)
-            _tref_p     = TimeInterpolation3(float(tref_bef[p]),   float(tref_cur[p]),   float(tref_next[p]),   time_bef, time_cur, time_next, time_ml)
-            _qref_p     = TimeInterpolation3(float(qref_bef[p]),   float(qref_cur[p]),   float(qref_next[p]),   time_bef, time_cur, time_next, time_ml)
-            _pref_p     = TimeInterpolation3(float(pref_bef[p]),   float(pref_cur[p]),   float(pref_next[p]),   time_bef, time_cur, time_next, time_ml)
-            _co2ref_p   = TimeInterpolation3(float(co2ref_bef[p]), float(co2ref_cur[p]), float(co2ref_next[p]), time_bef, time_cur, time_next, time_ml)
-            _swskyb_vis = TimeInterpolation3(float(swskyb_bef[p, ivis]), float(swskyb_cur[p, ivis]), float(swskyb_next[p, ivis]), time_bef, time_cur, time_next, time_ml)
-            _swskyd_vis = TimeInterpolation3(float(swskyd_bef[p, ivis]), float(swskyd_cur[p, ivis]), float(swskyd_next[p, ivis]), time_bef, time_cur, time_next, time_ml)
-            _swskyb_nir = TimeInterpolation3(float(swskyb_bef[p, inir]), float(swskyb_cur[p, inir]), float(swskyb_next[p, inir]), time_bef, time_cur, time_next, time_ml)
-            _swskyd_nir = TimeInterpolation3(float(swskyd_bef[p, inir]), float(swskyd_cur[p, inir]), float(swskyd_next[p, inir]), time_bef, time_cur, time_next, time_ml)
-            _lwsky_p    = TimeInterpolation3(float(lwsky_bef[p]),  float(lwsky_cur[p]),  float(lwsky_next[p]),  time_bef, time_cur, time_next, time_ml)
+            _uref_p     = TimeInterpolation3(uref_bef[p],   uref_cur[p],   uref_next[p],   time_bef, time_cur, time_next, time_ml)
+            _tref_p     = TimeInterpolation3(tref_bef[p],   tref_cur[p],   tref_next[p],   time_bef, time_cur, time_next, time_ml)
+            _qref_p     = TimeInterpolation3(qref_bef[p],   qref_cur[p],   qref_next[p],   time_bef, time_cur, time_next, time_ml)
+            _pref_p     = TimeInterpolation3(pref_bef[p],   pref_cur[p],   pref_next[p],   time_bef, time_cur, time_next, time_ml)
+            _co2ref_p   = TimeInterpolation3(co2ref_bef[p], co2ref_cur[p], co2ref_next[p], time_bef, time_cur, time_next, time_ml)
+            _swskyb_vis = TimeInterpolation3(swskyb_bef[p, ivis], swskyb_cur[p, ivis], swskyb_next[p, ivis], time_bef, time_cur, time_next, time_ml)
+            _swskyd_vis = TimeInterpolation3(swskyd_bef[p, ivis], swskyd_cur[p, ivis], swskyd_next[p, ivis], time_bef, time_cur, time_next, time_ml)
+            _swskyb_nir = TimeInterpolation3(swskyb_bef[p, inir], swskyb_cur[p, inir], swskyb_next[p, inir], time_bef, time_cur, time_next, time_ml)
+            _swskyd_nir = TimeInterpolation3(swskyd_bef[p, inir], swskyd_cur[p, inir], swskyd_next[p, inir], time_bef, time_cur, time_next, time_ml)
+            _lwsky_p    = TimeInterpolation3(lwsky_bef[p],  lwsky_cur[p],  lwsky_next[p],  time_bef, time_cur, time_next, time_ml)
 
         # --------------------------------------------------------------
         # Minimum wind speed restriction — Fortran line 161
-        # (pure Python max — no JAX op needed)
+        # jnp.maximum works on both JAX scalars and Python floats
         # --------------------------------------------------------------
-        _uref_p = max(wind_forc_min, _uref_p)
+        _uref_p = jnp.maximum(wind_forc_min, _uref_p)
 
         # --------------------------------------------------------------
         # Derived atmospheric variables — Fortran lines 164-170
-        # Pure Python math: no JAX reads after write, no XLA drain.
         # --------------------------------------------------------------
-        _zref_p = float(zref[p])
+        _zref_p = zref[p]
 
         # Vapor pressure at reference height (Pa)
         _eref_p   = _qref_p * _pref_p / (_eps + _one_minus_eps * _qref_p)
