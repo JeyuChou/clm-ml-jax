@@ -1,0 +1,15 @@
+name: clm-ml-jax
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - "jax[cuda12]"       # GPU JAX — change to cuda11 if HPC uses CUDA 11
+      - numpy>=1.20.0
+      - f90nml>=1.4.0
+      - netCDF4             # needed for reading tower/CLM input files
+      - scipy
+      - pytest>=7.0.0
+      - pytest-cov>=4.0.0
