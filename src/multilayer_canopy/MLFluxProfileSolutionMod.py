@@ -210,7 +210,8 @@ def _implicit_fps_jit(
             _gs_il  = _gs_p[ic, il]
             _gbv_il = _gbv_p[ic, il]
             gsh_raw = 2.0 * _gbh_p[ic, il]
-            gs_gbv_denom = jnp.where(active_ic, _gs_il + _gbv_il, 1.0)
+            # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+            gs_gbv_denom = jnp.maximum(_gs_il + _gbv_il, 1.0e-30)
             get_raw = (
                 _gs_il * _gbv_il / gs_gbv_denom * _fdry_p[ic]
                 + _gbv_il * _fwet_p[ic]
@@ -224,10 +225,10 @@ def _implicit_fps_jit(
             hcap_raw = _cpleaf_p[ic]
             avail_raw = _rnleaf_p[ic, il]
 
-            den_l = jnp.where(
-                active_ic,
+            # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+            den_l = jnp.maximum(
                 hcap_raw / dtime + gsh_raw * _cpair_p + get_raw * lambda_ * dqsat_l,
-                1.0
+                1.0e-30,
             )
             alpha_val = gsh_raw * _cpair_p / den_l
             beta_val  = get_raw * lambda_ / den_l
@@ -405,7 +406,8 @@ def _implicit_fps_jit(
             qsat_lf  = esat_l  / _pref_p
             dqsat_lf = desat_l / _pref_p
 
-            gs_gbv_denom = jnp.where(active_ic, gs_ic + gbv_ic, 1.0)
+            # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+            gs_gbv_denom = jnp.maximum(gs_ic + gbv_ic, 1.0e-30)
             gleaf = gs_ic * gbv_ic / gs_gbv_denom
             gw    = gleaf * fdry_ic + gbv_ic * fwet_ic
 
@@ -414,7 +416,8 @@ def _implicit_fps_jit(
             num3  = (rnleaf_ic
                      - lambda_ * gw * (qsat_lf - dqsat_lf * tleaf_bef_ic)
                      + cpleaf_ic / dtime * tleaf_bef_ic)
-            den_lf = jnp.where(active_ic, cpleaf_ic / dtime + num1 + num2 * dqsat_lf, 1.0)
+            # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+            den_lf = jnp.maximum(cpleaf_ic / dtime + num1 + num2 * dqsat_lf, 1.0e-30)
             tleaf_active = (num1 * tair_ic + num2 * (eair_ic / _pref_p) + num3) / den_lf
             tleaf_val = jnp.where(active_ic, tleaf_active, tair_ic)
 

@@ -208,7 +208,7 @@ print("\nRunning differentiable forward pass...")
 loss = forward_fn(mlcanopy_inst)
 print(f"Forward loss = {loss}")
 
-print("\nComputing jax.grad...")
+print("\nComputing jax.grad (eager, no JIT to avoid XLA OOM)...")
 try:
     grad_fn = jax.grad(forward_fn, allow_int=True)
     grads = grad_fn(mlcanopy_inst)

@@ -288,8 +288,9 @@ def _CiFuncGs(
     o2ref_p  = mlcanopy_inst.o2ref_forcing[p]
     apar_ic  = mlcanopy_inst.apar_leaf[p, ic, il]
 
-    gs_safe  = jnp.where(active, gs_ic,  1.0)
-    gbc_safe = jnp.where(active, gbc_ic, 1.0)
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    gs_safe  = jnp.maximum(gs_ic,  1.0e-30)
+    gbc_safe = jnp.maximum(gbc_ic, 1.0e-30)
     gleaf = 1.0 / (1.0 / gbc_safe + dh2o_to_dco2 / gs_safe)
 
     # C3 Rubisco-limited — Fortran lines 386-392
@@ -813,9 +814,11 @@ def _ci_solver_scan(ci0, ci1, func_kwargs, n_iter=40):
 
     def body(carry, _):
         x0, x1, f0, f1 = carry
-        # Guard against degenerate denominator (f1 ≈ f0)
-        denom = jnp.where(jnp.abs(f1 - f0) > 1e-30, f1 - f0, jnp.asarray(1e-30))
-        dx    = -f1 * (x1 - x0) / denom
+        # sign * max(|df|, eps) avoids select-as-denominator → no select_divide_fusion
+        _df          = f1 - f0
+        _df_abs_safe = jnp.maximum(jnp.abs(_df), jnp.asarray(1.0e-30))
+        _df_sign     = jnp.where(_df < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+        dx    = -f1 * (x1 - x0) * _df_sign / _df_abs_safe
         x_new = x1 + dx
         f_new = _CiFuncPure_jax(x_new, **func_kwargs)
         return (x1, x_new, f1, f_new), None
@@ -1567,6 +1570,12 @@ def LeafPhotosynthesis(
 
     c3psn_pft = pftcon.c3psn
 
+    # Pre-materialise patch.itype and pftcon arrays as numpy once so that
+    # int()/float() calls below are always concrete, even when this function
+    # is traced by jax.grad/jit (JAX closure arrays become abstract tracers).
+    _patch_itype_np = np.asarray(patch.itype)
+    _c3psn_np       = np.asarray(c3psn_pft)
+
     # ------------------------------------------------------------------
     # First loop: temperature responses + photosynthesis
     # ------------------------------------------------------------------
@@ -1578,8 +1587,8 @@ def LeafPhotosynthesis(
         else:
             p   = int(filter_patch[fp - 1])
             _ncan_p = int(mlcanopy_inst.ncan_canopy[p])
-        pft = int(patch.itype[p])
-        _c3psn_val = float(c3psn_pft[pft])
+        pft = int(_patch_itype_np[p])
+        _c3psn_val = float(_c3psn_np[pft])
         is_c3 = round(_c3psn_val) == 1
 
         # --- Temperature acclimation — Fortran lines 135-153 ---
@@ -1959,8 +1968,8 @@ def LeafPhotosynthesis(
         else:
             p   = int(filter_patch[fp - 1])
             _ncan_p = int(mlcanopy_inst.ncan_canopy[p])
-        pft = int(patch.itype[p])
-        _c3psn_val = float(c3psn_pft[pft])
+        pft = int(_patch_itype_np[p])                  # use pre-materialised numpy copy
+        _c3psn_val = float(_c3psn_np[pft])             # use pre-materialised numpy copy
         is_c3     = round(_c3psn_val) == 1
         _gsmin_pft2 = MLpftcon.gsmin_SPA[pft]
 

@@ -417,9 +417,12 @@ def MLCanopyFluxes(
     mlcanopy_inst = LeafHeatCapacity(num_mlcan, filter_mlcan, mlcanopy_inst)
 
     # Soil surface relative humidity — Fortran lines 259-262
+    # Pre-materialise patch.column as numpy so int() is concrete even inside
+    # jax.grad tracing (patch hierarchy is invariant for a fixed site).
+    _patch_col_np = np.asarray(patch.column)
     rhg = mlcanopy_inst.rhg_soil
     for p in filter_mlcan:
-        c = int(patch.column[p])
+        c = int(_patch_col_np[p])
         smp1  = soilstate_inst.smp_l_col[c, 1]      # mm
         tsoi1 = temperature_inst.t_soisno_col[c, 1]  # K
         rhg_val = jnp.exp(
@@ -438,7 +441,6 @@ def MLCanopyFluxes(
         nvar3d = 12
         begp   = bounds.begp
         endp   = bounds.endp
-        import numpy as np
         flux_accumulator         = np.zeros((endp + 1, nvar1d))
         flux_accumulator_profile = np.zeros((endp + 1, nlevmlcan + 2, nvar2d))
         flux_accumulator_leaf    = np.zeros((endp + 1, nlevmlcan + 1, nleaf + 1, nvar3d))
@@ -503,7 +505,7 @@ def MLCanopyFluxes(
         )
 
         # Solar radiation — Fortran line 290
-        mlcanopy_inst = SolarRadiation(bounds, num_mlcan, filter_mlcan, mlcanopy_inst)
+        mlcanopy_inst = SolarRadiation(bounds, num_mlcan, filter_mlcan, mlcanopy_inst, grid=grid)
 
         # Nitrogen profile (requires fracsun) — Fortran line 293
         mlcanopy_inst = CanopyNitrogenProfile(num_mlcan, filter_mlcan, mlcanopy_inst)
@@ -612,7 +614,7 @@ def MLCanopyFluxes(
     # Merge sun/shade leaf temperature and water potential — Fortran lines 355-375
     # State is prognostic; sun/shade fraction changes between CLM steps,
     # so merge to a layer-mean before the next timestep.
-    # Skipped in differentiable mode (uses np.asarray; not needed for loss).
+    # Skipped in differentiable mode (not needed for loss computation).
     # ------------------------------------------------------------------
     if _diff_mode:
         return mlcanopy_inst
@@ -622,40 +624,38 @@ def MLCanopyFluxes(
     lwp   = mlcanopy_inst.lwp_leaf
     lwp_hist = mlcanopy_inst.lwp_hist_leaf
 
-    for p in filter_mlcan:
-        _ncan = int(mlcanopy_inst.ncan_canopy[p])
+    # ncan_vals is pre-computed above as a tuple of concrete ints
+    # (one per active patch), avoiding int() D->H syncs here.
+    for p, _ncan in zip(filter_mlcan, ncan_vals):
         _sl   = slice(1, _ncan + 1)
 
-        # Save sun/shade values for history files (bulk copy)
+        # Save sun/shade values for history files (bulk copy, uses JAX .at[])
         tleaf_hist = tleaf_hist.at[p, _sl, :].set(tleaf[p, _sl, :])
         lwp_hist   = lwp_hist.at[p, _sl, :].set(lwp[p, _sl, :])
 
         # Vectorized merge to layer mean — Fortran lines 367-374
-        _dpai    = np.asarray(mlcanopy_inst.dpai_profile[p])
-        _fracsun = np.asarray(mlcanopy_inst.fracsun_profile[p])
-        _tleaf_p = np.asarray(tleaf[p])   # shape (nlevmlcan+1, nleaf+1)
-        _lwp_p   = np.asarray(lwp[p])
+        # Pure JAX: no np.asarray() D->H sync; all ops stay on device.
+        dpai_p    = mlcanopy_inst.dpai_profile[p, _sl]      # shape (ncan,)
+        fracsun_p = mlcanopy_inst.fracsun_profile[p, _sl]   # shape (ncan,)
+        tleaf_p   = tleaf[p, _sl, :]                        # shape (ncan, nleaf+1)
+        lwp_p     = lwp[p, _sl, :]                          # shape (ncan, nleaf+1)
 
-        ics     = np.arange(1, _ncan + 1)
-        has_pai = _dpai[ics] > 0.0
-        fs_v    = _fracsun[ics]
+        has_pai = dpai_p > 0.0                              # (ncan,)
 
-        t_sun = _tleaf_p[ics, isun]
-        t_sha = _tleaf_p[ics, isha]
-        t_mean = t_sun * fs_v + t_sha * (1.0 - fs_v)
-        _tleaf_new = _tleaf_p.copy()
-        _tleaf_new[ics, isun] = np.where(has_pai, t_mean, t_sun)
-        _tleaf_new[ics, isha] = np.where(has_pai, t_mean, t_sha)
+        t_sun  = tleaf_p[:, isun]
+        t_sha  = tleaf_p[:, isha]
+        t_mean = t_sun * fracsun_p + t_sha * (1.0 - fracsun_p)
+        tleaf_p_new = tleaf_p.at[:, isun].set(jnp.where(has_pai, t_mean, t_sun))
+        tleaf_p_new = tleaf_p_new.at[:, isha].set(jnp.where(has_pai, t_mean, t_sha))
 
-        l_sun = _lwp_p[ics, isun]
-        l_sha = _lwp_p[ics, isha]
-        l_mean = l_sun * fs_v + l_sha * (1.0 - fs_v)
-        _lwp_new = _lwp_p.copy()
-        _lwp_new[ics, isun] = np.where(has_pai, l_mean, l_sun)
-        _lwp_new[ics, isha] = np.where(has_pai, l_mean, l_sha)
+        l_sun  = lwp_p[:, isun]
+        l_sha  = lwp_p[:, isha]
+        l_mean = l_sun * fracsun_p + l_sha * (1.0 - fracsun_p)
+        lwp_p_new = lwp_p.at[:, isun].set(jnp.where(has_pai, l_mean, l_sun))
+        lwp_p_new = lwp_p_new.at[:, isha].set(jnp.where(has_pai, l_mean, l_sha))
 
-        tleaf = tleaf.at[p, _sl, :].set(jnp.array(_tleaf_new[_sl, :]))
-        lwp   = lwp.at[p, _sl, :].set(jnp.array(_lwp_new[_sl, :]))
+        tleaf = tleaf.at[p, _sl, :].set(tleaf_p_new)
+        lwp   = lwp.at[p, _sl, :].set(lwp_p_new)
 
     mlcanopy_inst = mlcanopy_inst._replace(
         tleaf_leaf      = tleaf,
@@ -827,6 +827,10 @@ def _GetCLMVar(
     z               = col.z
     zi              = col.zi
 
+    # Pre-materialise snl as numpy so int(snl[c]) is always concrete
+    # (snl is a JAX array; tracing would make it abstract inside jit/grad).
+    _snl_np = np.asarray(snl)
+
     # ------------------------------------------------------------------
     # Mutable copies of the mlcanopy arrays to update
     # ------------------------------------------------------------------
@@ -853,10 +857,15 @@ def _GetCLMVar(
     # ------------------------------------------------------------------
     # Copy CLM variables to multilayer canopy — Fortran lines 63-90
     # ------------------------------------------------------------------
+    # Pre-materialise patch hierarchy indices as numpy ints once so that
+    # int() calls below are always concrete, even inside jax.grad tracing.
+    _patch_column_np   = np.asarray(patch.column)
+    _patch_gridcell_np = np.asarray(patch.gridcell)
+
     for fp in range(1, num_filter + 1):        # Fortran: do fp = 1, num_filter
         p = int(filter[fp - 1])
-        c = int(patch.column[p])
-        g = int(patch.gridcell[p])
+        c = int(_patch_column_np[p])
+        g = int(_patch_gridcell_np[p])
 
         # Wind: resultant from east/north components — Fortran line 67
         uref_cur = uref_cur.at[p].set(
@@ -899,10 +908,10 @@ def _GetCLMVar(
         # snl(c)+1 gives the Fortran index of the first snow or soil layer.
         # In standalone mode snl=0, so j=1 (first soil layer).
         # All arrays use direct j indexing (1:nlevgrnd), no nlevsno offset.
-        j = int(snl[c]) + 1                                  # Fortran index = Python index
+        j = int(_snl_np[c]) + 1                              # Fortran index = Python index
 
         soil_t  = soil_t.at[p].set(t_soisno[c, j])
-        soil_dz = soil_dz.at[p].set(z[c, j] - zi[c, int(snl[c])])
+        soil_dz = soil_dz.at[p].set(z[c, j] - zi[c, int(_snl_np[c])])
         soil_tk = soil_tk.at[p].set(thk[c, j])
 
     # ------------------------------------------------------------------
@@ -916,13 +925,18 @@ def _GetCLMVar(
     # Orbital declination for caldaym1 — Fortran line 105
     declinm1, eccf = shr_orb_decl(caldaym1, eccen, mvelpp, lambm0, obliqr)
 
+    # Pre-materialise grc lat/lon as numpy — these are JAX arrays set via
+    # TowerMetMod, so indexing them during jax.grad tracing would fail.
+    _latdeg_np = np.asarray(grc.latdeg)
+    _londeg_np = np.asarray(grc.londeg)
+
     for fp in range(1, num_filter + 1):        # Fortran: do fp = 1, num_filter
         p = int(filter[fp - 1])
-        g = int(patch.gridcell[p])
+        g = int(_patch_gridcell_np[p])          # use pre-materialised numpy copy
 
         # Latitude and longitude in radians — Fortran lines 107-108
-        lat = float(grc.latdeg[g]) * pi / 180.0
-        lon = float(grc.londeg[g]) * pi / 180.0
+        lat = float(_latdeg_np[g]) * pi / 180.0
+        lon = float(_londeg_np[g]) * pi / 180.0
 
         # Cosine of solar zenith angle — Fortran line 109
         coszen = shr_orb_cosz(caldaym1, lat, lon, declinm1)

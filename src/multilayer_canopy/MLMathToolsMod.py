@@ -539,13 +539,18 @@ def quadratic(a: float, b: float, c: float) -> Tuple[float, float]:
 
     # Numerically stable branch selection via jnp.where — avoids
     # Python `if` on potentially JAX-traced `b`.
-    a_safe = jnp.where(jnp.abs(a) > 0.0, a, 1.0)
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug.
+    # All callers pass a > 0 (curvature parameters, conductances); using
+    # maximum is numerically equivalent for all physically valid inputs.
+    a_safe = jnp.maximum(a, 1.0e-30)
     q = jnp.where(
         b >= 0.0,
         -0.5 * (b + discriminant),
         -0.5 * (b - discriminant),
     )
-    q_safe = jnp.where(q != 0.0, q, 1.0)
+    # q can be signed; guard against exact 0 by adding a tiny offset
+    # when q == 0 (avoids select-as-denominator pattern).
+    q_safe = q + jnp.asarray(q == 0.0, dtype=q.dtype)  # adds 1.0 when q == 0
     r1 = q / a_safe
     r2 = jnp.where(q != 0.0, c / q_safe, jnp.asarray(1.0e36))
 

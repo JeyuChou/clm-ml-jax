@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
+import numpy as np
 import jax.numpy as jnp
 from jax import Array
 
@@ -42,6 +43,7 @@ from multilayer_canopy.MLclm_varcon import chil_max, chil_min, kb_max, J_to_umol
 from multilayer_canopy.MLclm_varctl import light_type, leaf_optics_type  # noqa: F401
 from multilayer_canopy.MLclm_varpar import nlevmlcan, isun, isha          # noqa: F401
 from multilayer_canopy.MLMathToolsMod import tridiag                     # noqa: F401
+from multilayer_canopy.MLclm_varctl import GridInfo                      # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +55,7 @@ def SolarRadiation(
     num_filter: int,
     filter_patch: Sequence[int],
     mlcanopy_inst: mlcanopy_type,
+    grid: 'GridInfo | None' = None,
 ) -> mlcanopy_type:
     """
     Solar radiation transfer through the multilayer canopy.
@@ -143,14 +146,24 @@ def SolarRadiation(
     # ------------------------------------------------------------------
     # Calculate canopy layer optical properties — Fortran lines 100-182
     # ------------------------------------------------------------------
+    # Pre-materialise index arrays as numpy so int() calls below are
+    # always concrete, even when this function is traced by jax.grad/jit.
+    # When grid is provided (diff mode), ncan/ntop/nbot are already
+    # concrete Python ints from GridInfo — no np.asarray() needed.
+    if grid is None:
+        _ncan_np   = np.asarray(ncan)
+        _ntop_np   = np.asarray(ntop)
+        _nbot_np   = np.asarray(nbot)
+    _itype_np  = np.asarray(patch.itype)
+
     for fp in range(1, num_filter + 1):
-        p = int(filter_patch[fp - 1])
-        pft = int(patch.itype[p])
+        p = int(filter_patch[fp - 1]) if grid is None else grid.p
+        pft = int(_itype_np[p])
         zen = solar_zen[p]
         cos_zen = jnp.cos(zen)
-        _ncan = int(ncan[p])
-        _ntop = int(ntop[p])
-        _nbot = int(nbot[p])
+        _ncan = int(_ncan_np[p]) if grid is None else grid.ncan
+        _ntop = int(_ntop_np[p]) if grid is None else grid.ntop
+        _nbot = int(_nbot_np[p]) if grid is None else grid.nbot
 
         # Per-patch output arrays (JAX)
         _kb_p      = jnp.zeros(_ncan + 2)
@@ -178,7 +191,8 @@ def SolarRadiation(
             dpai_ic = dpai[p, ic]
             dlai_ic = dlai[p, ic]
             dsai_ic = dsai[p, ic]
-            dpai_safe = jnp.where(dpai_ic > 0.0, dpai_ic, 1.0)
+            # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+            dpai_safe = jnp.maximum(dpai_ic, 1.0e-30)
             wl = dlai_ic / dpai_safe
             ws = dsai_ic / dpai_safe
 
@@ -233,20 +247,23 @@ def SolarRadiation(
 
             # Sunlit fraction — Fortran lines 179-188
             tbi_ic = _tbi_p[ic]
-            kb_ic_safe = jnp.where(kb_ic * dpai_ic > 0.0, kb_ic * dpai_ic, 1.0)
+            # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+            # When kb*dpai=0, the exp term also =0 so fracsun_ic=0 regardless of denom.
+            kb_ic_safe = jnp.maximum(kb_ic * dpai_ic, 1.0e-30)
             fracsun_ic = (
                 tbi_ic / kb_ic_safe
                 * (1.0 - jnp.exp(-kb_ic * cf * dpai_ic))
             )
-            if jnp.any(fracsun_ic <= 0.0):
+            if grid is None and jnp.any(fracsun_ic <= 0.0):
                 endrun(msg=' ERROR: SolarRadiation: fracsun is too small')
-            if jnp.any((1.0 - fracsun_ic) <= 0.0):
+            if grid is None and jnp.any((1.0 - fracsun_ic) <= 0.0):
                 endrun(msg=' ERROR: SolarRadiation: fracsha is too small')
             _fracsun_p = _fracsun_p.at[ic].set(fracsun_ic)
 
             # Two-stream avmu — Fortran lines 190-194
-            p1_safe = jnp.where(p1 > 0.0, p1, 1.0e-10)
-            p2_safe = jnp.where(p2 > 0.0, p2, 1.0e-10)
+            # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+            p1_safe = jnp.maximum(p1, 1.0e-10)
+            p2_safe = jnp.maximum(p2, 1.0e-10)
             avmu_ic = (1.0 - p1_safe / p2_safe * jnp.log((p1_safe + p2_safe) / p1_safe)) / p2_safe
             _avmu = _avmu.at[p, ic].set(avmu_ic)
 
@@ -260,8 +277,10 @@ def SolarRadiation(
                 )
                 tmp0 = gd + p2 * cos_zen
                 tmp1 = p1 * cos_zen
-                tmp0_safe = jnp.where(jnp.abs(tmp0) > 0.0, tmp0, 1.0e-10)
-                tmp1_safe = jnp.where(tmp1 > 0.0, tmp1, 1.0e-10)
+                # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+                # tmp0 = gd + p2*cos_zen, tmp1 = p1*cos_zen — both non-negative physically
+                tmp0_safe = jnp.maximum(tmp0, 1.0e-10)
+                tmp1_safe = jnp.maximum(tmp1, 1.0e-10)
                 tmp2 = 1.0 - tmp1_safe / tmp0_safe * jnp.log((tmp1_safe + tmp0_safe) / tmp1_safe)
                 asu  = 0.5 * om * gd / tmp0_safe * tmp2
                 _betab = _betab.at[p, ic, ib].set(
@@ -302,13 +321,13 @@ def SolarRadiation(
         mlcanopy_inst = _Norman(
             bounds, num_filter, filter_patch,
             _rho_arr, _tau_arr, _om_arr,
-            mlcanopy_inst,
+            mlcanopy_inst, grid=grid,
         )
     elif light_type == 2:
         mlcanopy_inst = _TwoStream(
             bounds, num_filter, filter_patch,
             _om_arr, _avmu, _betad, _betab, _cf_ic,
-            mlcanopy_inst,
+            mlcanopy_inst, grid=grid,
         )
     else:
         endrun(msg=' ERROR: SolarRadiation: light_type not valid')
@@ -319,8 +338,8 @@ def SolarRadiation(
     swleaf = mlcanopy_inst.swleaf_leaf
     apar   = mlcanopy_inst.apar_leaf
     for fp in range(1, num_filter + 1):
-        p = int(filter_patch[fp - 1])
-        _ncan = int(ncan[p])
+        p     = int(filter_patch[fp - 1]) if grid is None else grid.p
+        _ncan = (int(_ncan_np[p]) if grid is None else grid.ncan)
         _sl = slice(1, _ncan + 1)
         apar = apar.at[p, _sl, :].set(swleaf[p, _sl, :, ivis] * J_to_umol)
 
@@ -340,6 +359,7 @@ def _Norman(
     tau: Array,
     omega: Array,
     mlcanopy_inst: mlcanopy_type,
+    grid: 'GridInfo | None' = None,
 ) -> mlcanopy_type:
     """
     Norman (1979) tridiagonal radiative transfer through the canopy.
@@ -396,12 +416,20 @@ def _Norman(
     swdwn    = mlcanopy_inst.swdwn_profile
     swbeam   = mlcanopy_inst.swbeam_profile
 
+    # Pre-materialise ncan/ntop/nbot as numpy so int() calls below are
+    # always concrete inside jax.grad/jit tracing.
+    # When grid is provided (diff mode), use pre-extracted concrete ints.
+    if grid is None:
+        _ncan_np = np.asarray(ncan)
+        _ntop_np = np.asarray(ntop)
+        _nbot_np = np.asarray(nbot)
+
     for ib in range(1, numrad + 1):                    # Fortran: do ib = 1, numrad
         for fp in range(1, num_filter + 1):
-            p = int(filter_patch[fp - 1])
-            _ncan = int(ncan[p])
-            _ntop = int(ntop[p])
-            _nbot = int(nbot[p])
+            p     = int(filter_patch[fp - 1]) if grid is None else grid.p
+            _ncan = int(_ncan_np[p]) if grid is None else grid.ncan
+            _ntop = int(_ntop_np[p]) if grid is None else grid.ntop
+            _nbot = int(_nbot_np[p]) if grid is None else grid.nbot
 
             # Scalar inputs — JAX scalars directly
             _swskyb_ib  = swskyb[p, ib]
@@ -549,9 +577,10 @@ def _Norman(
                 _swsun = _swabsd_ic * _fs + _swabsb_ic
 
                 _dpai_ic = dpai[p, ic]
-                fs_safe   = jnp.where(_fs > 0.0, _fs, 1.0)
-                fsha_safe = jnp.where((1.0 - _fs) > 0.0, (1.0 - _fs), 1.0)
-                dpai_safe = jnp.where(_dpai_ic > 0.0, _dpai_ic, 1.0)
+                # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+                fs_safe   = jnp.maximum(_fs, 1.0e-30)
+                fsha_safe = jnp.maximum(1.0 - _fs, 1.0e-30)
+                dpai_safe = jnp.maximum(_dpai_ic, 1.0e-30)
                 swleaf_sun_new = swleaf_sun_new.at[ic].set(_swsun / (fs_safe * dpai_safe))
                 swleaf_sha_new = swleaf_sha_new.at[ic].set(_swsha / (fsha_safe * dpai_safe))
                 swbeam_new     = swbeam_new.at[ic].set(_swbeam_ic)
@@ -561,17 +590,18 @@ def _Norman(
 
             # Albedo — Fortran lines 410-414
             _suminc    = _swskyb_ib + _swskyd_ib
-            _suminc_safe = jnp.where(_suminc > 0.0, _suminc, 1.0)
+            # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+            _suminc_safe = jnp.maximum(_suminc, 1.0e-30)
             _albcan_ib = jnp.where(_suminc > 0.0, swupw_new[_ntop] / _suminc_safe, 0.0)
 
             # Conservation checks — Fortran lines 416-426
             _sumref = _albcan_ib * _suminc
             _sumabs = _suminc - _sumref
             _err = _sumabs - (_swveg_acc + _swsoi_ib)
-            if jnp.abs(_err) > 1.0e-3:
+            if grid is None and jnp.abs(_err) > 1.0e-3:
                 endrun(msg='ERROR: Norman: total solar conservation error')
             _err2 = (_swvegsun_acc + _swvegsha_acc) - _swveg_acc
-            if jnp.abs(_err2) > 1.0e-3:
+            if grid is None and jnp.abs(_err2) > 1.0e-3:
                 endrun(msg='ERROR: Norman: sunlit/shade solar conservation error')
 
             # Bulk JAX write-back
@@ -620,6 +650,7 @@ def _TwoStream(
     betab: Array,
     clump_fac_ic: Array,
     mlcanopy_inst: mlcanopy_type,
+    grid: 'GridInfo | None' = None,
 ) -> mlcanopy_type:
     """
     Two-stream radiative transfer integrated over each canopy layer.
@@ -690,11 +721,19 @@ def _TwoStream(
     n_rad = numrad + 1
     nleaf_p1 = 3   # nleaf + 1 = 3
 
+    # Pre-materialise ncan/ntop/nbot as numpy so int() calls below are
+    # always concrete inside jax.grad/jit tracing.
+    # When grid is provided (diff mode), use pre-extracted concrete ints.
+    if grid is None:
+        _ncan_np = np.asarray(ncan)
+        _ntop_np = np.asarray(ntop)
+        _nbot_np = np.asarray(nbot)
+
     for fp in range(1, num_filter + 1):
-        p = int(filter_patch[fp - 1])
-        _ncan = int(ncan[p])
-        _ntop = int(ntop[p])
-        _nbot = int(nbot[p])
+        p     = int(filter_patch[fp - 1]) if grid is None else grid.p
+        _ncan = int(_ncan_np[p]) if grid is None else grid.ncan
+        _ntop = int(_ntop_np[p]) if grid is None else grid.ntop
+        _nbot = int(_nbot_np[p]) if grid is None else grid.nbot
 
         # Per-patch output JAX arrays
         _swleaf_p   = jnp.zeros((n_lev, nleaf_p1, n_rad))
@@ -813,9 +852,10 @@ def _TwoStream(
 
                 fs    = fracsun[p, ic]
                 dp_ic = dpai[p, ic]
-                fs_safe   = jnp.where(fs > 0.0, fs, 1.0)
-                fsha_safe = jnp.where((1.0 - fs) > 0.0, (1.0 - fs), 1.0)
-                dpai_safe = jnp.where(dp_ic > 0.0, dp_ic, 1.0)
+                # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+                fs_safe   = jnp.maximum(fs, 1.0e-30)
+                fsha_safe = jnp.maximum(1.0 - fs, 1.0e-30)
+                dpai_safe = jnp.maximum(dp_ic, 1.0e-30)
                 _swleaf_p = _swleaf_p.at[ic, isun, ib].set(
                     (_iabsb_sun[ic] * dir_ + _iabsd_sun[ic] * dif) / (fs_safe * dpai_safe)
                 )
@@ -840,7 +880,8 @@ def _TwoStream(
             # Canopy albedo
             suminc = swskyb[p, ib] + swskyd[p, ib]
             sumref = _iupwb0[_ntop] * swskyb[p, ib] + _iupwd0[_ntop] * swskyd[p, ib]
-            suminc_safe = jnp.where(suminc > 0.0, suminc, 1.0)
+            # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+            suminc_safe = jnp.maximum(suminc, 1.0e-30)
             _albcan_p = _albcan_p.at[ib].set(
                 jnp.where(suminc > 0.0, sumref / suminc_safe, 0.0)
             )
@@ -863,7 +904,7 @@ def _TwoStream(
 
             # Conservation check
             sumabs = swveg_ib + _swsoi_p[ib]
-            if jnp.abs(suminc - (sumabs + _albcan_p[ib] * suminc)) >= 1.0e-6:
+            if grid is None and jnp.abs(suminc - (sumabs + _albcan_p[ib] * suminc)) >= 1.0e-6:
                 endrun(msg='ERROR: TwoStream: total solar radiation conservation error')
 
         # Bulk JAX write-back for this patch

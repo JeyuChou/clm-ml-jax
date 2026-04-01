@@ -120,7 +120,8 @@ def LeafFluxes(
 
     # Leaf transpiration conductance — Fortran line 72
     # Safe denominator: avoid 0/0 when gs = gbv = 0 on empty layers
-    gleaf_denom = jnp.where(active, gs_ic + gbv_ic, 1.0)
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    gleaf_denom = jnp.maximum(gs_ic + gbv_ic, 1.0e-30)
     gleaf       = gs_ic * gbv_ic / gleaf_denom
 
     # Total conductance — Fortran line 74
@@ -133,7 +134,8 @@ def LeafFluxes(
             - lam * gw * (qsat - dqsat * tleaf_bef_ic)
             + cpleaf_ic / dtime * tleaf_bef_ic)
     # Safe denominator: avoid /0 when cpleaf = gbh = gw = 0 on empty layers
-    tleaf_denom = jnp.where(active, cpleaf_ic / dtime + num1 + num2 * dqsat, 1.0)
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    tleaf_denom = jnp.maximum(cpleaf_ic / dtime + num1 + num2 * dqsat, 1.0e-30)
     tleaf_active = (num1 * tair_ic + num2 * (eair_ic / pref_p) + num3) / tleaf_denom
 
     # Storage heat flux — Fortran line 83

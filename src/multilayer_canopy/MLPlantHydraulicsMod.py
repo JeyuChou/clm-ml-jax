@@ -235,7 +235,8 @@ def SoilResistance(
 
         # Weighted soil water potential and fractional uptake — Fortran 153-168
         totevap      = jnp.sum(evap_v)
-        totevap_safe = jnp.where(totevap > 0.0, totevap, 1.0)
+        # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+        totevap_safe = jnp.maximum(totevap, 1.0e-30)
         psis_p       = jnp.where(totevap > 0.0,
                                  jnp.sum(smp_mpa_v * evap_v) / totevap_safe,
                                  minlwp_SPA)
@@ -264,7 +265,8 @@ def _lwp_layer(dpai_ic, zs_ic, lsc_ic, trleaf_ic, lwp_bef_ic,
                psis_p, head, capac_p, dtime):
     """Leaf water potential ODE solution for one canopy layer (differentiable)."""
     has_pai  = dpai_ic > 0.0
-    lsc_safe = jnp.where(has_pai, lsc_ic, 1.0)    # avoid /0 on empty layers
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    lsc_safe = jnp.maximum(lsc_ic, 1.0e-30)       # avoid /0 on empty layers
     a        = psis_p - head * zs_ic - 1000.0 * trleaf_ic / lsc_safe
     b        = capac_p / lsc_safe
     y0       = lwp_bef_ic

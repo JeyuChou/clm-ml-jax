@@ -252,7 +252,8 @@ def _LookupPsihat(
     at_right_L = dtL >  dtLg[-1]
     L2_raw = jnp.clip(jnp.searchsorted(dtLg, dtL, side='right'), 0, nL_tbl - 1)
     L1_raw = jnp.maximum(L2_raw - 1, 0)
-    denom_L = jnp.where(L2_raw != L1_raw, dtLg[L2_raw] - dtLg[L1_raw], 1.0)
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    denom_L = jnp.maximum(dtLg[L2_raw] - dtLg[L1_raw], 1.0e-30)
     wL1_raw = (dtLg[L2_raw] - dtL) / denom_L
     wL2_raw = 1.0 - wL1_raw
     at_bnd_L = at_left_L | at_right_L
@@ -269,8 +270,8 @@ def _LookupPsihat(
         jnp.searchsorted(neg_zdtg, -zdt, side='right') - 1, 0, nZ_tbl - 2
     )
     Z2_raw = Z1_raw + 1
-    denom_Z = jnp.where(zdtg[Z1_raw] != zdtg[Z2_raw],
-                        zdtg[Z1_raw] - zdtg[Z2_raw], 1.0)
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    denom_Z = jnp.maximum(zdtg[Z1_raw] - zdtg[Z2_raw], 1.0e-30)
     wZ1_raw = (zdt - zdtg[Z2_raw]) / denom_Z
     wZ2_raw = 1.0 - wZ1_raw
     at_bnd_Z = at_top_Z | at_bottom_Z
@@ -303,7 +304,8 @@ def _LookupPsihatM(zdt, dtL):
     at_bnd_L = (dtL <= dtLg[0]) | (dtL > dtLg[-1])
     L2_raw = jnp.clip(jnp.searchsorted(dtLg, dtL, side='right'), 0, nL - 1)
     L1_raw = jnp.maximum(L2_raw - 1, 0)
-    denom_L = jnp.where(L2_raw != L1_raw, dtLg[L2_raw] - dtLg[L1_raw], 1.0)
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    denom_L = jnp.maximum(dtLg[L2_raw] - dtLg[L1_raw], 1.0e-30)
     wL1 = jnp.where(at_bnd_L, 0.5, (dtLg[L2_raw] - dtL) / denom_L)
     wL2 = 1.0 - wL1
     L1 = jnp.where(dtL <= dtLg[0], 0, jnp.where(dtL > dtLg[-1], nL - 1, L1_raw))
@@ -312,7 +314,8 @@ def _LookupPsihatM(zdt, dtL):
     at_bnd_Z = (zdt > zdtg[0]) | (zdt < zdtg[-1])
     Z1_raw = jnp.clip(jnp.searchsorted(neg_zdtg, -zdt, side='right') - 1, 0, nZ - 2)
     Z2_raw = Z1_raw + 1
-    denom_Z = jnp.where(zdtg[Z1_raw] != zdtg[Z2_raw], zdtg[Z1_raw] - zdtg[Z2_raw], 1.0)
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    denom_Z = jnp.maximum(zdtg[Z1_raw] - zdtg[Z2_raw], 1.0e-30)
     wZ1 = jnp.where(at_bnd_Z, 0.5, (zdt - zdtg[Z2_raw]) / denom_Z)
     wZ2 = 1.0 - wZ1
     Z1 = jnp.where(zdt > zdtg[0], 0, jnp.where(zdt < zdtg[-1], nZ - 1, Z1_raw))
@@ -333,7 +336,8 @@ def _LookupPsihatH(zdt, dtL):
     at_bnd_L = (dtL <= dtLg[0]) | (dtL > dtLg[-1])
     L2_raw = jnp.clip(jnp.searchsorted(dtLg, dtL, side='right'), 0, nL - 1)
     L1_raw = jnp.maximum(L2_raw - 1, 0)
-    denom_L = jnp.where(L2_raw != L1_raw, dtLg[L2_raw] - dtLg[L1_raw], 1.0)
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    denom_L = jnp.maximum(dtLg[L2_raw] - dtLg[L1_raw], 1.0e-30)
     wL1 = jnp.where(at_bnd_L, 0.5, (dtLg[L2_raw] - dtL) / denom_L)
     wL2 = 1.0 - wL1
     L1 = jnp.where(dtL <= dtLg[0], 0, jnp.where(dtL > dtLg[-1], nL - 1, L1_raw))
@@ -342,7 +346,8 @@ def _LookupPsihatH(zdt, dtL):
     at_bnd_Z = (zdt > zdtg[0]) | (zdt < zdtg[-1])
     Z1_raw = jnp.clip(jnp.searchsorted(neg_zdtg, -zdt, side='right') - 1, 0, nZ - 2)
     Z2_raw = Z1_raw + 1
-    denom_Z = jnp.where(zdtg[Z1_raw] != zdtg[Z2_raw], zdtg[Z1_raw] - zdtg[Z2_raw], 1.0)
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    denom_Z = jnp.maximum(zdtg[Z1_raw] - zdtg[Z2_raw], 1.0e-30)
     wZ1 = jnp.where(at_bnd_Z, 0.5, (zdt - zdtg[Z2_raw]) / denom_Z)
     wZ2 = 1.0 - wZ1
     Z1 = jnp.where(zdt > zdtg[0], 0, jnp.where(zdt < zdtg[-1], nZ - 1, Z1_raw))
@@ -968,7 +973,9 @@ def _GetBeta_jax(beta_neutral, LcL):
 
     # --- Stable branch (LcL > 0): Cardano formula for 5*LcL*β³ + β = β_n ---
     # Guard aa_s != 0 when LcL==0 so no NaN before jnp.where selects branch.
-    aa_s = jnp.where(LcL > 0.0, 5.0 * LcL, jnp.asarray(1.0))
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug.
+    # LcL ≥ 0 in the stable branch; when LcL < 0 the branch is discarded anyway.
+    aa_s = jnp.maximum(5.0 * LcL, 1.0e-10)
     # bb_s == 0, cc_s == 1, dd_s == -beta_neutral
     dd_s = -beta_neutral
     qq_s = jnp.sqrt(jnp.maximum(
@@ -1031,8 +1038,11 @@ def _ObuFuncPure_jax(
         jnp.minimum(obu_val, obu_max_unstable),
     )
     _eps_obu = jnp.asarray(1e-30)
-    obu_cur_safe = jnp.where(jnp.abs(obu_cur) > _eps_obu, obu_cur, _eps_obu)
-    LcL_val = Lc_p / obu_cur_safe
+    # Use sign * max(|obu|, eps) to avoid select-as-denominator pattern
+    # which triggers XLA select_divide_fusion compilation failure.
+    _obu_abs_safe = jnp.maximum(jnp.abs(obu_cur), _eps_obu)
+    _obu_sign     = jnp.where(obu_cur < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+    LcL_val = Lc_p * _obu_sign / _obu_abs_safe
 
     z0mg_safe = jnp.maximum(z0mg, _eps_obu)
     c1_n         = (vkc / jnp.log((ztop_p + z0mg_safe) / z0mg_safe)) ** 2
@@ -1065,15 +1075,21 @@ def _ObuFuncPure_jax(
 
     _hc_d = jnp.maximum(ztop_p - zdisp_val, _eps_obu)
     zlog      = jnp.log(jnp.maximum((zref_p - zdisp_val) / _hc_d, _eps_obu))
-    _denom_m  = jnp.where(jnp.abs(zlog + psim) > _eps_obu, zlog + psim, _eps_obu)
-    _denom_c  = jnp.where(jnp.abs(zlog + psic) > _eps_obu, zlog + psic, _eps_obu)
-    ustar_val = uref_p * vkc / _denom_m
-    tstar     = (thref_p - taf_p) * vkc / _denom_c
-    qstar     = (qref_p  - qaf_p) * vkc / _denom_c
+    # sign * max(|denom|, eps) avoids select-as-denominator → no select_divide_fusion
+    _dm_abs   = jnp.maximum(jnp.abs(zlog + psim), _eps_obu)
+    _dm_sign  = jnp.where((zlog + psim) < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+    _dc_abs   = jnp.maximum(jnp.abs(zlog + psic), _eps_obu)
+    _dc_sign  = jnp.where((zlog + psic) < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+    ustar_val = uref_p * vkc * _dm_sign / _dm_abs
+    tstar     = (thref_p - taf_p) * vkc * _dc_sign / _dc_abs
+    qstar     = (qref_p  - qaf_p) * vkc * _dc_sign / _dc_abs
 
     tvstar    = tstar + 0.61 * thref_p * qstar
-    tvstar_safe = jnp.where(jnp.abs(tvstar) > _eps_obu, tvstar, _eps_obu)
-    obu_new   = ustar_val ** 2 * thvref_p / (vkc * grav * tvstar_safe)
+    # Use sign * max(|tvstar|, eps) to avoid select-as-denominator pattern
+    # which triggers XLA select_divide_fusion compilation failure.
+    _tvstar_abs_safe = jnp.maximum(jnp.abs(tvstar), _eps_obu)
+    _tvstar_sign     = jnp.where(tvstar < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+    obu_new   = ustar_val ** 2 * thvref_p * _tvstar_sign / (vkc * grav * _tvstar_abs_safe)
     return obu_new - obu_val
 
 
@@ -1113,8 +1129,11 @@ def _obu_fixed_iter(init_obu, kwargs, n_iter: int = 25):
 
     def body(i, carry):
         x0, x1, f0, f1 = carry
-        denom = jnp.where(jnp.abs(f1 - f0) > 1e-30, f1 - f0, jnp.asarray(1e-30))
-        dx    = -f1 * (x1 - x0) / denom
+        # sign * max(|df|, eps) avoids select-as-denominator → no select_divide_fusion
+        _df          = f1 - f0
+        _df_abs_safe = jnp.maximum(jnp.abs(_df), jnp.asarray(1e-30))
+        _df_sign     = jnp.where(_df < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+        dx    = -f1 * (x1 - x0) * _df_sign / _df_abs_safe
         x_new = x1 + dx
         f_new = _ObuFuncPure_jax(x_new, **kwargs)
         return (x1, x_new, f1, f_new)
@@ -1215,8 +1234,11 @@ def _obu_writeback_jax(p, obu_val, kwargs, mlcanopy_inst):
         jnp.minimum(obu_val, obu_max_unstable),
     )
     _eps_obu = jnp.asarray(1e-30)
-    obu_cur_safe = jnp.where(jnp.abs(obu_cur) > _eps_obu, obu_cur, _eps_obu)
-    LcL_val = Lc_p / obu_cur_safe
+    # Use sign * max(|obu|, eps) to avoid select-as-denominator pattern
+    # which triggers XLA select_divide_fusion compilation failure.
+    _obu_abs_safe = jnp.maximum(jnp.abs(obu_cur), _eps_obu)
+    _obu_sign     = jnp.where(obu_cur < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+    LcL_val = Lc_p * _obu_sign / _obu_abs_safe
 
     z0mg_safe = jnp.maximum(z0mg, _eps_obu)
     c1_n         = (vkc / jnp.log((ztop_p + z0mg_safe) / z0mg_safe)) ** 2

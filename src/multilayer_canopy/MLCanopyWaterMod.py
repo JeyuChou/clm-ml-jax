@@ -186,7 +186,8 @@ def CanopyInterception(
         # Rain/snow fractions — Fortran lines 120-125
         # jnp.where replaces Python if on JAX value
         total_precip  = snow_p + rain_p
-        total_safe    = jnp.where(total_precip > 0.0, total_precip, 1.0)
+        # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+        total_safe    = jnp.maximum(total_precip, 1.0e-30)
         fracrain      = jnp.where(total_precip > 0.0, rain_p / total_safe, 0.0)
         fracsnow      = jnp.where(total_precip > 0.0, snow_p / total_safe, 0.0)
 
@@ -211,7 +212,8 @@ def CanopyInterception(
         n_active = jnp.sum(has_pai.astype(jnp.float32))   # JAX scalar
         n_safe   = jnp.maximum(n_active, 1.0)              # avoid /0
 
-        dpai_safe    = jnp.where(has_pai, dpai_v, 1.0)
+        # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+        dpai_safe    = jnp.maximum(dpai_v, 1.0e-30)
         h2ocanmx_v   = dewmx * dpai_safe
         # Distribute interception equally across active layers
         add_per_layer = jnp.where(n_active > 0.0,

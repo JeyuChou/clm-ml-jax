@@ -200,7 +200,7 @@ def CanopyNitrogenProfile(
         fs_v     = _fracsun[ics]
 
         has_pai   = active & (dpai_v > 0.0)
-        dpai_safe = jnp.where(has_pai, dpai_v, 1.0)    # avoid /0
+        dpai_safe = jnp.maximum(dpai_v, 1.0e-30)         # avoid /0; jnp.maximum avoids select_divide_fusion XLA bug
 
         # pai_above[j] = cumulative dpai of layers above layer ics[j]
         # = sum(dpai_v[0:j])  →  shifted cumsum — Fortran line 148
@@ -217,13 +217,14 @@ def CanopyNitrogenProfile(
 
         if leaf_optics_type == 0:                  # static branch — Fortran lines 132-139
             denom      = kn + kb_v * clump
-            denom_safe = jnp.where(has_pai, denom, 1.0)
+            # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+            denom_safe = jnp.maximum(denom, 1.0e-30)
             fn_sun     = (clump / denom_safe * exp_kn_above * tbi_v
                           * (1.0 - jnp.exp(-denom_safe * dpai_v)))
             fn_sun     = jnp.where(has_pai, fn_sun, 0.0)
             fn_sha     = fn - fn_sun
-            fs_safe    = jnp.where(fs_v > 0.0, fs_v, 1.0)
-            fsha_safe  = jnp.where((1.0 - fs_v) > 0.0, (1.0 - fs_v), 1.0)
+            fs_safe    = jnp.maximum(fs_v, 1.0e-30)
+            fsha_safe  = jnp.maximum(1.0 - fs_v, 1.0e-30)
             nscale_sun = jnp.where(has_pai, fn_sun / (fs_safe   * dpai_safe), 0.0)
             nscale_sha = jnp.where(has_pai, fn_sha / (fsha_safe * dpai_safe), 0.0)
 
