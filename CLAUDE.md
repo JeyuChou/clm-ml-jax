@@ -138,3 +138,53 @@ Paths beginning with `../` are resolved relative to the project root by `main.py
 Tests in `tests/` mirror source structure. `conftest.py` enables 64-bit JAX, initializes CLM parameters, and provides shared fixtures including `bounds` and all state type instances.
 
 Test markers: `slow`, `unit`, `integration`. Use `offline_executable/debug_physics.py` as a template for isolating and inspecting individual physics calls.
+
+## Commit and Push Policy
+
+Commit and push after every meaningful unit of work. This creates a recoverable history if something goes wrong, makes progress visible, and prevents work from being lost if a compute allocation runs out mid-session.
+
+A "meaningful unit" includes: a passing test, a working physics module, a validated output variable, a completed refactor, or any state you would not want to redo. When in doubt, commit.
+
+```bash
+git add <specific files>
+git commit -m "<short description>"
+git push
+```
+
+Use descriptive commit messages. Prefix with the affected module or feature (e.g. `MLCanopyFluxes: fix stomatal conductance under low PAR`).
+
+## Progress Tracking (CHANGELOG.md)
+
+Maintain a `CHANGELOG.md` at the project root to preserve cross-session context. Update it at the end of any session that makes meaningful progress — or immediately when a dead end is identified.
+
+**What to track:**
+
+- **Current status** — what is working, what is broken, what is in progress
+- **Completed tasks** — what was done and when (date each entry)
+- **Failed approaches** — *critical*: what was tried, why it didn't work, and what was switched to instead. Without this, future sessions will re-attempt the same dead ends.
+- **Accuracy tables** — numerical comparisons against Fortran reference at key checkpoints (e.g. RMSE per output variable)
+- **Known limitations** — edge cases, missing physics, numerical issues
+
+**Entry format:**
+
+```markdown
+## YYYY-MM-DD — <short title>
+
+**Status:** <one-line summary of where things stand>
+
+**Completed:**
+- <task>
+
+**Failed approaches:**
+- Tried <X> for <reason>, but <what went wrong>. Switched to <Y>.
+
+**Accuracy (CHATS7 2007-05):**
+| Variable | RMSE | Notes |
+|---|---|---|
+| H | 12.3 W/m² | ... |
+
+**Known limitations:**
+- <limitation>
+```
+
+Keep entries in reverse-chronological order (newest first). Do not delete old entries — they are the record of what has been tried.
