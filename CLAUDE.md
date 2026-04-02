@@ -80,6 +80,44 @@ Validation files in `src/output_files/validation_files/` for numerical compariso
 
 ## Critical Conventions
 
+### CRITICAL: HPC environment rules
+### Filesystem
+- **NEVER** use `find /`, `find /ocean`, or scan outside the project directory.
+  The HPC filesystem has millions of files and these commands will hang forever.
+- **GPU diagnostic scripts**: `diags/` — write reusable standalone scripts for targeted investigations (Differentiability, GPU speed up, performance optimization). 
+### GPU access
+You are running **directly on a GPU compute node** with cuda.
+Run python and pytest directly — no wrapper needed. 
+
+### load CUDA and other modules for GPU model runs 
+Always run simulations and test on GPU for faster execution and to catch GPU-specific issues. Use the following module commands to set up the environment:
+
+```
+# ── Load modules  ──────────────────────────
+module load anaconda
+module load shared
+module load cuda12.8/toolkit/12.8.61
+
+# ── Activate environment ──────────────────────────────────────────────────────
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate clm-ml-jax
+pip install --quiet netCDF4
+
+# ── Expose JAX's bundled CUDA libraries ──────────────────────────────────────
+SITE_PKGS=$(python -c "import site; print(site.getsitepackages()[0])")
+if [ -d "$SITE_PKGS/nvidia" ]; then
+    export LD_LIBRARY_PATH=$(find $SITE_PKGS/nvidia -name "*.so*" -exec dirname {} \; | sort -u | tr '\n' ':')$LD_LIBRARY_PATH
+fi
+
+# ── Verify JAX sees the GPU (optional sanity check) ──────────────────────────
+nvidia-smi
+which python
+python --version
+python -c "import jax, jaxlib; print('jax file:', jax.__file__); print('jaxlib file:', jaxlib.__file__)"
+python -c "import sys; print('sys.path:', sys.path)"
+python -c "import jax; print('JAX devices:', jax.devices()); print('JAX backend:', jax.default_backend())"
+
+```
 ### Fortran → Python Mapping
 
 - **Fortran `USE` statements** → `from module import name  # noqa: F401`. Imports carry `# noqa: F401` because they mirror Fortran public interfaces, not necessarily local usage.
@@ -121,7 +159,7 @@ Change these module globals directly — no config object:
 
 Paths beginning with `../` are resolved relative to the project root by `main.py:_resolve_path()`.
 
-## Key Files for New Features
+### Key Files for New Features
 
 - **New physics switch** → `multilayer_canopy/MLclm_varctl.py`
 - **New state variable** → appropriate `*Type.py` in `clm_src_biogeophys/` + register singleton in `clm_src_main/clm_instMod.py`
@@ -129,62 +167,90 @@ Paths beginning with `../` are resolved relative to the project root by `main.py
 - **RSL psihat look-up table path** → `clm_src_main/clm_varctl.py:rslfile`
 - **New output variable** → `clm_src_main/histFileMod.py`
 
-## Tower Sites
+### Tower Sites
 
 15 AmeriFlux + CHATS sites defined in `offline_driver/TowerDataMod.py`. `tower_num` is the 1-based index; matched via `tower_id[i] == tower_name`. Currently primary test site: `CHATS7` (index 14).
 
-## Testing
+### Testing
 
-Tests in `tests/` mirror source structure. `conftest.py` enables 64-bit JAX, initializes CLM parameters, and provides shared fixtures including `bounds` and all state type instances.
-
-Test markers: `slow`, `unit`, `integration`. Use `offline_executable/debug_physics.py` as a template for isolating and inspecting individual physics calls.
+Tests in `tests/` mirror source structure but are not current. To add tests, create a new test module (e.g. `tests/test_new_feature.py`) and write functions prefixed with `test_`. Use `pytest` to run tests. Mark slow tests with `@pytest.mark.slow` and run with `pytest -m "not slow"`.
 
 ## Commit and Push Policy
 
-Commit and push after every meaningful unit of work. This creates a recoverable history if something goes wrong, makes progress visible, and prevents work from being lost if a compute allocation runs out mid-session.
+Commit and push often after every meaningful unit of work. Keep commits focused: one logical change per commit. This creates a recoverable history if something goes wrong, makes progress visible, and prevents work from being lost if a compute allocation runs out mid-session.
 
-A "meaningful unit" includes: a passing test, a working physics module, a validated output variable, a completed refactor, or any state you would not want to redo. When in doubt, commit.
+***Rules***
+- Each commit implements one thing (one function, one module, one bugfix).
+- Avoid large commits that change multiple modules at once.
+
 
 ```bash
 git add <specific files>
 git commit -m "<short description>"
-git push
+git push origin main
 ```
 
 Use descriptive commit messages. Prefix with the affected module or feature (e.g. `MLCanopyFluxes: fix stomatal conductance under low PAR`).
 
-## Progress Tracking (CHANGELOG.md)
+## keep CHANGELOG.md current (agent orientation)
 
-Maintain a `CHANGELOG.md` at the project root to preserve cross-session context. Update it at the end of any session that makes meaningful progress — or immediately when a dead end is identified.
+Maintain a `CHANGELOG.md` at the project root to preserve cross-session context. Update it at the end of any session that makes meaningful progress — or immediately when a dead end is identified. `CHANGELOG.md` is the shared memory. Without it, agents waste time re-discovering what's done and what's broken.
 
-**What to track:**
-
-- **Current status** — what is working, what is broken, what is in progress
-- **Completed tasks** — what was done and when (date each entry)
-- **Failed approaches** — *critical*: what was tried, why it didn't work, and what was switched to instead. Without this, future sessions will re-attempt the same dead ends.
-- **Accuracy tables** — numerical comparisons against Fortran reference at key checkpoints (e.g. RMSE per output variable)
-- **Known limitations** — edge cases, missing physics, numerical issues
-
-**Entry format:**
-
-```markdown
-## YYYY-MM-DD — <short title>
-
-**Status:** <one-line summary of where things stand>
-
-**Completed:**
-- <task>
-
-**Failed approaches:**
-- Tried <X> for <reason>, but <what went wrong>. Switched to <Y>.
-
-**Accuracy (CHATS7 2007-05):**
-| Variable | RMSE | Notes |
-|---|---|---|
-| H | 12.3 W/m² | ... |
-
-**Known limitations:**
-- <limitation>
-```
+**Rules:**
+- Update `CHANGELOG.md` after every meaningful unit of work.
+- Check off completed items with dates.
+- Note what worked, what didn't, what's blocked.
+- **Record failed approaches** so they aren't re-attempted. E.g.:
+  "Tried ... failed because ... Switched to ..."
+- Add new tasks discovered during implementation.
+- When stuck, maintain a running doc of attempts in PROGRESS.md.
 
 Keep entries in reverse-chronological order (newest first). Do not delete old entries — they are the record of what has been tried.
+
+
+## Structure work for parallelism
+Parallelism is easy when there are many independent failing tests (each agent picks a different one), but hard when
+there's one giant failing task (all agents hit the same bug and overwrite each other). Break the problem into sub-tests.
+
+**Task claiming:** When working in parallel, note your task in CHANGELOG.md
+(e.g., "IN PROGRESS: background.py (@agent-1)"). Check CHANGELOG.md before
+starting to avoid duplicate work.
+
+### Specialized agent roles: 
+- **Implementer agents**: Write module code.
+- **Test quality agent**: Reviews and improves the test harness. Adds edge
+  cases, improves error messages, catches gaps in coverage.
+- **Performance agent**: Profiles the code, identifies bottlenecks, optimizes
+  JIT compilation time, reduces memory usage.
+- **Code quality agent**: Looks for duplicated code, inconsistent patterns,
+  missing type hints, unclear variable names. Refactors.
+- **Documentation agent**: Keeps CHANGELOG.md, docstrings, and CLAUDE.md
+  in sync with actual code.
+
+## Agent teams (use liberally)
+Agent teams are enabled. Use them to parallelize independent work:
+Each teammate gets its own context window and can read/write files independently.
+Assign different files to different teammates to avoid conflicts.
+Teams are especially valuable for this project because:
+- GPU diagnostic runs take a long time — use that time for parallel investigation
+- Multiple failing tests can be worked on simultaneously
+- Different agents can focus on different roles (implementer, tester, performance, documentation)
+
+## Orientation (read this first when starting a session )
+When you start a new session, orient yourself:
+1. Read `CHANGELOG.md` to see what's done and what's next.
+2. Pick the next failing test or unchecked item from CHANGELOG.md.
+3. When you finish a unit of work, update CHANGELOG.md before stopping.
+
+## Testing workflow
+
+Each module gets two types of tests:
+1. **Value tests**: compare output arrays against clm-ml-fortran reference data
+2. **Gradient tests**: compare `jax.grad` output against finite differences
+
+Always write the test first, then make it pass.
+
+Reference data lives in `clm-ml-fortran/golden_IO` as `.json` files, generated by
+`clm-ml-fortran/tests/python/generate_golden.py`.
+
+

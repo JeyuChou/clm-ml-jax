@@ -476,8 +476,17 @@ def MLCanopyFluxes(
     # ==================================================================
     # Multilayer canopy time-stepping loop — Fortran lines 261-330
     # ==================================================================
+    # Both modes use a Python for loop so JAX traces through each iteration
+    # at trace time, building a flat expression graph.  This is faster to
+    # differentiate than lax.fori_loop (which requires a gradient through
+    # the loop primitive, causing very slow XLA compilation).
+    #
+    # Diff mode skips the numpy flux accumulators (_MLTimeStepFluxIntegration)
+    # and the print side effects; all physics functions use JAX-traceable
+    # code paths when grid is not None.
+    # ==================================================================
     for nstep_ml in range(1, num_ml_steps + 1):
-        if masterproc and nstep == 1 and (
+        if not _diff_mode and masterproc and nstep == 1 and (
             nstep_ml == 1 or nstep_ml == num_ml_steps or (nstep_ml % progress_stride == 0)
         ):
             print(

@@ -1,0 +1,3 @@
+[submodule "clm-ml-fortran"]
+	path = clm-ml-fortran
+	url = https://github.com/AyaLahlou/CLM-ml_v2.CHATS.git

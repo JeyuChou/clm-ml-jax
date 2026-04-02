@@ -85,6 +85,19 @@ _neg_zdtgH_1d: np.ndarray = np.empty(0)   # -zdtgridH[:, 0]
 _nZ_H: int = nZ
 _nL_H: int = nL
 
+# Pre-converted JAX array versions of lookup tables — populated by LookupPsihatINI.
+# _LookupPsihatM/H called jnp.asarray(...) on every invocation (~10K times per
+# forward pass), triggering repeated CPU→GPU copies of the psihat grid.
+# These module-level JAX arrays eliminate that overhead.
+_dtLgM_jax:     jax.Array | None = None
+_zdtgM_jax:     jax.Array | None = None
+_neg_zdtgM_jax: jax.Array | None = None
+_psigridM_jax:  jax.Array | None = None
+_dtLgH_jax:     jax.Array | None = None
+_zdtgH_jax:     jax.Array | None = None
+_neg_zdtgH_jax: jax.Array | None = None
+_psigridH_jax:  jax.Array | None = None
+
 # ===========================================================================
 # Private: Monin-Obukhov stability functions
 # ===========================================================================
@@ -295,10 +308,17 @@ def _LookupPsihat(
 # ---------------------------------------------------------------------------
 
 def _LookupPsihatM(zdt, dtL):
-    """Momentum psihat lookup using module-level cached 1D arrays."""
+    """Momentum psihat lookup using module-level cached JAX arrays.
+
+    Uses pre-converted _*_jax arrays (populated by LookupPsihatINI) to avoid
+    jnp.asarray() on every call — eliminates ~10K GPU copies per forward pass.
+    """
     dtL = jnp.asarray(dtL);  zdt = jnp.asarray(zdt)
-    dtLg = jnp.asarray(_dtLgM_1d);  zdtg = jnp.asarray(_zdtgM_1d)
-    neg_zdtg = jnp.asarray(_neg_zdtgM_1d)
+    # Use pre-converted JAX arrays; fall back to on-the-fly conversion only
+    # before LookupPsihatINI has been called (should not happen in practice).
+    dtLg     = _dtLgM_jax     if _dtLgM_jax     is not None else jnp.asarray(_dtLgM_1d)
+    zdtg     = _zdtgM_jax     if _zdtgM_jax     is not None else jnp.asarray(_zdtgM_1d)
+    neg_zdtg = _neg_zdtgM_jax if _neg_zdtgM_jax is not None else jnp.asarray(_neg_zdtgM_1d)
     nL = _nL_M;  nZ = _nZ_M
 
     at_bnd_L = (dtL <= dtLg[0]) | (dtL > dtLg[-1])
@@ -321,16 +341,21 @@ def _LookupPsihatM(zdt, dtL):
     Z1 = jnp.where(zdt > zdtg[0], 0, jnp.where(zdt < zdtg[-1], nZ - 1, Z1_raw))
     Z2 = jnp.where(zdt > zdtg[0], 0, jnp.where(zdt < zdtg[-1], nZ - 1, Z2_raw))
 
-    pg = jnp.asarray(psigridM)
+    pg = _psigridM_jax if _psigridM_jax is not None else jnp.asarray(psigridM)
     return (wZ1 * wL1 * pg[Z1, L1] + wZ2 * wL1 * pg[Z2, L1]
             + wZ1 * wL2 * pg[Z1, L2] + wZ2 * wL2 * pg[Z2, L2])
 
 
 def _LookupPsihatH(zdt, dtL):
-    """Heat/scalar psihat lookup using module-level cached 1D arrays."""
+    """Heat/scalar psihat lookup using module-level cached JAX arrays.
+
+    Uses pre-converted _*_jax arrays (populated by LookupPsihatINI) to avoid
+    jnp.asarray() on every call — eliminates ~10K GPU copies per forward pass.
+    """
     dtL = jnp.asarray(dtL);  zdt = jnp.asarray(zdt)
-    dtLg = jnp.asarray(_dtLgH_1d);  zdtg = jnp.asarray(_zdtgH_1d)
-    neg_zdtg = jnp.asarray(_neg_zdtgH_1d)
+    dtLg     = _dtLgH_jax     if _dtLgH_jax     is not None else jnp.asarray(_dtLgH_1d)
+    zdtg     = _zdtgH_jax     if _zdtgH_jax     is not None else jnp.asarray(_zdtgH_1d)
+    neg_zdtg = _neg_zdtgH_jax if _neg_zdtgH_jax is not None else jnp.asarray(_neg_zdtgH_1d)
     nL = _nL_H;  nZ = _nZ_H
 
     at_bnd_L = (dtL <= dtLg[0]) | (dtL > dtLg[-1])
@@ -353,7 +378,7 @@ def _LookupPsihatH(zdt, dtL):
     Z1 = jnp.where(zdt > zdtg[0], 0, jnp.where(zdt < zdtg[-1], nZ - 1, Z1_raw))
     Z2 = jnp.where(zdt > zdtg[0], 0, jnp.where(zdt < zdtg[-1], nZ - 1, Z2_raw))
 
-    pg = jnp.asarray(psigridH)
+    pg = _psigridH_jax if _psigridH_jax is not None else jnp.asarray(psigridH)
     return (wZ1 * wL1 * pg[Z1, L1] + wZ2 * wL1 * pg[Z2, L1]
             + wZ1 * wL2 * pg[Z1, L2] + wZ2 * wL2 * pg[Z2, L2])
 
@@ -2129,6 +2154,8 @@ def LookupPsihatINI() -> None:
     global dtLgridM, dtLgridH, zdtgridM, zdtgridH, psigridM, psigridH
     global _zdtgM_1d, _dtLgM_1d, _neg_zdtgM_1d
     global _zdtgH_1d, _dtLgH_1d, _neg_zdtgH_1d
+    global _dtLgM_jax, _zdtgM_jax, _neg_zdtgM_jax, _psigridM_jax
+    global _dtLgH_jax, _zdtgH_jax, _neg_zdtgH_jax, _psigridH_jax
     
     import netCDF4 as nc                           # noqa: F401 — defer import
 
@@ -2183,3 +2210,14 @@ def LookupPsihatINI() -> None:
     _dtLgH_1d     = dtLgridH[0].copy()
     _zdtgH_1d     = zdtgridH[:, 0].copy()
     _neg_zdtgH_1d = -_zdtgH_1d
+
+    # Pre-convert to JAX arrays once — avoids jnp.asarray() on every
+    # _LookupPsihatM/H call (~10K times per diff-mode forward pass).
+    _dtLgM_jax     = jnp.asarray(_dtLgM_1d)
+    _zdtgM_jax     = jnp.asarray(_zdtgM_1d)
+    _neg_zdtgM_jax = jnp.asarray(_neg_zdtgM_1d)
+    _psigridM_jax  = jnp.asarray(psigridM)
+    _dtLgH_jax     = jnp.asarray(_dtLgH_1d)
+    _zdtgH_jax     = jnp.asarray(_zdtgH_1d)
+    _neg_zdtgH_jax = jnp.asarray(_neg_zdtgH_1d)
+    _psigridH_jax  = jnp.asarray(psigridH)

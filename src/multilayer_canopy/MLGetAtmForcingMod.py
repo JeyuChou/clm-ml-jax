@@ -92,12 +92,14 @@ def TimeInterpolation3(
         Interpolated value at time ``tx``.
     """
     # Fortran lines 80-86: piecewise linear, branch on tx vs t1
-    if tx < t1:
-        b1 = (x1 - x0) / (t1 - t0)   # Slope for lower segment
-        b0 = x0 - b1 * t0             # Intercept for lower segment
-    else:
-        b1 = (x2 - x1) / (t2 - t1)   # Slope for upper segment
-        b0 = x1 - b1 * t1             # Intercept for upper segment
+    # Use jnp.where instead of Python if so tx can be a JAX traced value
+    # (required when called from inside lax.fori_loop in diff mode).
+    b1_lo = (x1 - x0) / (t1 - t0)   # Slope for lower segment
+    b0_lo = x0 - b1_lo * t0          # Intercept for lower segment
+    b1_hi = (x2 - x1) / (t2 - t1)   # Slope for upper segment
+    b0_hi = x1 - b1_hi * t1          # Intercept for upper segment
+    b1 = jnp.where(tx < t1, b1_lo, b1_hi)
+    b0 = jnp.where(tx < t1, b0_lo, b0_hi)
     return b0 + b1 * tx
 
 
