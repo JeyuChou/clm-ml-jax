@@ -175,6 +175,18 @@ print("\nFirst timestep complete. Testing differentiable forward pass.\n")
 
 # --- Differentiable forward pass ---
 from multilayer_canopy.MLCanopyFluxesMod import make_clm_ml_forward
+from multilayer_canopy import MLclm_varctl
+from clm_src_utils import clm_time_manager as _ctm
+
+# Reduce computation graph size for NaN-checking:
+# Full run uses num_ml_steps=6 × (nrk_steps+1)=5 = 30 iterations.
+# jax.grad of 30 iterations OOMs (103 GB observed).
+# Use Euler + 1 sub-step → 1×1 = 1 iteration for NaN testing.
+_orig_rk    = MLclm_varctl.runge_kutta_type
+_orig_dtime = MLclm_varctl.dtime_ml
+MLclm_varctl.runge_kutta_type = 10               # Euler: nrk_steps=0
+MLclm_varctl.dtime_ml         = float(_ctm.dtstep)  # num_ml_steps=1
+print(f"NaN test mode: Euler (nrk=0), 1 sub-step (dtime_ml={MLclm_varctl.dtime_ml}s)")
 
 mlcanopy_inst = clm_instMod.mlcanopy_inst
 p = bounds.begp
@@ -225,5 +237,9 @@ except Exception as e:
     import traceback
     traceback.print_exc()
     sys.exit(1)
+
+# Restore original settings
+MLclm_varctl.runge_kutta_type = _orig_rk
+MLclm_varctl.dtime_ml         = _orig_dtime
 
 print("\nAll tests passed!")

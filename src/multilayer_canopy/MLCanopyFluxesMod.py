@@ -485,6 +485,55 @@ def MLCanopyFluxes(
     # and the print side effects; all physics functions use JAX-traceable
     # code paths when grid is not None.
     # ==================================================================
+    # ------------------------------------------------------------------
+    # Per-step physics factory: bakes in loop-specific scalars so the
+    # returned function takes only mlcanopy_inst → mlcanopy_inst.
+    # Used with jax.checkpoint in diff mode to keep backward-pass memory
+    # O(per_step) instead of O(num_ml_steps × per_step).
+    # ------------------------------------------------------------------
+    def _make_physics_step(calday_ml: float, nstep: int):
+        """Return a pure mlcanopy_inst → mlcanopy_inst function for one step."""
+        def _physics_step(inst):
+            # Save previous-step state — Fortran lines 272-285
+            inst = _copy_bef_state(filter_mlcan, ncan_vals, inst)
+            # Atmospheric forcing — Fortran line 287
+            inst = GetAtmForcing(
+                calday_interp_bef, calday_interp_cur, calday_interp_next,
+                calday_ml, num_mlcan, filter_mlcan, inst, grid=grid,
+            )
+            # Solar radiation — Fortran line 290
+            inst = SolarRadiation(bounds, num_mlcan, filter_mlcan, inst, grid=grid)
+            # Nitrogen profile — Fortran line 293
+            inst = CanopyNitrogenProfile(num_mlcan, filter_mlcan, inst)
+            # Runge-Kutta inner loop — Fortran lines 310-328
+            for _irk in range(1, nrk_steps + 2):
+                inst = CanopyWettedFraction(num_mlcan, filter_mlcan, inst)
+                inst = LongwaveRadiation(bounds, num_mlcan, filter_mlcan, inst, grid=grid)
+                inst = inst._replace(
+                    rnleaf_leaf=(inst.swleaf_leaf[..., ivis]
+                                 + inst.swleaf_leaf[..., inir]
+                                 + inst.lwleaf_leaf),
+                    rnsoi_soil=(inst.swsoi_soil[:, ivis]
+                                + inst.swsoi_soil[:, inir]
+                                + inst.lwsoi_soil),
+                )
+                inst = CanopyTurbulence(nstep, num_mlcan, filter_mlcan, inst, grid=grid)
+                inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isun, inst)
+                inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isha, inst)
+                inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isun, inst, grid=grid)
+                inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isha, inst, grid=grid)
+                inst = FluxProfileSolution(num_mlcan, filter_mlcan, inst, grid=grid)
+                inst = LeafWaterPotential(num_mlcan, filter_mlcan, isun, inst)
+                inst = LeafWaterPotential(num_mlcan, filter_mlcan, isha, inst)
+                inst = CanopyInterception(num_mlcan, filter_mlcan, inst)
+                inst = CanopyEvaporation(num_mlcan, filter_mlcan, inst)
+                if nrk_steps > 0 and _irk <= nrk_steps:
+                    inst = RungeKuttaUpdate(
+                        _irk, ark, brk, crk, num_mlcan, filter_mlcan, inst, grid=grid,
+                    )
+            return inst
+        return _physics_step
+
     for nstep_ml in range(1, num_ml_steps + 1):
         if not _diff_mode and masterproc and nstep == 1 and (
             nstep_ml == 1 or nstep_ml == num_ml_steps or (nstep_ml % progress_stride == 0)
@@ -501,71 +550,15 @@ def MLCanopyFluxes(
             calday_interp_ml = (curr_calday_beg
                                 + (float(nstep_ml) - 0.5) * (dtime_ml / 86400.0))
 
-        # Save previous-step state — Fortran lines 272-285
-        # Single JIT-compiled call: eliminates 1 int() sync + 7 eager dispatches
-        # per sub-step by fusing all 7 .at[].set() ops into one compiled kernel.
-        mlcanopy_inst = _copy_bef_state(filter_mlcan, ncan_vals, mlcanopy_inst)
+        _step_fn = _make_physics_step(calday_interp_ml, nstep_ml)
 
-        # Atmospheric forcing for this ML timestep — Fortran line 287
-        mlcanopy_inst = GetAtmForcing(
-            calday_interp_bef, calday_interp_cur, calday_interp_next,
-            calday_interp_ml, num_mlcan, filter_mlcan, mlcanopy_inst,
-            grid=grid,
-        )
-
-        # Solar radiation — Fortran line 290
-        mlcanopy_inst = SolarRadiation(bounds, num_mlcan, filter_mlcan, mlcanopy_inst, grid=grid)
-
-        # Nitrogen profile (requires fracsun) — Fortran line 293
-        mlcanopy_inst = CanopyNitrogenProfile(num_mlcan, filter_mlcan, mlcanopy_inst)
-
-        # --------------------------------------------------------------
-        # Runge-Kutta inner loop — Fortran lines 310-328
-        # irk runs from 1 to nrk_steps+1 (inclusive)
-        # --------------------------------------------------------------
-        for irk in range(1, nrk_steps + 2):
-
-            # Wetted fraction — Fortran line 299
-            mlcanopy_inst = CanopyWettedFraction(num_mlcan, filter_mlcan, mlcanopy_inst)
-
-            # Longwave radiation — Fortran line 303
-            mlcanopy_inst = LongwaveRadiation(bounds, num_mlcan, filter_mlcan, mlcanopy_inst, grid=grid)
-
-            # Net radiation — Fortran lines 305-311 (vectorized)
-            mlcanopy_inst = mlcanopy_inst._replace(
-                rnleaf_leaf = (mlcanopy_inst.swleaf_leaf[..., ivis]
-                               + mlcanopy_inst.swleaf_leaf[..., inir]
-                               + mlcanopy_inst.lwleaf_leaf),
-                rnsoi_soil  = (mlcanopy_inst.swsoi_soil[:, ivis]
-                               + mlcanopy_inst.swsoi_soil[:, inir]
-                               + mlcanopy_inst.lwsoi_soil),
-            )
-
-            # Canopy turbulence — Fortran line 320
-            mlcanopy_inst = CanopyTurbulence(nstep_ml, num_mlcan, filter_mlcan, mlcanopy_inst, grid=grid)
-
-            # Leaf boundary layer conductance — Fortran lines 326-327
-            mlcanopy_inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isun, mlcanopy_inst)
-            mlcanopy_inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isha, mlcanopy_inst)
-
-            # Photosynthesis and stomatal conductance — Fortran lines 334-335
-            mlcanopy_inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isun, mlcanopy_inst, grid=grid)
-            mlcanopy_inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isha, mlcanopy_inst, grid=grid)
-
-            # Flux-profile solution — Fortran line 344
-            mlcanopy_inst = FluxProfileSolution(num_mlcan, filter_mlcan, mlcanopy_inst, grid=grid)
-
-            # Leaf water potential — Fortran lines 350-351
-            mlcanopy_inst = LeafWaterPotential(num_mlcan, filter_mlcan, isun, mlcanopy_inst)
-            mlcanopy_inst = LeafWaterPotential(num_mlcan, filter_mlcan, isha, mlcanopy_inst)
-
-            # Canopy water — Fortran lines 356-357
-            mlcanopy_inst = CanopyInterception(num_mlcan, filter_mlcan, mlcanopy_inst)
-            mlcanopy_inst = CanopyEvaporation(num_mlcan, filter_mlcan, mlcanopy_inst)
-
-            # Runge-Kutta state update (not on the final step) — Fortran lines 359-361
-            if nrk_steps > 0 and irk <= nrk_steps:
-                mlcanopy_inst = RungeKuttaUpdate(irk, ark, brk, crk, num_mlcan, filter_mlcan, mlcanopy_inst, grid=grid)
+        if _diff_mode:
+            # jax.checkpoint: save only mlcanopy_inst at step boundary;
+            # recompute internal activations during backward.
+            # Reduces backward memory from O(num_ml_steps × step_mem) to O(step_mem).
+            mlcanopy_inst = jax.checkpoint(_step_fn)(mlcanopy_inst)
+        else:
+            mlcanopy_inst = _step_fn(mlcanopy_inst)
 
         # Accumulate fluxes over ML sub-steps — Fortran line 372
         if not _diff_mode:
