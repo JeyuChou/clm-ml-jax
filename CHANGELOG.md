@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-04-03 — Fix XLA recompilation in LeafPhotosynthesis (session 9)
+
+**Status:** Root cause identified and fixed. Committed. Full benchmark pending.
+
+### Root cause (clarified)
+
+The CHANGELOG session 8 entry noted "steady-state = 1942s (also recompiling)".
+The actual root cause was **not** `calday_ml` being passed to JIT functions
+(it isn't — `GetAtmForcing` is not JIT-compiled, and no other JIT function
+receives `calday_ml`). The true cause was:
+
+`_make_leaf_photo_kernel` and `_make_leaf_photo_kernel_wue` returned **new
+closure objects** on every call (each with different closed-over constants
+that vary per-PFT per-CLM-timestep). The call sites did:
+
+```python
+kernel = _make_leaf_photo_kernel(...)    # new closure each call
+vmapped = jax.vmap(kernel, in_axes=0)   # new traced fn each call → recompile
+```
+
+Called 30 sub-steps × 2 leaf types × (1 first loop) = 60 times per CLM
+timestep, this triggered 60 XLA compilations — most of the 1942s wall time.
+
+### Fix applied (`src/multilayer_canopy/MLLeafPhotosynthesisMod.py`)
+
+1. Added `@functools.lru_cache` to `_make_leaf_photo_kernel` and
+   `_make_leaf_photo_kernel_wue` — same closure returned for same PFT params.
+2. Added `_get_vmapped_photo_kernel` and `_get_vmapped_photo_kernel_wue`
+   (also `lru_cache`'d) that return `jax.jit(jax.vmap(kernel))`.
+3. For WUE kernel: `o2ref_p` and `pref_p` promoted from closed-over values
+   to explicit `in_axes=None` broadcast args — so per-sub-step pressure
+   changes don't invalidate the JIT cache.
+4. All PFT-level constants (`g0_val`, `g1_val`, `iota_pft`, etc.) converted
+   to Python `float()` for `lru_cache` hashability.
+
+### Verification
+
+- `lru_cache` returns same object for same PFT args: ✓
+- Second call executes in 0.000s (no recompile): ✓
+- WUE kernel with different `pref_p`: 0.000s (no recompile): ✓
+
+### What remains
+
+- Full benchmark re-run to measure actual wall-clock improvement (GPU
+  was occupied during this session).
+- The 1942s baseline likely becomes ~30 × kernel_exec_time (<<1s each)
+  per CLM timestep on GPU.
+
+---
+
 ## 2026-04-03 — GPU benchmark baseline (session 8)
 
 **Status:** Script created and run. Results documented. Critical performance issue identified.
