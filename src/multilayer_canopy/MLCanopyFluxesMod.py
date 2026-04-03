@@ -558,6 +558,26 @@ def MLCanopyFluxes(
             # Reduces backward memory from O(num_ml_steps × step_mem) to O(step_mem).
             mlcanopy_inst = jax.checkpoint(_step_fn)(mlcanopy_inst)
         else:
+            # NOTE: jax.jit(_step_fn) was audited and found NOT feasible without
+            # multi-module refactoring.  Blockers (all in non-diff path):
+            #
+            #   • MLCanopyTurbulenceMod._HF2008: ~15 float()/int() calls on JAX
+            #     arrays + np.asarray(zw_profile[p]) + Python for-loop.  A
+            #     JAX-traceable _HF2008_diff already exists but only handles one
+            #     patch (needs a multi-patch wrapper to replace _HF2008).
+            #
+            #   • MLSolarRadiationMod.SolarRadiation: np.asarray(ncan_canopy),
+            #     np.asarray(ntop_canopy), np.asarray(nbot_canopy) in 3 sections.
+            #
+            #   • MLLongwaveRadiationMod, MLFluxProfileSolutionMod,
+            #     MLLeafPhotosynthesisMod, MLRungeKuttaMod: int(ncan_canopy[p]),
+            #     int(ntop_canopy[p]) calls (6 modules, ~20 call sites total).
+            #
+            # Fixing all blockers requires: (a) threading ncan_vals/ntop_vals/
+            # nbot_vals tuples as extra parameters through 6+ function signatures,
+            # and (b) routing CanopyTurbulence through _HF2008_diff-style JAX code.
+            # See CHANGELOG.md "JIT audit" entry (2026-04-03) for details and
+            # recommended path forward.
             mlcanopy_inst = _step_fn(mlcanopy_inst)
 
         # Accumulate fluxes over ML sub-steps — Fortran line 372

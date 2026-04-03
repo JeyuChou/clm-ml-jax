@@ -1,5 +1,128 @@
 # Changelog
 
+## 2026-04-03 — JIT audit for non-diff MLCanopyFluxes (session 6)
+
+**Status:** Audit completed. JIT at `_step_fn` granularity is **not feasible** without
+multi-module refactoring. Documented blockers below. No code changes made.
+
+### Task
+Wrap the non-diff `_step_fn` (inside `MLCanopyFluxes`) with `@jax.jit` to eliminate
+~30 separate GPU kernel dispatches per sub-step (30 sub-steps × ~24 dispatches = 720 per
+CLM timestep).
+
+### Blockers found (exhaustive)
+
+JIT on a traced function fails when any code inside it calls `int()`, `float()`, or
+`np.asarray()` on a JAX traced array.  The non-diff `_step_fn` calls these patterns
+across **6 modules**:
+
+#### 1. `MLCanopyTurbulenceMod._HF2008` (biggest blocker)
+The non-diff turbulence driver extracts ~15 Python scalars from `mlcanopy_inst` fields:
+- Lines 1960–1965: `float(pref_forcing[p])`, `float(ztop_canopy[p])`, `float(lai_canopy[p])`,
+  `float(sai_canopy[p])`, `int(ntop_canopy[p])`, `int(ncan_canopy[p])`
+- Lines 1973–1974: `float(tair_profile[p, _ntop])`, `float(eair_profile[p, _ntop])`
+- Lines 1989, 2002: `float(beta_canopy[p])`, `float(ustar_canopy[p])`
+- Lines 2003–2013: `np.asarray(zw_profile[p])` + Python for-loop
+- `_GetObu` (called from `_HF2008`): 12 × `float(mlcanopy_inst.field[p])` (lines 1205–1216)
+- `_RoughnessLength` (non-diff, lines 1508–1509): `int(ntop_canopy[p])`, `int(ncan_canopy[p])`
+- `_WindProfile` (non-diff, lines 1658–1659): same
+- `_AerodynamicConductance` (non-diff): similar
+
+A JAX-traceable `_HF2008_diff` **already exists** and does not have any of these issues.
+It uses `_GetObu(diff_mode=True)`, `_RoughnessLength_jax`, `_WindProfile_jax`,
+`_AerodynamicConductance_jax`.
+
+#### 2. `MLSolarRadiationMod.SolarRadiation`
+- Lines 154–156, 426–428, 731–733: `np.asarray(mlcanopy_inst.ncan_canopy)`,
+  `np.asarray(ntop_canopy)`, `np.asarray(nbot_canopy)` — three separate function
+  sections each do this to materialize the index arrays before a per-layer loop.
+
+#### 3. `MLLongwaveRadiationMod.LongwaveRadiation`
+- Lines 317–318: `int(mlcanopy_inst.ntop_canopy[p])`, `int(mlcanopy_inst.nbot_canopy[p])`
+
+#### 4. `MLFluxProfileSolutionMod`
+- Lines 87, 569, 629, 742, 848: `int(ncan[p])`, `int(mlcanopy_inst.ncan_canopy[p])`,
+  `int(mlcanopy_inst.ntop_canopy[p])`
+
+#### 5. `MLLeafPhotosynthesisMod`
+- Lines 1589, 1735: `int(mlcanopy_inst.ncan_canopy[p])`
+
+#### 6. `MLRungeKuttaMod.RungeKuttaUpdate`
+- Line 106: `int(mlcanopy_inst.ncan_canopy[p])`
+
+### Why the blockers exist
+
+The `ncan_canopy`, `ntop_canopy`, `nbot_canopy` fields are JAX arrays because they're part
+of the `mlcanopy_type` NamedTuple.  They're constant for a fixed site but stored as JAX
+arrays because they were initialized that way.  When these are extracted with `int()` or
+`np.asarray()` inside a JIT-traced function, JAX raises `ConcretizationTypeError`.
+
+The `float()` calls in `_HF2008` are for a different reason: they feed into `_ObuFuncPure`
+(Python `math.*` version) which is deliberately kept as Python scalars for ~50× iteration
+speedup.  However, `_obu_fixed_iter` (already using `lax.fori_loop`) and `_ObuFuncPure_jax`
+handle the same physics purely in JAX.
+
+### Why NOT attempted
+
+Fixing all blockers would require:
+1. Threading `ncan_vals`, `ntop_vals`, `nbot_vals` (pre-materialized Python int tuples) as
+   additional parameters through `SolarRadiation`, `LongwaveRadiation`, `FluxProfileSolution`,
+   `LeafPhotosynthesis`, `RungeKuttaUpdate` — changing signatures of 6+ public functions.
+2. Routing `CanopyTurbulence` through `_HF2008_diff` (or a new multi-patch JAX wrapper)
+   instead of `_HF2008` in non-diff mode — changing turbulence performance characteristics
+   (the Python-scalar path in `_HF2008` is faster in eager mode because it avoids JAX dispatch
+   overhead per iteration).
+3. Validating that the JAX-path physics results match the Python-scalar path numerically
+   (they should, but require a full simulation test to confirm).
+
+This is a significant refactoring (6+ modules, ~30 call sites) that violates the
+"minimal fix" constraint and risks introducing subtle numerical differences.
+
+### Recommended path forward (if pursued in a future session)
+
+**Option A (low risk):** Pre-materialize `ncan_vals`, `ntop_vals`, `nbot_vals` in
+`MLCanopyFluxes` (like `ncan_vals` is already done), then thread them as `static` arguments
+to each physics function that needs them.  This fixes ~20 blockers.  The remaining
+blockers in `_HF2008` require step 2 above.
+
+**Option B (higher gain):** Create a new `_step_fn_jit(mlcanopy_inst, calday_ml, nstep_ml)`
+that calls the diff-mode (`_HF2008_diff`-style) JAX paths for ALL physics, looping over
+patches using concrete `filter_mlcan` and pre-materialized `ncan_vals`/`ntop_vals`/`nbot_vals`.
+This is essentially using the diff-mode physics code paths without `jax.grad` — same XLA
+program, no gradient tape.  Compile once, reuse for all 30 sub-steps.
+
+**Option C (current status quo):** Keep the Python for-loop with eager dispatch.  Existing
+`@jax.jit` wrappers on `_copy_bef_state` and `_implicit_fps_jit` already compile the
+hottest inner kernels.  The remaining dispatch overhead is bounded by the 30-step loop.
+
+---
+
+## 2026-04-03 — NaN gradient fix: Monin-Obukhov ψ stability functions (session 5)
+
+**Status:** Fix applied; `test_grad.py` validation run was started but did not complete within the session (context limit hit mid-run). Forward loss confirmed finite (-2549.4493). Gradient result pending.
+
+### Root cause identified and fixed
+
+**`_psim_monin_obukhov` and `_psic_monin_obukhov`** (`MLCanopyTurbulenceMod.py`, lines 186, 220):
+
+The unstable branch computes `x = (1 - 16*zeta)^(1/4)`.  
+For stable conditions (`zeta >= 1/16`): `1 - 16*zeta <= 0`, the stable branch is selected by `jnp.where`, but JAX still evaluates both branches' VJPs.  
+`jnp.abs(1 - 16*zeta)^(1/4)` at `1 - 16*zeta = 0` → gradient = `(1/4) * 0^(-3/4) * sign(0) = inf * 0 = NaN`.  
+This NaN propagates through `jnp.where`'s VJP to all downstream gradients (turbulence, leaf temperature, air profile, soil temperature).
+
+**Fix:** Replace `jnp.sqrt(jnp.sqrt(jnp.abs(1.0 - 16.0*zeta)))` with `jnp.sqrt(jnp.sqrt(jnp.maximum(1.0 - 16.0*zeta, 1.0e-10)))`.  
+`jnp.maximum` gradient is 0 when argument is below threshold (not inf), so unselected-branch VJP = `0 * finite = 0`, not NaN.  
+Forward values are unchanged for any `zeta < 0` (unstable, actually selected branch).
+
+Applied to both `_psim_monin_obukhov` (ψ for momentum) and `_psic_monin_obukhov` (ψ for scalars).
+
+### Pending validation
+- `test_grad.py` was running (1 sub-step, Euler, eager grad) but output not yet captured.
+- Next session: check gradient fields `tair_profile`, `eair_profile`, `tleaf_leaf`, `tg_soil` for NaN.
+- If all finite: commit fix + run full 30-step test, then begin optimization loop.
+
+---
+
 ## 2026-04-02 — jax.checkpoint at outer loop boundary (session 4)
 
 **Problem:** `jax.grad` OOMs (103 GB, 100+ min) on the full 6 sub-steps × 5 RK stages = 30-iteration
