@@ -1206,7 +1206,10 @@ def _GetObu(p: int, mlcanopy_inst: mlcanopy_type, diff_mode: bool = False) -> ml
             qaf_p     = float(mlcanopy_inst.qaf_canopy[p]),
         )
         obu_converged = float(_obu_fixed_iter(jnp.asarray(100.0), _kwargs, n_iter=25))
-        _dummy, mlcanopy_inst = _ObuFunc(p, 0, 0, mlcanopy_inst, obu_converged)
+        # Use the JAX-traceable writeback instead of _ObuFunc to avoid
+        # re-extracting the 12 scalar values already in _kwargs (saves
+        # ~12 D→H syncs per sub-step in non-diff mode).
+        mlcanopy_inst = _obu_writeback_jax(p, obu_converged, _kwargs, mlcanopy_inst)
         return mlcanopy_inst
 
     # --- Differentiable path: keep everything as JAX arrays ---

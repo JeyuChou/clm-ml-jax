@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-04-02 — Eliminate remaining D↔H syncs in photosynthesis and turbulence second loops
+
+**Status:** Unified non-diff and diff-mode code paths for second loops; eliminated ~30 D→H+H→D syncs per sub-step.
+
+### Completed
+
+**1. MLLeafPhotosynthesisMod.py — second loop D↔H elimination**
+
+The soil-moisture-adjustment second loop had:
+- 16–19 `np.asarray()` pre-extractions (D→H syncs) per patch per sun/shade leaf
+- 11 `jnp.array()` batch writebacks (H→D syncs) at end
+
+Fixed by removing the `else:` pre-extraction blocks and the original non-diff scalar loop entirely. Both diff and non-diff paths now run the JAX second loop (formerly guarded by `if _diff_mode:`). The `_CiFuncGsPure` scalar loop is no longer called in any path.
+
+**2. MLCanopyTurbulenceMod.py — redundant OBU re-extraction**
+
+Non-diff `_GetObu` path was calling `_ObuFunc(p, 0, 0, mlcanopy_inst, obu_converged)` after convergence, which re-extracted 12 scalars from `mlcanopy_inst` (12 D→H syncs). Fixed by routing through `_obu_writeback_jax` which reuses the already-extracted `_kwargs` dict.
+
+**3. Validation figures generated** (`diags/figures/`)
+
+- `validation_flux.png`: 6-panel time series JAX vs Fortran (RMSE: Rn=0.14, H=0.74, LE=0.94 W/m²)
+- `validation_profiles.png`: vertical canopy profiles at noon
+- `validation_scatter.png`: scatter for all 17 flux variables
+
+**4. Differentiability test suite** (`tests/test_differentiability.py`)
+
+5 `@pytest.mark.slow` tests: forward pass finite, grad completes, grad finite, grad nonzero, FD check.
+
+---
+
 ## 2026-04-01 — GPU performance optimizations and differentiability fixes
 
 **Status:** Eliminated major device-sync bottlenecks; resolved XLA `select_divide_fusion` compilation failure blocking `jax.grad`.
