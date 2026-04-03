@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-04-02 — Additional NaN gradient fixes (session 3)
+
+### Root causes fixed
+
+**1. `_obu_writeback_jax` — jnp.where denominator pattern** (`MLCanopyTurbulenceMod.py`):
+```python
+# Before:
+_dm2 = jnp.where(jnp.abs(zlog + psim) > eps, zlog + psim, eps)
+ustar_val = uref_p * vkc / _dm2
+```
+When `zlog + psim = 0`: cond=False, `_dm2 = eps` (forward OK). But JAX differentiates the True branch `vkc / (zlog+psim)`, giving `inf`. Then `0 * inf = NaN` in backward.
+Fix: `sign * max(|x|, eps)` pattern (no select op in denominator).
+
+**2. `SoilResistance` — frozen-layer division by zero** (`MLPlantHydraulicsMod.py`):
+`soilr1_v = log(root_dist/rr) / (2π * rld * dz * hk_v)`. When `hk_v = 0` (frozen layer), backward grad w.r.t. `rld_v` (from mlcanopy_inst) = `inf`.
+Fix: `hk_v_safe = jnp.maximum(hk_v, 1e-30)`.
+
+---
+
 ## 2026-04-02 — Eliminate D↔H syncs in RungeKuttaUpdate (MLRungeKuttaMod)
 
 **Status:** Unified diff/non-diff code paths in `RungeKuttaUpdate`.
