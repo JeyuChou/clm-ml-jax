@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-04-03 — JIT attempt for non-diff MLCanopyFluxes via GridInfo (session 7)
+
+**Status:** Partial implementation. `calday_ml`-as-explicit-arg refactoring applied.
+Full JIT not feasible due to XLA compilation OOM/timeout on available V100 hardware.
+
+### What was done
+
+Refactored `_make_physics_step(calday_ml, nstep)` factory pattern into a direct
+`_physics_step_fn(inst, calday_ml)` function. Key changes:
+- `calday_ml` is now an explicit argument instead of baked into a closure
+- Both diff and non-diff modes call `_physics_step_fn` (diff mode wraps in `_step_for_checkpoint`)
+- Code is simpler (no factory pattern)
+
+### GridInfo-in-non-diff-mode: attempted and reverted
+
+Tried constructing `GridInfo` before the physics loop in non-diff mode to activate JAX-traceable
+code paths in all 6 physics modules, then JIT-compiling `_physics_step_fn`. This would fix all
+the blockers documented in session 6.
+
+**Why it failed:**
+1. **XLA compilation OOM**: `jax.jit(_physics_step_fn)` crashed with
+   `CUDA_ERROR_OUT_OF_MEMORY` during XLA CUBIN loading on the first sub-step.
+   The XLA computation graph for 5 RK iterations × ~10 physics calls is too large
+   for the 32GB V100.
+2. **Eager mode with diff-mode paths is slower**: Using GridInfo activates the
+   diff-mode code paths (e.g., `_HF2008_diff`, JAX array slicing instead of Python
+   for-loops). In eager mode, these are significantly slower than the original
+   non-diff paths that use Python scalars.
+3. **GPU contention**: GPU 1 was full (31958/32768 MiB used), GPU 0 at 72%
+   utilization from another process.
+
+### Current state
+
+- Non-diff mode: uses original code paths (Python for-loops, concrete Python ints)
+- Diff mode: uses JAX-traceable paths + `jax.checkpoint`
+- `_physics_step_fn` is architecturally ready for future JIT (calday_ml as explicit arg)
+- To enable JIT in the future: would need dedicated GPU memory + possibly
+  `jax.jit` with `backend_options` to limit XLA compilation memory
+
+### Next steps for JIT
+
+Option B (from session 6 CHANGELOG) remains the recommended path:
+- Run JIT with exclusive GPU access (no other processes using the GPU)
+- If OOM persists, use `XLA_FLAGS=--xla_gpu_enable_xla_runtime_executable=false` or
+  reduce `nrk_steps` to test JIT feasibility with smaller graph
+- Consider compiling on CPU and running on GPU (`jit(..., device=gpu_device)`)
+
+---
+
 ## 2026-04-03 — JIT audit for non-diff MLCanopyFluxes (session 6)
 
 **Status:** Audit completed. JIT at `_step_fn` granularity is **not feasible** without
