@@ -20,6 +20,7 @@ Fortran lines 1-500
 
 from __future__ import annotations
 
+import functools
 import math
 from typing import Tuple
 
@@ -829,6 +830,7 @@ def _ci_solver_scan(ci0, ci1, func_kwargs, n_iter=40):
     return x_final
 
 
+@functools.lru_cache(maxsize=None)
 def _make_leaf_photo_kernel(
     *,
     is_c3: bool,
@@ -1024,6 +1026,39 @@ def _make_leaf_photo_kernel(
         )
 
     return kernel
+
+
+@functools.lru_cache(maxsize=None)
+def _get_vmapped_photo_kernel(
+    *,
+    is_c3: bool,
+    c3psn_pft_val: float,
+    vcmaxha: float,
+    vcmaxhd: float,
+    vcmaxse: float,
+    vcmaxc: float,
+    jmaxha: float,
+    jmaxhd: float,
+    jmaxse: float,
+    jmaxc: float,
+    rdc: float,
+    g0_val: float,
+    g1_val: float,
+    o2ref_p: float,
+):
+    """Return a JIT-compiled vmapped leaf-photosynthesis kernel (gs_type 0/1).
+
+    Results are cached by parameter values so the same XLA compilation is
+    reused across all sub-steps for a fixed site.  All arguments must be
+    Python scalars (not JAX arrays) so they are hashable for ``lru_cache``.
+    """
+    kernel = _make_leaf_photo_kernel(
+        is_c3=is_c3, c3psn_pft_val=c3psn_pft_val,
+        vcmaxha=vcmaxha, vcmaxhd=vcmaxhd, vcmaxse=vcmaxse, vcmaxc=vcmaxc,
+        jmaxha=jmaxha, jmaxhd=jmaxhd, jmaxse=jmaxse, jmaxc=jmaxc,
+        rdc=rdc, g0_val=g0_val, g1_val=g1_val, o2ref_p=o2ref_p,
+    )
+    return jax.jit(jax.vmap(kernel, in_axes=0))
 
 
 # ---------------------------------------------------------------------------
@@ -1271,6 +1306,7 @@ def _bisect_gs_jax(gsmin, gs_upper, se_kwargs, n_iter=20):
     return gs_opt
 
 
+@functools.lru_cache(maxsize=None)
 def _make_leaf_photo_kernel_wue(
     *,
     is_c3: bool,
@@ -1280,14 +1316,19 @@ def _make_leaf_photo_kernel_wue(
     rdc,
     iota_pft,
     gsmin_pft,
-    o2ref_p,
-    pref_p,
 ):
-    """Factory returning a per-layer WUE photosynthesis kernel for jax.vmap."""
+    """Factory returning a per-layer WUE photosynthesis kernel for jax.vmap.
+
+    ``o2ref_p`` and ``pref_p`` are *not* closed over — they are passed as
+    explicit broadcast (``in_axes=None``) arguments to ``jax.vmap`` so that
+    per-sub-step changes in atmospheric pressure do not invalidate the
+    JIT-compiled kernel cache.
+    """
 
     def kernel(
         dpai_ic, tleaf_ic, vcmax25_ic, jmax25_ic, rd25_ic, kp25_ic,
         eair_ic, apar_ic, gbc_ic, gbv_ic, cair_ic,
+        o2ref_p, pref_p,
     ):
         active = dpai_ic > 0.0
 
@@ -1379,6 +1420,38 @@ def _make_leaf_photo_kernel_wue(
                 agross_f, anet_f, cs_f)
 
     return kernel
+
+
+@functools.lru_cache(maxsize=None)
+def _get_vmapped_photo_kernel_wue(
+    *,
+    is_c3: bool,
+    c3psn_pft_val,
+    vcmaxha, vcmaxhd, vcmaxse, vcmaxc,
+    jmaxha, jmaxhd, jmaxse, jmaxc,
+    rdc,
+    iota_pft,
+    gsmin_pft,
+):
+    """Return a JIT-compiled vmapped WUE leaf-photosynthesis kernel.
+
+    ``o2ref_p`` and ``pref_p`` are passed via ``in_axes=None`` (broadcast)
+    at vmap call time, so per-sub-step pressure variations do not trigger
+    recompilation.  All other arguments are PFT constants that are fixed
+    for a given simulation and used as the lru_cache key.
+    """
+    kernel = _make_leaf_photo_kernel_wue(
+        is_c3=is_c3, c3psn_pft_val=c3psn_pft_val,
+        vcmaxha=vcmaxha, vcmaxhd=vcmaxhd, vcmaxse=vcmaxse, vcmaxc=vcmaxc,
+        jmaxha=jmaxha, jmaxhd=jmaxhd, jmaxse=jmaxse, jmaxc=jmaxc,
+        rdc=rdc, iota_pft=iota_pft, gsmin_pft=gsmin_pft,
+    )
+    # in_axes: first 11 args are per-layer (axis 0); o2ref_p and pref_p
+    # are patch-level scalars broadcast over all layers (axis None).
+    return jax.jit(jax.vmap(
+        kernel,
+        in_axes=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None),
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -1608,29 +1681,33 @@ def LeafPhotosynthesis(
             vcmaxha = vcmaxhd = vcmaxse = jmaxha = jmaxhd = jmaxse = 0.0
 
         # High-temperature scaling factors — Fortran lines 155-157
-        if _diff_mode:
-            vcmaxc = _fth25(vcmaxhd, vcmaxse)
-            jmaxc  = _fth25(jmaxhd, jmaxse)
-            rdc    = _fth25(rdhd, rdse)
-        else:
-            vcmaxc = _fth25_py(vcmaxhd, vcmaxse)
-            jmaxc  = _fth25_py(jmaxhd, jmaxse)
-            rdc    = _fth25_py(rdhd, rdse)
+        # Always compute as Python floats: these are PFT-level constants
+        # (acclim_type==1: tacclim changes at CLM timestep cadence, not
+        # sub-step cadence) used as lru_cache keys for the vmapped kernels.
+        vcmaxc = float(_fth25(vcmaxhd, vcmaxse))
+        jmaxc  = float(_fth25(jmaxhd, jmaxse))
+        rdc    = float(_fth25(rdhd, rdse))
+        # Also ensure acclimation se values are Python floats for cache keys
+        if acclim_type == 1:
+            vcmaxse = float(vcmaxse)
+            jmaxse  = float(jmaxse)
 
         # --- Stomatal model parameters — same for all ic ---
+        # Convert to Python floats for lru_cache hashability in the
+        # cached vmapped-kernel factories below.
         if gs_type == 0:
-            g0_val = MLpftcon.g0_MED[pft]
-            g1_val = MLpftcon.g1_MED[pft]
+            g0_val = float(MLpftcon.g0_MED[pft])
+            g1_val = float(MLpftcon.g1_MED[pft])
         elif gs_type == 1:
-            g0_val = MLpftcon.g0_BB[pft]
-            g1_val = MLpftcon.g1_BB[pft]
+            g0_val = float(MLpftcon.g0_BB[pft])
+            g1_val = float(MLpftcon.g1_BB[pft])
         else:
             g0_val = -999.0;  g1_val = -999.0
 
         # Per-pft constants for gs_type==2
         if gs_type == 2:
-            _iota_pft   = MLpftcon.iota_SPA[pft]
-            _gsmin_pft  = MLpftcon.gsmin_SPA[pft]
+            _iota_pft   = float(MLpftcon.iota_SPA[pft])
+            _gsmin_pft  = float(MLpftcon.gsmin_SPA[pft])
 
         # --- Pre-extract constant input slices (JAX arrays, no D→H syncs) ---
         _dpai_p    = mlcanopy_inst.dpai_profile[p]
@@ -1649,7 +1726,11 @@ def LeafPhotosynthesis(
 
         if gs_type in (0, 1):
             # ---- Differentiable vmap path: no numpy accumulators ---
-            kernel = _make_leaf_photo_kernel(
+            # _get_vmapped_photo_kernel is lru_cache'd by PFT constants,
+            # so the same JIT-compiled kernel is reused across all sub-steps
+            # for a fixed site (avoids repeated XLA recompilation).
+            # All args must be Python scalars for lru_cache hashability.
+            vmapped = _get_vmapped_photo_kernel(
                 is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
                 vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
                 vcmaxse=vcmaxse,       vcmaxc=vcmaxc,
@@ -1657,9 +1738,8 @@ def LeafPhotosynthesis(
                 jmaxse=jmaxse,         jmaxc=jmaxc,
                 rdc=rdc,
                 g0_val=g0_val,         g1_val=g1_val,
-                o2ref_p=_o2ref_p,
+                o2ref_p=float(_o2ref_p),
             )
-            vmapped = jax.vmap(kernel, in_axes=0)
             _sl = slice(1, _ncan_p + 1)
             layer_out = vmapped(
                 _dpai_p[_sl], _tleaf_p[_sl], _vcmax25_p[_sl],
@@ -1688,7 +1768,10 @@ def LeafPhotosynthesis(
 
         elif gs_type == 2:
             # ---- vmap path for WUE stomatal optimization (unified diff/non-diff) ---
-            kernel = _make_leaf_photo_kernel_wue(
+            # _get_vmapped_photo_kernel_wue is lru_cache'd by PFT constants.
+            # o2ref_p and pref_p are passed as broadcast (in_axes=None) args
+            # so per-sub-step pressure changes don't invalidate the JIT cache.
+            vmapped = _get_vmapped_photo_kernel_wue(
                 is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
                 vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
                 vcmaxse=vcmaxse,       vcmaxc=vcmaxc,
@@ -1696,15 +1779,14 @@ def LeafPhotosynthesis(
                 jmaxse=jmaxse,         jmaxc=jmaxc,
                 rdc=rdc,
                 iota_pft=_iota_pft,    gsmin_pft=_gsmin_pft,
-                o2ref_p=_o2ref_p,      pref_p=_pref_p,
             )
-            vmapped = jax.vmap(kernel, in_axes=0)
             _sl = slice(1, _ncan_p + 1)
             layer_out = vmapped(
                 _dpai_p[_sl], _tleaf_p[_sl], _vcmax25_p[_sl],
                 _jmax25_p[_sl], _rd25_p[_sl], _kp25_p[_sl],
                 _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
                 _gbv_p[_sl], _cair_p[_sl],
+                _o2ref_p, _pref_p,
             )
             _out_names = [
                 'kc_leaf', 'ko_leaf', 'cp_leaf', 'vcmax_leaf', 'jmax_leaf',
