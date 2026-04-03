@@ -1,5 +1,52 @@
 # Changelog
 
+## 2026-04-03 — GPU benchmark baseline (session 8)
+
+**Status:** Script created and run. Results documented. Critical performance issue identified.
+
+### Script: `diags/benchmark_gpu.py`
+
+Times `MLCanopyFluxes` / `ModelAdvance` on the CHATS7 site (V100S GPU).
+Output: `diags/figures/benchmark_baseline.txt`.
+
+### Key baseline numbers
+
+| Metric | Time |
+|---|---|
+| Compile + first run (timestep 1, num_mlcan=1) | **1987 s** (33 min) |
+| Steady-state (timestep 2, num_mlcan=1) | **1942 s** (also recompiling!) |
+| Compile + first run (num_mlcan=0, empty filter) | 1.4 s |
+| Steady-state (num_mlcan=0, 5 calls) | 0.424 s/call (std 0.004 s) |
+| Per-ml-substep estimate (num_mlcan=0) | 70.7 ms |
+
+### Critical finding: recompilation every timestep
+
+`_make_physics_step(calday, nstep)` factory was refactored in session 7 to
+`_physics_step_fn(inst, calday_ml)` with `calday_ml` as explicit arg.
+BUT: `calday_ml` is a Python float passed as a JIT-traced argument.
+Each new float value is a different Python object → JAX JIT cache miss → full
+XLA recompilation of `jit__physics_step_fn` every timestep (~1942 s/step).
+
+Fix needed: Pass `calday_ml` as a JAX array (not Python float) so JAX traces
+through its value rather than keying the cache on the Python object.
+
+### Other issues documented
+
+- **CUDA graph OOM**: Direct `MLCanopyFluxes` calls after `ModelAdvance` hit
+  "RESOURCE_EXHAUSTED: 14 alive graphs" limit. Benchmark timing via
+  sequential `ModelAdvance` calls avoids this.
+- **D→H sync**: `int(mlcanopy_inst.ntop_canopy[p])` in LongwaveRadiation:317
+  forces device→host transfer every sub-step.
+
+### Next actions
+
+- [ ] Fix calday_ml passing in MLCanopyFluxesMod: wrap float as `jnp.array(calday_ml)`
+      before passing to JIT-compiled step function (or use `functools.partial` with
+      concrete value to mark it static).
+- [ ] After fix: re-run benchmark to measure true steady-state time.
+
+---
+
 ## 2026-04-03 — JIT attempt for non-diff MLCanopyFluxes via GridInfo (session 7)
 
 **Status:** Partial implementation. `calday_ml`-as-explicit-arg refactoring applied.
