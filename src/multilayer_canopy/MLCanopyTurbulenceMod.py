@@ -1301,10 +1301,14 @@ def _obu_writeback_jax(p, obu_val, kwargs, mlcanopy_inst):
 
     _hc_d2 = jnp.maximum(ztop_p - zdisp_val, _eps_obu)
     zlog        = jnp.log(jnp.maximum((zref_p - zdisp_val) / _hc_d2, _eps_obu))
-    _dm2 = jnp.where(jnp.abs(zlog + psim) > _eps_obu, zlog + psim, _eps_obu)
-    _dc2 = jnp.where(jnp.abs(zlog + psic) > _eps_obu, zlog + psic, _eps_obu)
-    ustar_val   = uref_p * vkc / _dm2
-    gac_to_hc_v = rhomol_p * vkc * ustar_val / _dc2
+    # Use sign * max(|denom|, eps) — avoids jnp.where-as-denominator NaN grads
+    # (jnp.where differentiates both branches; 0/0 = NaN even when masked).
+    _dm2_abs  = jnp.maximum(jnp.abs(zlog + psim), _eps_obu)
+    _dm2_sign = jnp.where((zlog + psim) < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+    _dc2_abs  = jnp.maximum(jnp.abs(zlog + psic), _eps_obu)
+    _dc2_sign = jnp.where((zlog + psic) < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+    ustar_val   = uref_p * vkc * _dm2_sign / _dm2_abs
+    gac_to_hc_v = rhomol_p * vkc * ustar_val * _dc2_sign / _dc2_abs
 
     return mlcanopy_inst._replace(
         zdisp_canopy     = mlcanopy_inst.zdisp_canopy.at[p].set(zdisp_val),
