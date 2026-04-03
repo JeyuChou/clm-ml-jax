@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-04-02 — jax.checkpoint at outer loop boundary (session 4)
+
+**Problem:** `jax.grad` OOMs (103 GB, 100+ min) on the full 6 sub-steps × 5 RK stages = 30-iteration
+Python for loop. JAX unrolls all iterations at trace time; backward pass must materialize all
+intermediate activations from all 30 iterations = hundreds of thousands of tensors.
+
+**Fix:** Extract loop body into `_make_physics_step(calday, nstep)` factory returning a pure
+`mlcanopy_inst → mlcanopy_inst` function. In diff mode, wrap each call with `jax.checkpoint`:
+```python
+mlcanopy_inst = jax.checkpoint(_step_fn)(mlcanopy_inst)
+```
+`jax.checkpoint` (remat) does NOT save internal activations during forward; recomputes them on
+demand during backward. Memory drops from O(num_ml_steps × step_mem) to O(step_mem).
+
+**test_grad.py change:** Also reduce to 1 sub-step + Euler (nrk=0) for NaN testing, bringing
+memory from ~103 GB down to ~3–4 GB. This is sufficient to validate that NaN gradients are gone.
+
+**Non-diff path:** Unchanged — `_make_physics_step` called without checkpoint.
+
+---
+
 ## 2026-04-02 — Additional NaN gradient fixes (session 4)
 
 ### Root causes fixed
