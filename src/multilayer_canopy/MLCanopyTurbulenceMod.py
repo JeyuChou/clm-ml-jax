@@ -122,7 +122,8 @@ def _phim_monin_obukhov(zeta):
         φ for momentum.
     """
     zeta = jnp.asarray(zeta)
-    unstable = 1.0 / jnp.sqrt(jnp.sqrt(1.0 - 16.0 * zeta))
+    # jnp.abs avoids sqrt(negative) NaN for stable (zeta>0) branch gradient
+    unstable = 1.0 / jnp.sqrt(jnp.sqrt(jnp.maximum(1.0 - 16.0 * zeta, 1.0e-10)))
     stable   = 1.0 + 5.0 * zeta
     return jnp.where(zeta < 0.0, unstable, stable)
 
@@ -147,7 +148,8 @@ def _phic_monin_obukhov(zeta):
         φ for scalars.
     """
     zeta = jnp.asarray(zeta)
-    unstable = 1.0 / jnp.sqrt(1.0 - 16.0 * zeta)
+    # jnp.maximum avoids sqrt(negative) NaN for stable (zeta>0) branch gradient
+    unstable = 1.0 / jnp.sqrt(jnp.maximum(1.0 - 16.0 * zeta, 1.0e-10))
     stable   = 1.0 + 5.0 * zeta
     return jnp.where(zeta < 0.0, unstable, stable)
 
