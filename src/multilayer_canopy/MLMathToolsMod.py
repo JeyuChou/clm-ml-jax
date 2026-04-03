@@ -609,20 +609,23 @@ def tridiag(a: Array, b: Array, c: Array, r: Array, n: int) -> Array:
     # Allocate arrays (1-based indexing, so size n+1)
     gam = jnp.zeros(n + 1, dtype=jnp.float64)
     u = jnp.zeros(n + 1, dtype=jnp.float64)
-    
+
     # Forward elimination (Fortran lines similar to original)
+    # jnp.maximum avoids NaN gradients when bet → 0 (physical systems have bet > 0)
     bet = b[1]
-    u = u.at[1].set(r[1] / bet)
-    
+    bet_safe = jnp.maximum(jnp.abs(bet), 1.0e-30)
+    u = u.at[1].set(r[1] / bet_safe)
+
     for j in range(2, n + 1):
-        gam = gam.at[j].set(c[j - 1] / bet)
+        gam = gam.at[j].set(c[j - 1] / bet_safe)
         bet = b[j] - a[j] * gam[j]
-        u = u.at[j].set((r[j] - a[j] * u[j - 1]) / bet)
-    
+        bet_safe = jnp.maximum(jnp.abs(bet), 1.0e-30)
+        u = u.at[j].set((r[j] - a[j] * u[j - 1]) / bet_safe)
+
     # Backward substitution
     for j in range(n - 1, 0, -1):
         u = u.at[j].set(u[j] - gam[j + 1] * u[j + 1])
-    
+
     return u
 
 # ---------------------------------------------------------------------------
@@ -694,16 +697,18 @@ def tridiag_2eq(
         cinv = b21[i] - a2[i] * e21_prev
         dinv = b22[i] - a2[i] * e22_prev
         det  = ainv * dinv - binv * cinv
+        # jnp.maximum avoids NaN gradients from det → 0 (physical systems have det > 0)
+        det_safe = jnp.maximum(det, 1.0e-30)
 
-        e11[i] =  dinv * c1[i] / det
-        e12[i] = -binv * c2[i] / det
-        e21[i] = -cinv * c1[i] / det
-        e22[i] =  ainv * c2[i] / det
+        e11[i] =  dinv * c1[i] / det_safe
+        e12[i] = -binv * c2[i] / det_safe
+        e21[i] = -cinv * c1[i] / det_safe
+        e22[i] =  ainv * c2[i] / det_safe
 
         f1[i] = ( dinv * (d1[i] - a1[i] * f1_prev)
-                - binv * (d2[i] - a2[i] * f2_prev)) / det
+                - binv * (d2[i] - a2[i] * f2_prev)) / det_safe
         f2[i] = (-cinv * (d1[i] - a1[i] * f1_prev)
-                + ainv * (d2[i] - a2[i] * f2_prev)) / det
+                + ainv * (d2[i] - a2[i] * f2_prev)) / det_safe
 
         e11_prev, e12_prev = e11[i], e12[i]
         e21_prev, e22_prev = e21[i], e22[i]
