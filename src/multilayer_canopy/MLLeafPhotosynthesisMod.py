@@ -1632,38 +1632,22 @@ def LeafPhotosynthesis(
             _iota_pft   = MLpftcon.iota_SPA[pft]
             _gsmin_pft  = MLpftcon.gsmin_SPA[pft]
 
-        # --- Pre-extract constant input slices ---
-        # In diff mode, keep as JAX arrays; otherwise extract to numpy for speed
-        if _diff_mode:
-            _dpai_p    = mlcanopy_inst.dpai_profile[p]
-            _tleaf_p   = mlcanopy_inst.tleaf_leaf[p, :, il]
-            _vcmax25_p = mlcanopy_inst.vcmax25_leaf[p, :, il]
-            _jmax25_p  = mlcanopy_inst.jmax25_leaf[p, :, il]
-            _rd25_p    = mlcanopy_inst.rd25_leaf[p, :, il]
-            _kp25_p    = mlcanopy_inst.kp25_leaf[p, :, il]
-            _eair_p    = mlcanopy_inst.eair_profile[p]
-            _apar_p    = mlcanopy_inst.apar_leaf[p, :, il]
-            _gbc_p     = mlcanopy_inst.gbc_leaf[p, :, il]
-            _gbv_p     = mlcanopy_inst.gbv_leaf[p, :, il]
-            _cair_p    = mlcanopy_inst.cair_profile[p]
-            _o2ref_p   = mlcanopy_inst.o2ref_forcing[p]
-            _pref_p    = mlcanopy_inst.pref_forcing[p]
-        else:
-            _dpai_p    = np.asarray(mlcanopy_inst.dpai_profile[p])
-            _tleaf_p   = np.asarray(mlcanopy_inst.tleaf_leaf[p, :, il])
-            _vcmax25_p = np.asarray(mlcanopy_inst.vcmax25_leaf[p, :, il])
-            _jmax25_p  = np.asarray(mlcanopy_inst.jmax25_leaf[p, :, il])
-            _rd25_p    = np.asarray(mlcanopy_inst.rd25_leaf[p, :, il])
-            _kp25_p    = np.asarray(mlcanopy_inst.kp25_leaf[p, :, il])
-            _eair_p    = np.asarray(mlcanopy_inst.eair_profile[p])
-            _apar_p    = np.asarray(mlcanopy_inst.apar_leaf[p, :, il])
-            _gbc_p     = np.asarray(mlcanopy_inst.gbc_leaf[p, :, il])
-            _gbv_p     = np.asarray(mlcanopy_inst.gbv_leaf[p, :, il])
-            _cair_p    = np.asarray(mlcanopy_inst.cair_profile[p])
-            _o2ref_p   = float(mlcanopy_inst.o2ref_forcing[p])
-            _pref_p    = float(mlcanopy_inst.pref_forcing[p])
+        # --- Pre-extract constant input slices (JAX arrays, no D→H syncs) ---
+        _dpai_p    = mlcanopy_inst.dpai_profile[p]
+        _tleaf_p   = mlcanopy_inst.tleaf_leaf[p, :, il]
+        _vcmax25_p = mlcanopy_inst.vcmax25_leaf[p, :, il]
+        _jmax25_p  = mlcanopy_inst.jmax25_leaf[p, :, il]
+        _rd25_p    = mlcanopy_inst.rd25_leaf[p, :, il]
+        _kp25_p    = mlcanopy_inst.kp25_leaf[p, :, il]
+        _eair_p    = mlcanopy_inst.eair_profile[p]
+        _apar_p    = mlcanopy_inst.apar_leaf[p, :, il]
+        _gbc_p     = mlcanopy_inst.gbc_leaf[p, :, il]
+        _gbv_p     = mlcanopy_inst.gbv_leaf[p, :, il]
+        _cair_p    = mlcanopy_inst.cair_profile[p]
+        _o2ref_p   = mlcanopy_inst.o2ref_forcing[p]
+        _pref_p    = mlcanopy_inst.pref_forcing[p]
 
-        if _diff_mode and gs_type in (0, 1):
+        if gs_type in (0, 1):
             # ---- Differentiable vmap path: no numpy accumulators ---
             kernel = _make_leaf_photo_kernel(
                 is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
@@ -1702,8 +1686,8 @@ def LeafPhotosynthesis(
             # Skip the numpy accumulator + batch write-back below
             continue
 
-        if _diff_mode and gs_type == 2:
-            # ---- Differentiable vmap path for WUE stomatal optimization ---
+        elif gs_type == 2:
+            # ---- vmap path for WUE stomatal optimization (unified diff/non-diff) ---
             kernel = _make_leaf_photo_kernel_wue(
                 is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
                 vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
@@ -1736,227 +1720,8 @@ def LeafPhotosynthesis(
             mlcanopy_inst = mlcanopy_inst._replace(**updates)
             continue
 
-        # --- Numpy output arrays (accumulated over ic, then batch-written) ---
-        _nmax = _ncan_p + 2
-        _kc_new     = np.zeros(_nmax);  _ko_new    = np.zeros(_nmax)
-        _cp_new     = np.zeros(_nmax);  _vcmax_new = np.zeros(_nmax)
-        _jmax_new   = np.zeros(_nmax);  _rd_new    = np.zeros(_nmax)
-        _kp_new     = np.zeros(_nmax);  _lesat_new = np.zeros(_nmax)
-        _ceair_new  = np.zeros(_nmax);  _je_new    = np.zeros(_nmax)
-        _gs_new     = np.zeros(_nmax);  _ci_new    = np.zeros(_nmax)
-        _ac_new     = np.zeros(_nmax);  _aj_new    = np.zeros(_nmax)
-        _ap_new     = np.zeros(_nmax);  _agross_new = np.zeros(_nmax)
-        _anet_new   = np.zeros(_nmax);  _cs_new    = np.zeros(_nmax)
-
-        if gs_type in (0, 1):
-            # ---- vmap path: one JIT-compiled kernel call over all layers ---
-            kernel = _make_leaf_photo_kernel(
-                is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
-                vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
-                vcmaxse=vcmaxse,       vcmaxc=vcmaxc,
-                jmaxha=jmaxha,         jmaxhd=jmaxhd,
-                jmaxse=jmaxse,         jmaxc=jmaxc,
-                rdc=rdc,
-                g0_val=g0_val,         g1_val=g1_val,
-                o2ref_p=_o2ref_p,
-            )
-            vmapped = jax.jit(jax.vmap(kernel, in_axes=0))
-            _sl = slice(1, _ncan_p + 1)
-            # Pass slices directly — _dpai_p etc. are numpy arrays from the
-            # pre-extraction above, so jnp.array() converts H→D once.
-            layer_out = vmapped(
-                jnp.array(_dpai_p[_sl],    dtype=jnp.float64),
-                jnp.array(_tleaf_p[_sl],   dtype=jnp.float64),
-                jnp.array(_vcmax25_p[_sl], dtype=jnp.float64),
-                jnp.array(_jmax25_p[_sl],  dtype=jnp.float64),
-                jnp.array(_rd25_p[_sl],    dtype=jnp.float64),
-                jnp.array(_kp25_p[_sl],    dtype=jnp.float64),
-                jnp.array(_eair_p[_sl],    dtype=jnp.float64),
-                jnp.array(_apar_p[_sl],    dtype=jnp.float64),
-                jnp.array(_gbc_p[_sl],     dtype=jnp.float64),
-                jnp.array(_gbv_p[_sl],     dtype=jnp.float64),
-                jnp.array(_cair_p[_sl],    dtype=jnp.float64),
-            )
-            # Direct JAX writeback — skip numpy intermediate (eliminates
-            # 18 D→H + 18 H→D syncs vs the numpy accumulator approach).
-            _out_names = [
-                'kc_leaf', 'ko_leaf', 'cp_leaf', 'vcmax_leaf', 'jmax_leaf',
-                'rd_leaf', 'kp_leaf', 'leaf_esat_leaf', 'ceair_leaf', 'je_leaf',
-                'gs_leaf', 'ci_leaf', 'ac_leaf', 'aj_leaf', 'ap_leaf',
-                'agross_leaf', 'anet_leaf', 'cs_leaf',
-            ]
-            _updates = {}
-            for _idx, _name in enumerate(_out_names):
-                _updates[_name] = getattr(mlcanopy_inst, _name).at[p, _sl, il].set(layer_out[_idx])
-            _updates['btran_soil'] = mlcanopy_inst.btran_soil.at[p].set(1.0)
-            _updates['g0_canopy']  = mlcanopy_inst.g0_canopy.at[p].set(g0_val)
-            _updates['g1_canopy']  = mlcanopy_inst.g1_canopy.at[p].set(g1_val)
-            mlcanopy_inst = mlcanopy_inst._replace(**_updates)
-            continue  # skip the numpy batch writeback below
-
-        elif gs_type == 2:
-            # ---- WUE / SPA path: Python loop (not vmapped) ----------------
-            for ic in range(1, _ncan_p + 1):
-
-                _dpai_ic = float(_dpai_p[ic])
-
-                if _dpai_ic > 0.0:                     # Fortran lines 159-186
-
-                    _tl = float(_tleaf_p[ic])
-
-                    # --- C3 temperature response — Fortran lines 161-166 ---
-                    kc_val    = kc25    * _ft_py(_tl, kcha)
-                    ko_val    = ko25    * _ft_py(_tl, koha)
-                    cp_val    = cp25    * _ft_py(_tl, cpha)
-                    vcmax_val = (float(_vcmax25_p[ic])
-                                 * _ft_py(_tl, vcmaxha) * _fth_py(_tl, vcmaxhd, vcmaxse, vcmaxc))
-                    jmax_val  = (float(_jmax25_p[ic])
-                                 * _ft_py(_tl, jmaxha)  * _fth_py(_tl, jmaxhd,  jmaxse,  jmaxc))
-                    rd_val    = (float(_rd25_p[ic])
-                                 * _ft_py(_tl, rdha) * _fth_py(_tl, rdhd, rdse, rdc))
-                    kp_val    = 0.0
-
-                    # --- C4 temperature response override — Fortran lines 168-175 ---
-                    if not is_c3:
-                        t1 = 2.0 ** ((_tl - (tfrz + 25.0)) / 10.0)
-                        t2 = 1.0 + math.exp(0.2 * ((tfrz + 15.0) - _tl))
-                        t3 = 1.0 + math.exp(0.3 * (_tl - (tfrz + 40.0)))
-                        t4 = 1.0 + math.exp(1.3 * (_tl - (tfrz + 55.0)))
-                        vcmax_val = float(_vcmax25_p[ic]) * t1 / (t2 * t3)
-                        rd_val    = float(_rd25_p[ic]) * t1 / t4
-                        kp_val    = float(_kp25_p[ic]) * t1
-
-                    # btran = 1 — Fortran lines 178-179
-                    vcmax_val *= 1.0   # btran = 1.0
-
-                    # --- Saturation vapour pressure — Fortran lines 190-198 ---
-                    lesat_val, _desat = SatVap_py(_tl)
-                    _eair_ic  = float(_eair_p[ic])
-                    ceair_val = min(_eair_ic, lesat_val)
-
-                    # --- Electron transport rate — Fortran lines 200-205 ---
-                    _apar_ic = float(_apar_p[ic])
-                    qabs = 0.5 * phi_psII * _apar_ic
-                    bq   = -(qabs + jmax_val)
-                    cq   = qabs * jmax_val
-                    r1, r2 = quadratic_py(theta_j, bq, cq)
-                    je_val = min(r1, r2)
-
-                    # Store temperature-response values
-                    _kc_new[ic]    = kc_val;   _ko_new[ic]    = ko_val
-                    _cp_new[ic]    = cp_val;   _vcmax_new[ic] = vcmax_val
-                    _jmax_new[ic]  = jmax_val; _rd_new[ic]    = rd_val
-                    _kp_new[ic]    = kp_val;   _lesat_new[ic] = lesat_val
-                    _ceair_new[ic] = ceair_val; _je_new[ic]   = je_val
-
-                    _gbc_ic  = float(_gbc_p[ic])
-                    _gbv_ic  = float(_gbv_p[ic])
-                    _cair_ic = float(_cair_p[ic])
-
-                    # --- Inline _StomataOptimization ---
-                    _scalar_kwargs = dict(
-                        iota=_iota_pft, pref_p=_pref_p, eair_ic=_eair_ic,
-                        gbv_ic=_gbv_ic, lesat_ic=lesat_val,
-                        is_c3=is_c3, dpai_ic=_dpai_ic, gbc_ic=_gbc_ic,
-                        cair_ic=_cair_ic, vcmax_ic=vcmax_val, je_ic=je_val,
-                        kp_ic=kp_val, rd_ic=rd_val, kc_ic=kc_val, ko_ic=ko_val,
-                        cp_ic=cp_val, o2ref_p=_o2ref_p, apar_ic=_apar_ic,
-                        c3psn_pft_val=_c3psn_val,
-                    )
-                    _check1 = _StomataEfficiencyPure(_gsmin_pft, **_scalar_kwargs)
-                    _check2 = _StomataEfficiencyPure(2.0,         **_scalar_kwargs)
-
-                    if _check1 * _check2 < 0.0:
-                        def _make_sf(**kw):
-                            def _sf(gs_v):
-                                return _StomataEfficiencyPure(gs_v, **kw)
-                            return _sf
-                        _sf = _make_sf(**_scalar_kwargs)
-                        if gs_solver == 1:
-                            gs_opt = zbrent_scalar(
-                                'StomataOptimization', _sf, _gsmin_pft, 2.0, tol_gs)
-                        else:
-                            gs_opt = bisection_scalar(
-                                'StomataOptimization', _sf, _gsmin_pft, 2.0, tol_gs)
-                    else:
-                        gs_opt = _gsmin_pft
-
-                    # Final photosynthesis at gs_opt (pure Python)
-                    _cfgs_kw = {k: v for k, v in _scalar_kwargs.items()
-                                if k not in ('iota', 'pref_p', 'eair_ic', 'gbv_ic', 'lesat_ic')}
-                    _ci_f, _ac_f, _aj_f, _ap_f, _agross_f, _anet_f, _cs_f = (
-                        _CiFuncGsPure(gs_opt, **_cfgs_kw))
-
-                    _gs_new[ic]     = gs_opt;   _ci_new[ic]     = _ci_f
-                    _ac_new[ic]     = _ac_f;    _aj_new[ic]     = _aj_f
-                    _ap_new[ic]     = _ap_f;    _agross_new[ic] = _agross_f
-                    _anet_new[ic]   = _anet_f;  _cs_new[ic]     = _cs_f
-
-                    # --- Error checks — Fortran lines 223-245 (pure Python) ---
-                    _gs_chk  = _gs_new[ic]
-                    _gbc_chk = _gbc_ic;  _ci_chk = _ci_new[ic]
-                    _cair_chk = _cair_ic; _anet_chk = _anet_new[ic]
-
-                    if _gs_chk < 0.0:
-                        endrun(msg=' ERROR: LeafPhotosynthesis: negative stomatal conductance')
-
-                    an_err = (_cair_chk - _ci_chk) / (1.0 / _gbc_chk + dh2o_to_dco2 / _gs_chk)
-                    if _anet_chk > 0.0 and abs(_anet_chk - an_err) > 0.01:
-                        endrun(msg=' ERROR: LeafPhotosynthesis: failed diffusion error check')
-
-                else:                                  # dpai == 0 — Fortran lines 247-257
-                    _rd_new[ic]     = 0.0;  _gs_new[ic]     = 0.0
-                    _ci_new[ic]     = 0.0;  _ac_new[ic]     = 0.0
-                    _aj_new[ic]     = 0.0;  _ap_new[ic]     = 0.0
-                    _agross_new[ic] = 0.0;  _anet_new[ic]   = 0.0
-                    _cs_new[ic]     = 0.0
-
         else:
             endrun(msg=' ERROR: LeafPhotosynthesis: gs_type not valid')
-
-        # --- Batch write-back for first loop (one _replace per patch) ---
-        _sl = slice(1, _ncan_p + 1)
-        mlcanopy_inst = mlcanopy_inst._replace(
-            kc_leaf        = mlcanopy_inst.kc_leaf.at[p, _sl, il].set(
-                                 jnp.array(_kc_new[_sl])),
-            ko_leaf        = mlcanopy_inst.ko_leaf.at[p, _sl, il].set(
-                                 jnp.array(_ko_new[_sl])),
-            cp_leaf        = mlcanopy_inst.cp_leaf.at[p, _sl, il].set(
-                                 jnp.array(_cp_new[_sl])),
-            vcmax_leaf     = mlcanopy_inst.vcmax_leaf.at[p, _sl, il].set(
-                                 jnp.array(_vcmax_new[_sl])),
-            jmax_leaf      = mlcanopy_inst.jmax_leaf.at[p, _sl, il].set(
-                                 jnp.array(_jmax_new[_sl])),
-            rd_leaf        = mlcanopy_inst.rd_leaf.at[p, _sl, il].set(
-                                 jnp.array(_rd_new[_sl])),
-            kp_leaf        = mlcanopy_inst.kp_leaf.at[p, _sl, il].set(
-                                 jnp.array(_kp_new[_sl])),
-            leaf_esat_leaf = mlcanopy_inst.leaf_esat_leaf.at[p, _sl, il].set(
-                                 jnp.array(_lesat_new[_sl])),
-            ceair_leaf     = mlcanopy_inst.ceair_leaf.at[p, _sl, il].set(
-                                 jnp.array(_ceair_new[_sl])),
-            je_leaf        = mlcanopy_inst.je_leaf.at[p, _sl, il].set(
-                                 jnp.array(_je_new[_sl])),
-            gs_leaf        = mlcanopy_inst.gs_leaf.at[p, _sl, il].set(
-                                 jnp.array(_gs_new[_sl])),
-            ci_leaf        = mlcanopy_inst.ci_leaf.at[p, _sl, il].set(
-                                 jnp.array(_ci_new[_sl])),
-            ac_leaf        = mlcanopy_inst.ac_leaf.at[p, _sl, il].set(
-                                 jnp.array(_ac_new[_sl])),
-            aj_leaf        = mlcanopy_inst.aj_leaf.at[p, _sl, il].set(
-                                 jnp.array(_aj_new[_sl])),
-            ap_leaf        = mlcanopy_inst.ap_leaf.at[p, _sl, il].set(
-                                 jnp.array(_ap_new[_sl])),
-            agross_leaf    = mlcanopy_inst.agross_leaf.at[p, _sl, il].set(
-                                 jnp.array(_agross_new[_sl])),
-            anet_leaf      = mlcanopy_inst.anet_leaf.at[p, _sl, il].set(
-                                 jnp.array(_anet_new[_sl])),
-            cs_leaf        = mlcanopy_inst.cs_leaf.at[p, _sl, il].set(
-                                 jnp.array(_cs_new[_sl])),
-            btran_soil     = mlcanopy_inst.btran_soil.at[p].set(1.0),
-            g0_canopy      = mlcanopy_inst.g0_canopy.at[p].set(g0_val),
-            g1_canopy      = mlcanopy_inst.g1_canopy.at[p].set(g1_val),
-        )
 
     # ------------------------------------------------------------------
     # Second loop: soil moisture adjustment — Fortran lines 262-212
