@@ -1,8 +1,47 @@
 # Changelog
 
+## 2026-04-03 — GPU benchmark post lru_cache fix (session 10)
+
+**Status:** Benchmark complete. Significant improvement measured; further recompilation still occurring.
+
+### Results
+
+| Metric | Before (baseline) | After (lru_cache fix) | Speedup |
+|---|---|---|---|
+| Compile + first run | 1987 s | 342.563 s | **5.8x faster** |
+| Steady-state mean | 1942 s | 146.6 s | **13.2x faster** |
+| Steady-state min | — | 145.5 s | — |
+| Steady-state std | — | 1.16 s | — |
+
+GPU: Tesla V100S-PCIE-32GB (cuda:0), JAX 0.9.2. Note: both V100S GPUs were ~75% occupied by other processes (~24.8 GB / 32 GB) during the run, which likely inflated compile and run times.
+
+Saved to: `diags/figures/benchmark_post_lru_cache.txt`
+
+### Analysis
+
+The lru_cache fix eliminated the majority of the recompilation overhead (60 XLA
+recompiles per CLM timestep → ~1). However, steady-state is still 146 s/step
+(expected was <<1 s). This suggests further recompilation is occurring on each
+timestep, likely from a different source than the leaf photo kernels.
+
+**Possible remaining causes:**
+- Other module-level closures (e.g. turbulence, longwave radiation) that still
+  create new Python objects per sub-step and escape lru_cache.
+- Per-timestep Python scalar arguments being passed to JIT functions as
+  non-static values (changing each step → cache miss).
+- The `calday_ml` float passed to `_physics_step_fn` — if this is still a
+  Python float rather than a JAX traced value, each new float causes a new
+  JIT trace.
+
+**Next steps:** Profile individual sub-steps to identify which module is still
+recompiling. Check `MLCanopyTurbulenceMod`, `MLLongwaveRadiationMod`, and the
+main `_physics_step_fn` closure for non-cached kernel factories.
+
+---
+
 ## 2026-04-03 — Fix XLA recompilation in LeafPhotosynthesis (session 9)
 
-**Status:** Root cause identified and fixed. Committed. Full benchmark pending.
+**Status:** Root cause identified and fixed. Committed. Benchmark completed (session 10).
 
 ### Root cause (clarified)
 
