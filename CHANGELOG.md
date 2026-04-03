@@ -1,30 +1,36 @@
 # Changelog
 
-## 2026-04-02 — Eliminate remaining D↔H syncs in photosynthesis and turbulence second loops
+## 2026-04-02 — Unify all LeafPhotosynthesis paths to pure JAX; eliminate D↔H syncs
 
-**Status:** Unified non-diff and diff-mode code paths for second loops; eliminated ~30 D→H+H→D syncs per sub-step.
+**Status:** Completely eliminated numpy pre-extraction/writeback in both first and second loops of `LeafPhotosynthesis`. Eliminated turbulence redundant re-extraction. Net result: ~60+ fewer D→H+H→D syncs per ML sub-step.
 
 ### Completed
 
-**1. MLLeafPhotosynthesisMod.py — second loop D↔H elimination**
+**1. MLLeafPhotosynthesisMod.py — first loop unified (11 D→H + 11 H→D eliminated)**
 
-The soil-moisture-adjustment second loop had:
-- 16–19 `np.asarray()` pre-extractions (D→H syncs) per patch per sun/shade leaf
-- 11 `jnp.array()` batch writebacks (H→D syncs) at end
+- Removed `if _diff_mode:` / `else:` pre-extraction split — JAX arrays used always
+- Removed `_diff_mode and` guard from gs_type 0/1 and gs_type 2 vmap paths
+- Deleted 253 lines of dead numpy accumulator code: duplicate gs_type 0/1 block, gs_type 2 Python scalar loop, and batch writeback
+- All stomatal models (Medlyn/Ball-Berry/WUE) now use `jax.vmap` in both diff and non-diff modes
 
-Fixed by removing the `else:` pre-extraction blocks and the original non-diff scalar loop entirely. Both diff and non-diff paths now run the JAX second loop (formerly guarded by `if _diff_mode:`). The `_CiFuncGsPure` scalar loop is no longer called in any path.
+**2. MLLeafPhotosynthesisMod.py — second loop unified (16 D→H + 11 H→D eliminated)**
 
-**2. MLCanopyTurbulenceMod.py — redundant OBU re-extraction**
+- Removed the `else:` numpy pre-extraction blocks (16–19 `np.asarray()` calls)
+- Removed `if _diff_mode:` guard and `continue` 
+- Removed the entire non-diff scalar second loop (used `_CiFuncGsPure` per layer)
+- Both diff and non-diff paths now use the JAX per-layer loop directly
 
-Non-diff `_GetObu` path was calling `_ObuFunc(p, 0, 0, mlcanopy_inst, obu_converged)` after convergence, which re-extracted 12 scalars from `mlcanopy_inst` (12 D→H syncs). Fixed by routing through `_obu_writeback_jax` which reuses the already-extracted `_kwargs` dict.
+**3. MLCanopyTurbulenceMod.py — redundant OBU re-extraction (12 D→H eliminated)**
 
-**3. Validation figures generated** (`diags/figures/`)
+Non-diff `_GetObu` path was calling `_ObuFunc` after convergence, re-extracting 12 scalars. Fixed by routing through `_obu_writeback_jax` which reuses `_kwargs`.
 
-- `validation_flux.png`: 6-panel time series JAX vs Fortran (RMSE: Rn=0.14, H=0.74, LE=0.94 W/m²)
+**4. Validation figures generated** (`diags/figures/`)
+
+- `validation_flux.png`: JAX vs Fortran RMSE: Rn=0.14, H=0.74, LE=0.94 W/m²
 - `validation_profiles.png`: vertical canopy profiles at noon
 - `validation_scatter.png`: scatter for all 17 flux variables
 
-**4. Differentiability test suite** (`tests/test_differentiability.py`)
+**5. Differentiability test suite** (`tests/test_differentiability.py`)
 
 5 `@pytest.mark.slow` tests: forward pass finite, grad completes, grad finite, grad nonzero, FD check.
 
@@ -99,7 +105,10 @@ Previously `SolarRadiation` was called without `grid=grid` in the `_diff_mode` p
 
 2. **`jax.grad` not yet tested to completion** — the test (`test_grad.py`) was confirmed to reach the grad computation; a full passing run is the next validation step.
 
-3. **numpy flux accumulators** (`np.zeros` in `_MLTimeStepFluxIntegration`) force per-sub-step host transfers in non-diff mode. Would benefit from converting to JAX arrays.
+3. **Remaining small D→H sources** (all bounded, low priority):
+   - `MLFluxProfileSolutionMod.py:632-638, 746-747` — 9 syncs in error-check functions (`ErrorCheck01/02`)
+   - `MLRungeKuttaMod.py:139-143` — 5 syncs per RK step for `bef`-state pre-extraction
+   - `MLCanopyTurbulenceMod.py:1507,1661,1985` — 3 syncs in height-lookup functions
 
 4. **MLSoilTemperatureMod.py** has similar `select_divide_fusion` patterns but is NOT in the `jax.grad` path (called from `clm_driver.py`, not `MLCanopyFluxes`). Leave for later.
 
