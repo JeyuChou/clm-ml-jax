@@ -4,8 +4,12 @@
 
 **Status:** `jax.grad` completed but returned NaN for all fields. Root cause identified and fixed.
 
-### Root cause
-`tridiag_2eq` (coupled T/q heat-mass solver in `_implicit_fps_jit`) divides by `det = ainv*dinv - binv*cinv`. For the top-layer boundary, `c1[n] = c2[n] = 0`, so the numerators `dinv * c1[i]` etc. are zero — but JAX differentiates `x / det` as `-x/det²` regardless, producing `0 * inf = NaN` when `det` approaches zero from numerical accumulation.
+### Root causes (3 fixes)
+
+**1. Monin-Obukhov φ functions** (`MLCanopyTurbulenceMod.py`):
+`_phim` and `_phic` computed `sqrt(1-16*zeta)` without a positive guard. For stable conditions (`zeta > 1/16`), the stable branch is selected but JAX still differentiates the unstable expression, giving `sqrt(negative) = NaN`. Fixed with `jnp.maximum(1.0 - 16.0*zeta, 1e-10)`.
+
+**2. `tridiag_2eq`** (coupled T/q solver in `_implicit_fps_jit`) divides by `det = ainv*dinv - binv*cinv`. For the top-layer boundary, `c1[n] = c2[n] = 0`, so the numerators `dinv * c1[i]` etc. are zero — but JAX differentiates `x / det` as `-x/det²` regardless, producing `0 * inf = NaN` when `det` approaches zero from numerical accumulation.
 
 Same issue in `tridiag` (single-equation solver used in solar radiation two-stream): the running determinant `bet = b[j] - a[j]*gam[j]` could be near-zero at some layer.
 
