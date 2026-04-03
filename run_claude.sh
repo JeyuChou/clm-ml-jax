@@ -3,13 +3,12 @@
 #SBATCH --job-name=claude-agent
 #SBATCH --output=logs/agent_%j.out
 #SBATCH --error=logs/agent_%j.err
-#SBATCH --time=05:00:00          # adjust to your run length
+#SBATCH --time=10:00:00          # adjust to your run length
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:1             # request 1 GPU
-#SBATCH --qos=hpc_test  
 
 
 
@@ -35,3 +34,7 @@ cd /burg-archive/home/al4385/clm-ml-jax
 export TERM=xterm-256color
 tmux new-session -d -s claude "claude --dangerously-skip-permissions ; exec bash"
 tmux wait-for claude
+
+
+#### Optional: Attach to the tmux session to interact with the agent
+#srun --jobid=7201527 --overlap --pty tmux attach -t claude

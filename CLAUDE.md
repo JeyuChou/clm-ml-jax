@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**CLM-ML-JAX** is a JAX/Python translation of the Fortran Community Land Model (CLM) with Multi-Layer Canopy physics. Every module directly mirrors a Fortran source file; structural decisions follow Fortran conventions rather than idiomatic Python.
+**CLM-ML-JAX** is a JAX/Python translation of the Fortran Community Land Model (CLM) with Multi-Layer Canopy physics. Every module directly mirrors a Fortran source file; structural decisions follow Fortran conventions rather than idiomatic Python. The goal is a scientifically equivalent Python/JAX implementation that can be used for differentiable programming and GPU acceleration, while maintaining a clear lineage to the original Fortran codebase.
 
 Reference Fortran implementation: [CLM-ML_v2.CHATS](https://github.com/gbonan/CLM-ml_v2.CHATS)
 
