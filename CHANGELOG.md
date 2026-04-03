@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-04-02 — Eliminate D↔H syncs in RungeKuttaUpdate (MLRungeKuttaMod)
+
+**Status:** Unified diff/non-diff code paths in `RungeKuttaUpdate`.
+
+Removed `if _diff_mode: jax_path; else: numpy_path` split:
+- **Pre-extraction**: replaced ~18 `np.asarray()` / `float()` calls per patch per RK step with direct JAX slices
+- **Writeback**: removed `jnp.array(_result)` wrappers; `.at[].set()` now receives JAX arrays directly
+
+Net: ~18 D→H + 12 H→D syncs eliminated per patch per RK step. With 4th-order RK (nrk=4) that's ~120 fewer syncs per ML sub-step in non-diff mode.
+
+---
+
 ## 2026-04-02 — Fix NaN gradients in tridiagonal solvers (MLMathToolsMod)
 
 **Status:** `jax.grad` completed but returned NaN for all fields. Root cause identified and fixed.
