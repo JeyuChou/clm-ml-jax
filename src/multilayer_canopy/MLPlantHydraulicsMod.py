@@ -219,7 +219,9 @@ def SoilResistance(
         root_dist_v = jnp.sqrt(1.0 / (rld_v * pi))
 
         # Soil-to-root (A23) and root-to-stem (A24) resistance
-        soilr1_v = jnp.log(root_dist_v / rr) / (2.0 * pi * rld_v * dz_v * hk_v)
+        # hk_v can be 0 for frozen layers; guard prevents NaN in jax.grad
+        hk_v_safe = jnp.maximum(hk_v, 1.0e-30)
+        soilr1_v = jnp.log(root_dist_v / rr) / (2.0 * pi * rld_v * dz_v * hk_v_safe)
         soilr2_v = root_resist_SPA[pft] / (rbd_v * dz_v)
         soilr_v  = soilr1_v + soilr2_v    # total belowground resistance
 
