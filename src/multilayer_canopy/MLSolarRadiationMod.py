@@ -798,15 +798,25 @@ def _TwoStream(
                 num2 = g2 * (u + v * albd) * s1
                 den1 = v * (v + u * albd) / s1
                 den2 = u * (u + v * albd) * s1
-                n2b  = (num1 - num2) / (den1 - den2)
+                # Guard Wronskian-like denominator for NaN-safe backward pass
+                _d1d2     = den1 - den2
+                _d1d2_sgn = jnp.where(_d1d2 < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+                _d1d2_saf = _d1d2_sgn * jnp.maximum(jnp.abs(_d1d2), 1.0e-30)
+                n2b  = (num1 - num2) / _d1d2_saf
                 n1b  = (g2 - n2b * u) / v
 
-                a1b = (-g1       * (1.0 - s2 * s2) / (2.0 * kb_ic)
-                       + n1b * u * (1.0 - s2 * s1) / (kb_ic + h)
-                       + n2b * v * (1.0 - s2 / s1) / (kb_ic - h)) * tbi_ic
-                a2b = ( g2       * (1.0 - s2 * s2) / (2.0 * kb_ic)
-                       - n1b * v * (1.0 - s2 * s1) / (kb_ic + h)
-                       - n2b * u * (1.0 - s2 / s1) / (kb_ic - h)) * tbi_ic
+                # Guard kb±h denominators — degenerate when kb≈h (already h≠0 from sqrt guard)
+                _kbph = kb_ic + h   # always > 0
+                _kbmh     = kb_ic - h
+                _kbmh_sgn = jnp.where(_kbmh < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+                _kbmh_saf = _kbmh_sgn * jnp.maximum(jnp.abs(_kbmh), 1.0e-30)
+                _2kb_saf  = jnp.maximum(2.0 * kb_ic, 1.0e-30)
+                a1b = (-g1       * (1.0 - s2 * s2) / _2kb_saf
+                       + n1b * u * (1.0 - s2 * s1) / _kbph
+                       + n2b * v * (1.0 - s2 / s1) / _kbmh_saf) * tbi_ic
+                a2b = ( g2       * (1.0 - s2 * s2) / _2kb_saf
+                       - n1b * v * (1.0 - s2 * s1) / _kbph
+                       - n2b * u * (1.0 - s2 / s1) / _kbmh_saf) * tbi_ic
 
                 iupwb0_ic = -g1 + n1b * u + n2b * v
                 iupwb_ic  = -g1 * s2 + n1b * u * s1 + n2b * v / s1
@@ -819,15 +829,15 @@ def _TwoStream(
                 _iabsb_sun = _iabsb_sun.at[ic].set(abs_b_sun)
                 _iabsb_sha = _iabsb_sha.at[ic].set(abs_b - abs_b_sun)
 
-                # Diffuse terms (unitd = 1)
+                # Diffuse terms (unitd = 1) — reuse guards from direct-beam block
                 num1 = (u + v * albd) * s1
-                n2d  = num1 / (den1 - den2)
+                n2d  = num1 / _d1d2_saf
                 n1d  = -(1.0 + n2d * u) / v
 
-                a1d = (  n1d * u * (1.0 - s2 * s1) / (kb_ic + h)
-                        + n2d * v * (1.0 - s2 / s1) / (kb_ic - h)) * tbi_ic
-                a2d = (- n1d * v * (1.0 - s2 * s1) / (kb_ic + h)
-                        - n2d * u * (1.0 - s2 / s1) / (kb_ic - h)) * tbi_ic
+                a1d = (  n1d * u * (1.0 - s2 * s1) / _kbph
+                        + n2d * v * (1.0 - s2 / s1) / _kbmh_saf) * tbi_ic
+                a2d = (- n1d * v * (1.0 - s2 * s1) / _kbph
+                        - n2d * u * (1.0 - s2 / s1) / _kbmh_saf) * tbi_ic
 
                 iupwd0_ic = n1d * u + n2d * v
                 iupwd_ic  = n1d * u * s1 + n2d * v / s1
