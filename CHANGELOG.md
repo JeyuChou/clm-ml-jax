@@ -13,7 +13,11 @@ ustar_val = uref_p * vkc / _dm2
 When `zlog + psim = 0`: cond=False, `_dm2 = eps` (forward OK). But JAX differentiates the True branch `vkc / (zlog+psim)`, giving `inf`. Then `0 * inf = NaN` in backward.
 Fix: `sign * max(|x|, eps)` pattern (no select op in denominator).
 
-**2. `SoilResistance` — frozen-layer division by zero** (`MLPlantHydraulicsMod.py`):
+**2. `_AerodynamicConductance_jax` — jnp.where denominator pattern × 3** (`MLCanopyTurbulenceMod.py`):
+Lines 1810, 1820, 1829: same `jnp.where(|x|>eps, x, eps)` denominator pattern.
+Fix: `sign * max(|x|, eps)` pattern. Affects above-canopy conductance `gac` for 3 height intervals.
+
+**3. `SoilResistance` — frozen-layer division by zero** (`MLPlantHydraulicsMod.py`):
 `soilr1_v = log(root_dist/rr) / (2π * rld * dz * hk_v)`. When `hk_v = 0` (frozen layer), backward grad w.r.t. `rld_v` (from mlcanopy_inst) = `inf`.
 Fix: `hk_v_safe = jnp.maximum(hk_v, 1e-30)`.
 
