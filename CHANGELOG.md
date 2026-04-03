@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-04-02 — Additional NaN gradient fixes (session 4)
+
+### Root causes fixed
+
+**4. `SolarRadiation` — `cos_zen` in `kb_ic` denominator** (`MLSolarRadiationMod.py`):
+`kb_ic = jnp.minimum(gd / cos_zen, kb_max)`. At solar zenith = 90° (`cos_zen = 0`), True branch
+`gd / cos_zen = inf` is still differentiated by JAX even though False branch is selected. Gradient
+of True branch w.r.t. `cos_zen` = `-gd / cos_zen^2 = inf`. Then `0 * inf = NaN` in backward.
+`solar_zen_forcing` is a field of `mlcanopy_inst` (the differentiated variable), so this is in
+the gradient path.
+Fix: `cos_zen_safe = jnp.maximum(cos_zen, 1e-10)` before division.
+
+---
+
 ## 2026-04-02 — Additional NaN gradient fixes (session 3)
 
 ### Root causes fixed
