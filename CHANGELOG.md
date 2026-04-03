@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-04-02 — Fix NaN gradients in tridiagonal solvers (MLMathToolsMod)
+
+**Status:** `jax.grad` completed but returned NaN for all fields. Root cause identified and fixed.
+
+### Root cause
+`tridiag_2eq` (coupled T/q heat-mass solver in `_implicit_fps_jit`) divides by `det = ainv*dinv - binv*cinv`. For the top-layer boundary, `c1[n] = c2[n] = 0`, so the numerators `dinv * c1[i]` etc. are zero — but JAX differentiates `x / det` as `-x/det²` regardless, producing `0 * inf = NaN` when `det` approaches zero from numerical accumulation.
+
+Same issue in `tridiag` (single-equation solver used in solar radiation two-stream): the running determinant `bet = b[j] - a[j]*gam[j]` could be near-zero at some layer.
+
+### Fix (`MLMathToolsMod.py`)
+- `tridiag`: replace bare `/ bet` with `/ jnp.maximum(|bet|, 1e-30)` — sign-safe, gradient-safe
+- `tridiag_2eq`: replace bare `/ det` with `/ jnp.maximum(det, 1e-30)` — det > 0 for all physical M-matrices
+
+Forward-pass results unchanged (physical systems have `bet`, `det` >> 1e-30).
+
+---
+
 ## 2026-04-02 — Unify all LeafPhotosynthesis paths to pure JAX; eliminate D↔H syncs
 
 **Status:** Completely eliminated numpy pre-extraction/writeback in both first and second loops of `LeafPhotosynthesis`. Eliminated turbulence redundant re-extraction. Net result: ~60+ fewer D→H+H→D syncs per ML sub-step.
