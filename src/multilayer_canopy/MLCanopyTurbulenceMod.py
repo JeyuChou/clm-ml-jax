@@ -1807,8 +1807,10 @@ def _AerodynamicConductance_jax(
         _, psic2, _, _ = _GetPsiRSL(zs_hi, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
         psic_d = psic2 - psic1
         zlog_c = jnp.log(jnp.maximum((zs_hi - zdisp_p) / jnp.maximum(zs_lo - zdisp_p, _eps_ac), _eps_ac))
-        _dc = jnp.where(jnp.abs(zlog_c + psic_d) > _eps_ac, zlog_c + psic_d, _eps_ac)
-        gac = gac.at[p, ic].set(rhomol_p * vkc * ustar_p / _dc)
+        # sign * max(|x|, eps) avoids jnp.where-as-denominator NaN grads
+        _dc_abs  = jnp.maximum(jnp.abs(zlog_c + psic_d), _eps_ac)
+        _dc_sign = jnp.where((zlog_c + psic_d) < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+        gac = gac.at[p, ic].set(rhomol_p * vkc * ustar_p * _dc_sign / _dc_abs)
 
     # Top layer to reference height
     ic = ncan
@@ -1817,8 +1819,9 @@ def _AerodynamicConductance_jax(
     _, psic2, _, _ = _GetPsiRSL(zref_p, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
     psic_d = psic2 - psic1
     zlog_c = jnp.log(jnp.maximum((zref_p - zdisp_p) / jnp.maximum(zs_lo - zdisp_p, _eps_ac), _eps_ac))
-    _dc = jnp.where(jnp.abs(zlog_c + psic_d) > _eps_ac, zlog_c + psic_d, _eps_ac)
-    gac = gac.at[p, ic].set(rhomol_p * vkc * ustar_p / _dc)
+    _dc_abs  = jnp.maximum(jnp.abs(zlog_c + psic_d), _eps_ac)
+    _dc_sign = jnp.where((zlog_c + psic_d) < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+    gac = gac.at[p, ic].set(rhomol_p * vkc * ustar_p * _dc_sign / _dc_abs)
 
     # ztop to zs(ntop+1)
     _, psic1, _, _ = _GetPsiRSL(ztop_p, ztop_p, zdisp_p, obu_p, beta_p, PrSc_p)
@@ -1826,8 +1829,9 @@ def _AerodynamicConductance_jax(
     psic_d = psic2 - psic1
     _hcd_ac = jnp.maximum(ztop_p - zdisp_p, _eps_ac)
     zlog_c = jnp.log(jnp.maximum((zs_p[ntop + 1] - zdisp_p) / _hcd_ac, _eps_ac))
-    _dc = jnp.where(jnp.abs(zlog_c + psic_d) > _eps_ac, zlog_c + psic_d, _eps_ac)
-    gac_above_foliage = rhomol_p * vkc * ustar_p / _dc
+    _dc_abs  = jnp.maximum(jnp.abs(zlog_c + psic_d), _eps_ac)
+    _dc_sign = jnp.where((zlog_c + psic_d) < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+    gac_above_foliage = rhomol_p * vkc * ustar_p * _dc_sign / _dc_abs
 
     # --- Within-canopy conductances ---
     _bu_safe = jnp.maximum(beta_p * ustar_p, _eps_ac)
