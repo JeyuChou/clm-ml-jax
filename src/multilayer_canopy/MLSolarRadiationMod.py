@@ -214,7 +214,10 @@ def SolarRadiation(
             gd = p1 + p2 * cos_zen
 
             # Direct beam extinction coefficient — Fortran lines 150-152
-            kb_ic = jnp.minimum(gd / cos_zen, kb_max)
+            # jnp.maximum avoids NaN grad: cos_zen=0 at horizon gives gd/0=inf
+            # in the True branch of jnp.minimum, producing 0*inf=NaN in backward.
+            cos_zen_safe = jnp.maximum(cos_zen, 1.0e-10)
+            kb_ic = jnp.minimum(gd / cos_zen_safe, kb_max)
             _kb_p = _kb_p.at[ic].set(kb_ic)
 
             # Clumping factor — Fortran lines 154-159
