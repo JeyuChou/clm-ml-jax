@@ -779,10 +779,15 @@ def _TwoStream(
 
                 b  = (1.0 - (1.0 - bd_ic) * om_ic) / av_ic
                 c  = bd_ic * om_ic / av_ic
-                h  = jnp.sqrt(b * b - c * c)
+                # jnp.maximum guards sqrt(0) and /0 in backward pass (NaN-safe grads)
+                h  = jnp.sqrt(jnp.maximum(b * b - c * c, 1.0e-30))
                 u  = (h - b - c) / (2.0 * h)
                 v  = (h + b + c) / (2.0 * h)
-                d  = om_ic * kb_ic / (h * h - kb_ic * kb_ic)   # unitb=1
+                # Guard h²−kb² denominator for NaN-safe grads when h ≈ kb
+                _h2_kb2      = h * h - kb_ic * kb_ic
+                _h2_kb2_sign = jnp.where(_h2_kb2 < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+                _h2_kb2_safe = _h2_kb2_sign * jnp.maximum(jnp.abs(_h2_kb2), 1.0e-30)
+                d  = om_ic * kb_ic / _h2_kb2_safe   # unitb=1
                 g1 = (bb_ic * kb_ic - b * bb_ic - c * (1.0 - bb_ic)) * d
                 g2 = ((1.0 - bb_ic) * kb_ic + c * bb_ic + b * (1.0 - bb_ic)) * d
                 s1 = jnp.exp(-h  * cf_ic * dp_ic)
