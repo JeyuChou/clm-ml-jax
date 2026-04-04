@@ -1062,6 +1062,218 @@ def _get_vmapped_photo_kernel(
 
 
 # ---------------------------------------------------------------------------
+# Private: vmapped leaf-photosynthesis kernel for acclim_type == 1
+# (vcmaxse, vcmaxc, jmaxse, jmaxc are JAX runtime scalars, not closed-over
+#  Python floats, so this kernel is compatible with jax.checkpoint tracing)
+# ---------------------------------------------------------------------------
+
+def _make_leaf_photo_kernel_acclim(
+    *,
+    is_c3: bool,
+    c3psn_pft_val: float,
+    vcmaxha: float,
+    vcmaxhd: float,
+    jmaxha: float,
+    jmaxhd: float,
+    rdc: float,
+    g0_val: float,
+    g1_val: float,
+    o2ref_p: float,
+):
+    """
+    Factory returning a per-layer leaf-photosynthesis kernel for acclim_type==1.
+
+    Like :func:`_make_leaf_photo_kernel` but accepts ``vcmaxse_rt``,
+    ``vcmaxc_rt``, ``jmaxse_rt``, ``jmaxc_rt`` as runtime scalar arguments
+    (broadcast via ``in_axes=None`` in vmap) so this kernel is compatible
+    with ``jax.checkpoint`` where these values are JAX traced arrays, not
+    Python floats.
+
+    The non-acclim params (vcmaxha, vcmaxhd, jmaxha, jmaxhd, rdc, etc.)
+    remain closed-over Python floats for XLA constant folding.
+    """
+    def kernel(
+        dpai_ic,
+        tleaf_ic,
+        vcmax25_ic,
+        jmax25_ic,
+        rd25_ic,
+        kp25_ic,
+        eair_ic,
+        apar_ic,
+        gbc_ic,
+        gbv_ic,
+        cair_ic,
+        vcmaxse_rt,   # broadcast scalar: JAX runtime arg
+        vcmaxc_rt,    # broadcast scalar: JAX runtime arg
+        jmaxse_rt,    # broadcast scalar: JAX runtime arg
+        jmaxc_rt,     # broadcast scalar: JAX runtime arg
+    ):
+        """Per-layer photosynthesis + stomatal conductance kernel (acclim)."""
+        active = dpai_ic > 0.0
+
+        # Guard against division-by-zero for inactive layers (NaN-safe backward pass)
+        _safe = jnp.asarray(1.0)
+        gbc_ic  = jnp.where(active, gbc_ic, _safe)
+        gbv_ic  = jnp.where(active, gbv_ic, _safe)
+        cair_ic = jnp.where(active, cair_ic, _safe)
+        eair_ic = jnp.where(active, eair_ic, _safe)
+
+        # --- Temperature responses (uses runtime vcmaxse_rt / jmaxse_rt) ---
+        kc_val    = kc25   * _ft(tleaf_ic, kcha)
+        ko_val    = ko25   * _ft(tleaf_ic, koha)
+        cp_val    = cp25   * _ft(tleaf_ic, cpha)
+        vcmax_val = (vcmax25_ic
+                     * _ft(tleaf_ic, vcmaxha)
+                     * _fth(tleaf_ic, vcmaxhd, vcmaxse_rt, vcmaxc_rt))
+        jmax_val  = (jmax25_ic
+                     * _ft(tleaf_ic, jmaxha)
+                     * _fth(tleaf_ic, jmaxhd, jmaxse_rt, jmaxc_rt))
+        rd_val    = (rd25_ic
+                     * _ft(tleaf_ic, rdha)
+                     * _fth(tleaf_ic, rdhd, rdse, rdc))
+        kp_val    = jnp.zeros(())
+
+        if not is_c3:
+            t1 = jnp.exp(jnp.log(jnp.asarray(2.0))
+                         * ((tleaf_ic - (tfrz + 25.0)) / 10.0))
+            t2 = 1.0 + jnp.exp(jnp.asarray(0.2)  * ((tfrz + 15.0) - tleaf_ic))
+            t3 = 1.0 + jnp.exp(jnp.asarray(0.3)  * (tleaf_ic - (tfrz + 40.0)))
+            t4 = 1.0 + jnp.exp(jnp.asarray(1.3)  * (tleaf_ic - (tfrz + 55.0)))
+            vcmax_val = vcmax25_ic * t1 / (t2 * t3)
+            rd_val    = rd25_ic    * t1 / t4
+            kp_val    = kp25_ic   * t1
+
+        lesat_val, _ = SatVap(tleaf_ic)
+        ceair_val    = jnp.minimum(eair_ic, lesat_val)
+        if gs_type == 1:
+            ceair_val = jnp.maximum(ceair_val, rh_min_BB * lesat_val)
+
+        qabs     = 0.5 * phi_psII * apar_ic
+        bq_j     = -(qabs + jmax_val)
+        cq_j     = qabs * jmax_val
+        r1j, r2j = quadratic(theta_j, bq_j, cq_j)
+        je_val   = jnp.minimum(r1j, r2j)
+
+        ci0_v = jnp.where(is_c3, 0.7 * cair_ic, 0.4 * cair_ic)
+        ci1_v = ci0_v * 0.99
+
+        _fkw = dict(
+            is_c3=is_c3,
+            vcmax_ic=vcmax_val, je_ic=je_val, kp_ic=kp_val, rd_ic=rd_val,
+            kc_ic=kc_val,       ko_ic=ko_val, cp_ic=cp_val,
+            o2ref_p=o2ref_p,    cair_ic=cair_ic, apar_ic=apar_ic,
+            gbc_ic=gbc_ic,      gbv_ic=gbv_ic,
+            g0_p=g0_val,        g1_p=g1_val,
+            ceair_ic=ceair_val, lesat_ic=lesat_val,
+            c3psn_pft_val=c3psn_pft_val,
+            dpai_ic=1.0,
+        )
+        ci_root = _ci_solver_scan(ci0_v, ci1_v, _fkw, n_iter=40)
+
+        if is_c3:
+            _ac = (vcmax_val * jnp.maximum(ci_root - cp_val, 0.0)
+                   / (ci_root + kc_val * (1.0 + o2ref_p / ko_val)))
+            _aj = (je_val * jnp.maximum(ci_root - cp_val, 0.0)
+                   / (4.0 * ci_root + 8.0 * cp_val))
+            _ap = jnp.zeros(())
+        else:
+            _ac = vcmax_val
+            _aj = qe_c4 * apar_ic
+            _ap = kp_val * jnp.maximum(ci_root, 0.0)
+
+        _agross = _RealizedRate(c3psn_pft_val, _ac, _aj, _ap)
+        _ac     = jnp.maximum(_ac,     0.0)
+        _aj     = jnp.maximum(_aj,     0.0)
+        _ap     = jnp.maximum(_ap,     0.0)
+        _agross = jnp.maximum(_agross, 0.0)
+        _anet   = _agross - rd_val
+        _eps_k  = jnp.asarray(1e-30)
+        _cs     = jnp.maximum(cair_ic - _anet / gbc_ic, 1.0)
+
+        if gs_type == 1:
+            _term    = _anet / _cs
+            _bq2     = gbv_ic - g0_val - g1_val * _term
+            _lesat_safe = jnp.maximum(lesat_val, _eps_k)
+            _cq2     = -gbv_ic * (g0_val + g1_val * _term * ceair_val / _lesat_safe)
+            _r1, _r2 = quadratic(1.0, _bq2, _cq2)
+            _gs_pos  = jnp.maximum(_r1, _r2)
+            _gs      = jnp.where(_anet > 0.0, _gs_pos, jnp.asarray(g0_val))
+        else:
+            _vpdt    = jnp.maximum(lesat_val - ceair_val, vpd_min_MED) * 0.001
+            _term    = dh2o_to_dco2 * _anet / _cs
+            _gbv_vpdt = jnp.maximum(gbv_ic * _vpdt, _eps_k)
+            _bq2     = -(2.0 * (g0_val + _term)
+                         + (g1_val * _term) ** 2 / _gbv_vpdt)
+            _cq2     = (g0_val * g0_val
+                        + (2.0 * g0_val
+                           + _term * (1.0 - g1_val * g1_val / _vpdt)) * _term)
+            _r1, _r2 = quadratic(1.0, _bq2, _cq2)
+            _gs_pos  = jnp.maximum(_r1, _r2)
+            _gs      = jnp.where(_anet > 0.0, _gs_pos, jnp.asarray(g0_val))
+
+        zero = jnp.zeros(())
+        return (
+            jnp.where(active, kc_val,    zero),
+            jnp.where(active, ko_val,    zero),
+            jnp.where(active, cp_val,    zero),
+            jnp.where(active, vcmax_val, zero),
+            jnp.where(active, jmax_val,  zero),
+            jnp.where(active, rd_val,    zero),
+            jnp.where(active, kp_val,    zero),
+            jnp.where(active, lesat_val, zero),
+            jnp.where(active, ceair_val, zero),
+            jnp.where(active, je_val,    zero),
+            jnp.where(active, _gs,       zero),
+            jnp.where(active, ci_root,   zero),
+            jnp.where(active, _ac,       zero),
+            jnp.where(active, _aj,       zero),
+            jnp.where(active, _ap,       zero),
+            jnp.where(active, _agross,   zero),
+            jnp.where(active, _anet,     zero),
+            jnp.where(active, _cs,       zero),
+        )
+
+    return kernel
+
+
+@functools.lru_cache(maxsize=None)
+def _get_vmapped_photo_kernel_acclim(
+    *,
+    is_c3: bool,
+    c3psn_pft_val: float,
+    vcmaxha: float,
+    vcmaxhd: float,
+    jmaxha: float,
+    jmaxhd: float,
+    rdc: float,
+    g0_val: float,
+    g1_val: float,
+    o2ref_p: float,
+):
+    """Return a JIT-compiled vmapped leaf-photosynthesis kernel for acclim_type==1.
+
+    ``vcmaxse``, ``vcmaxc``, ``jmaxse``, ``jmaxc`` are NOT passed here; they
+    are broadcast runtime arguments (in_axes=None) to the vmapped kernel so
+    this function can be cached independently of their values, and the kernel
+    remains compatible with ``jax.checkpoint`` tracing (no ``float()`` required).
+
+    All other args must be Python scalars for ``lru_cache`` hashability.
+    """
+    kernel = _make_leaf_photo_kernel_acclim(
+        is_c3=is_c3, c3psn_pft_val=c3psn_pft_val,
+        vcmaxha=vcmaxha, vcmaxhd=vcmaxhd,
+        jmaxha=jmaxha, jmaxhd=jmaxhd,
+        rdc=rdc, g0_val=g0_val, g1_val=g1_val, o2ref_p=o2ref_p,
+    )
+    # First 11 args are per-layer (in_axes=0); last 4 are broadcast scalars.
+    return jax.jit(jax.vmap(
+        kernel,
+        in_axes=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None, None, None),
+    ))
+
+
+# ---------------------------------------------------------------------------
 # Private: marginal water-use efficiency check (zbrent/bisection callback)
 # ---------------------------------------------------------------------------
 
@@ -1454,6 +1666,142 @@ def _get_vmapped_photo_kernel_wue(
     ))
 
 
+@functools.lru_cache(maxsize=None)
+def _make_leaf_photo_kernel_wue_acclim(
+    *,
+    is_c3: bool,
+    c3psn_pft_val,
+    vcmaxha, vcmaxhd,
+    jmaxha, jmaxhd,
+    rdc,
+    iota_pft,
+    gsmin_pft,
+):
+    """Like _make_leaf_photo_kernel_wue but accepts vcmaxse/vcmaxc/jmaxse/jmaxc
+    as runtime scalar arguments for jax.checkpoint compatibility (acclim_type==1).
+    """
+
+    def kernel(
+        dpai_ic, tleaf_ic, vcmax25_ic, jmax25_ic, rd25_ic, kp25_ic,
+        eair_ic, apar_ic, gbc_ic, gbv_ic, cair_ic,
+        o2ref_p, pref_p,
+        vcmaxse_rt, vcmaxc_rt, jmaxse_rt, jmaxc_rt,
+    ):
+        active = dpai_ic > 0.0
+
+        _safe = jnp.asarray(1.0)
+        gbc_ic  = jnp.where(active, gbc_ic, _safe)
+        gbv_ic  = jnp.where(active, gbv_ic, _safe)
+        cair_ic = jnp.where(active, cair_ic, _safe)
+        eair_ic = jnp.where(active, eair_ic, _safe)
+        apar_ic = jnp.where(active, apar_ic, _safe)
+
+        kc_val    = kc25   * _ft(tleaf_ic, kcha)
+        ko_val    = ko25   * _ft(tleaf_ic, koha)
+        cp_val    = cp25   * _ft(tleaf_ic, cpha)
+        vcmax_val = (vcmax25_ic
+                     * _ft(tleaf_ic, vcmaxha)
+                     * _fth(tleaf_ic, vcmaxhd, vcmaxse_rt, vcmaxc_rt))
+        jmax_val  = (jmax25_ic
+                     * _ft(tleaf_ic, jmaxha)
+                     * _fth(tleaf_ic, jmaxhd, jmaxse_rt, jmaxc_rt))
+        rd_val    = (rd25_ic
+                     * _ft(tleaf_ic, rdha)
+                     * _fth(tleaf_ic, rdhd, rdse, rdc))
+        kp_val    = jnp.zeros(())
+
+        if not is_c3:
+            t1 = jnp.exp(jnp.log(jnp.asarray(2.0))
+                         * ((tleaf_ic - (tfrz + 25.0)) / 10.0))
+            t2 = 1.0 + jnp.exp(jnp.asarray(0.2)  * ((tfrz + 15.0) - tleaf_ic))
+            t3 = 1.0 + jnp.exp(jnp.asarray(0.3)  * (tleaf_ic - (tfrz + 40.0)))
+            t4 = 1.0 + jnp.exp(jnp.asarray(1.3)  * (tleaf_ic - (tfrz + 55.0)))
+            vcmax_val = vcmax25_ic * t1 / (t2 * t3)
+            rd_val    = rd25_ic    * t1 / t4
+            kp_val    = kp25_ic   * t1
+
+        lesat_val, _ = SatVap(tleaf_ic)
+        ceair_val    = jnp.minimum(eair_ic, lesat_val)
+
+        qabs     = 0.5 * phi_psII * apar_ic
+        bq_j     = -(qabs + jmax_val)
+        cq_j     = qabs * jmax_val
+        r1j, r2j = quadratic(theta_j, bq_j, cq_j)
+        je_val   = jnp.minimum(r1j, r2j)
+
+        ci_kwargs = dict(
+            is_c3=is_c3, dpai_ic=dpai_ic, gbc_ic=gbc_ic, cair_ic=cair_ic,
+            vcmax_ic=vcmax_val, je_ic=je_val, kp_ic=kp_val, rd_ic=rd_val,
+            kc_ic=kc_val, ko_ic=ko_val, cp_ic=cp_val, o2ref_p=o2ref_p,
+            apar_ic=apar_ic, c3psn_pft_val=c3psn_pft_val,
+        )
+        se_kwargs = dict(
+            iota=iota_pft, pref_p=pref_p, eair_ic=eair_ic,
+            gbv_ic=gbv_ic, lesat_ic=lesat_val, **ci_kwargs,
+        )
+        gs_opt = _bisect_gs_jax(gsmin_pft, 2.0, se_kwargs)
+
+        ci_f, ac_f, aj_f, ap_f, agross_f, anet_f, cs_f = (
+            _CiFuncGsJax(gs_opt, **ci_kwargs))
+
+        zero = jnp.zeros(())
+        kc_val    = jnp.where(active, kc_val,    zero)
+        ko_val    = jnp.where(active, ko_val,    zero)
+        cp_val    = jnp.where(active, cp_val,    zero)
+        vcmax_val = jnp.where(active, vcmax_val, zero)
+        jmax_val  = jnp.where(active, jmax_val,  zero)
+        rd_val    = jnp.where(active, rd_val,    zero)
+        kp_val    = jnp.where(active, kp_val,    zero)
+        lesat_val = jnp.where(active, lesat_val, zero)
+        ceair_val = jnp.where(active, ceair_val, zero)
+        je_val    = jnp.where(active, je_val,    zero)
+        gs_opt    = jnp.where(active, gs_opt,    zero)
+        ci_f      = jnp.where(active, ci_f,      zero)
+        ac_f      = jnp.where(active, ac_f,      zero)
+        aj_f      = jnp.where(active, aj_f,      zero)
+        ap_f      = jnp.where(active, ap_f,      zero)
+        agross_f  = jnp.where(active, agross_f,  zero)
+        anet_f    = jnp.where(active, anet_f,    zero)
+        cs_f      = jnp.where(active, cs_f,      zero)
+
+        return (kc_val, ko_val, cp_val, vcmax_val, jmax_val,
+                rd_val, kp_val, lesat_val, ceair_val, je_val,
+                gs_opt, ci_f, ac_f, aj_f, ap_f,
+                agross_f, anet_f, cs_f)
+
+    return kernel
+
+
+@functools.lru_cache(maxsize=None)
+def _get_vmapped_photo_kernel_wue_acclim(
+    *,
+    is_c3: bool,
+    c3psn_pft_val,
+    vcmaxha, vcmaxhd,
+    jmaxha, jmaxhd,
+    rdc,
+    iota_pft,
+    gsmin_pft,
+):
+    """Like _get_vmapped_photo_kernel_wue but for acclim_type==1.
+
+    vcmaxse, vcmaxc, jmaxse, jmaxc are NOT closed-over; they are passed as
+    runtime broadcast scalars (in_axes=None) so the kernel is compatible
+    with jax.checkpoint tracing (no float() required on JAX traced values).
+    """
+    kernel = _make_leaf_photo_kernel_wue_acclim(
+        is_c3=is_c3, c3psn_pft_val=c3psn_pft_val,
+        vcmaxha=vcmaxha, vcmaxhd=vcmaxhd,
+        jmaxha=jmaxha, jmaxhd=jmaxhd,
+        rdc=rdc, iota_pft=iota_pft, gsmin_pft=gsmin_pft,
+    )
+    # in_axes: 11 per-layer + o2ref_p + pref_p + 4 acclim scalars
+    return jax.jit(jax.vmap(
+        kernel,
+        in_axes=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None, None, None, None, None),
+    ))
+
+
 # ---------------------------------------------------------------------------
 # Private: WUE-optimal stomatal conductance
 # ---------------------------------------------------------------------------
@@ -1582,6 +1930,7 @@ def LeafPhotosynthesis(
     il: int,
     mlcanopy_inst: mlcanopy_type,
     grid=None,
+    _o2ref_py: float = None,
 ) -> mlcanopy_type:
     """
     Calculate leaf photosynthesis and stomatal conductance for sunlit
@@ -1643,11 +1992,21 @@ def LeafPhotosynthesis(
 
     c3psn_pft = pftcon.c3psn
 
-    # Pre-materialise patch.itype and pftcon arrays as numpy once so that
-    # int()/float() calls below are always concrete, even when this function
-    # is traced by jax.grad/jit (JAX closure arrays become abstract tracers).
+    # Pre-materialise patch.itype, pftcon, and MLpftcon arrays as numpy once so
+    # that int()/float() calls below are always concrete, even when this function
+    # is traced by jax.grad/jit/checkpoint (JAX arrays become abstract tracers
+    # under jax.checkpoint, so all float() calls must use numpy arrays instead).
     _patch_itype_np = np.asarray(patch.itype)
     _c3psn_np       = np.asarray(c3psn_pft)
+    # MLpftcon arrays used with float() — pre-convert to numpy to avoid
+    # ConcretizationTypeError under jax.checkpoint tracing.
+    _g0_MED_np  = np.asarray(MLpftcon.g0_MED)
+    _g1_MED_np  = np.asarray(MLpftcon.g1_MED)
+    _g0_BB_np   = np.asarray(MLpftcon.g0_BB)
+    _g1_BB_np   = np.asarray(MLpftcon.g1_BB)
+    _iota_np    = np.asarray(MLpftcon.iota_SPA)
+    _gsmin_np   = np.asarray(MLpftcon.gsmin_SPA)
+    _o2ref_np   = np.asarray(MLpftcon.o2ref_pftcon) if hasattr(MLpftcon, 'o2ref_pftcon') else None
 
     # ------------------------------------------------------------------
     # First loop: temperature responses + photosynthesis
@@ -1681,33 +2040,41 @@ def LeafPhotosynthesis(
             vcmaxha = vcmaxhd = vcmaxse = jmaxha = jmaxhd = jmaxse = 0.0
 
         # High-temperature scaling factors — Fortran lines 155-157
-        # Always compute as Python floats: these are PFT-level constants
-        # (acclim_type==1: tacclim changes at CLM timestep cadence, not
-        # sub-step cadence) used as lru_cache keys for the vmapped kernels.
-        vcmaxc = float(_fth25(vcmaxhd, vcmaxse))
-        jmaxc  = float(_fth25(jmaxhd, jmaxse))
-        rdc    = float(_fth25(rdhd, rdse))
-        # Also ensure acclimation se values are Python floats for cache keys
-        if acclim_type == 1:
-            vcmaxse = float(vcmaxse)
-            jmaxse  = float(jmaxse)
+        # rdc: rdse/rdhd are module-level Python floats, so use _fth25_py
+        # (math.exp) to get a concrete Python float usable as a cache key even
+        # inside jax.checkpoint where jnp.exp would produce an abstract tracer.
+        rdc = _fth25_py(rdhd, rdse)   # Python float always (rdhd/rdse are constants)
+        # For acclim_type == 0: vcmaxse/jmaxse are Python floats (module-level
+        # constants) — use _fth25_py to get Python floats for lru_cache keys.
+        # For acclim_type == 1: vcmaxse/jmaxse are JAX traced arrays derived
+        # from tacclim_forcing; float() would fail under jax.checkpoint.
+        # Keep them as JAX arrays and use _get_vmapped_photo_kernel_acclim
+        # which accepts them as runtime broadcast args (in_axes=None).
+        if acclim_type == 0:
+            vcmaxc = _fth25_py(vcmaxhd, vcmaxse)  # Python float (vcmaxse is float)
+            jmaxc  = _fth25_py(jmaxhd, jmaxse)    # Python float (jmaxse is float)
+        else:
+            # acclim_type == 1: vcmaxse/jmaxse are JAX traced — keep as JAX
+            vcmaxc = _fth25(vcmaxhd, vcmaxse)   # JAX scalar, passed as runtime arg
+            jmaxc  = _fth25(jmaxhd, jmaxse)     # JAX scalar, passed as runtime arg
 
         # --- Stomatal model parameters — same for all ic ---
-        # Convert to Python floats for lru_cache hashability in the
-        # cached vmapped-kernel factories below.
+        # Use pre-materialised numpy arrays (_g0_MED_np etc.) to get concrete
+        # Python floats even when called inside jax.checkpoint (JAX array
+        # indexing returns abstract tracers under checkpoint tracing).
         if gs_type == 0:
-            g0_val = float(MLpftcon.g0_MED[pft])
-            g1_val = float(MLpftcon.g1_MED[pft])
+            g0_val = float(_g0_MED_np[pft])
+            g1_val = float(_g1_MED_np[pft])
         elif gs_type == 1:
-            g0_val = float(MLpftcon.g0_BB[pft])
-            g1_val = float(MLpftcon.g1_BB[pft])
+            g0_val = float(_g0_BB_np[pft])
+            g1_val = float(_g1_BB_np[pft])
         else:
             g0_val = -999.0;  g1_val = -999.0
 
         # Per-pft constants for gs_type==2
         if gs_type == 2:
-            _iota_pft   = float(MLpftcon.iota_SPA[pft])
-            _gsmin_pft  = float(MLpftcon.gsmin_SPA[pft])
+            _iota_pft   = float(_iota_np[pft])
+            _gsmin_pft  = float(_gsmin_np[pft])
 
         # --- Pre-extract constant input slices (JAX arrays, no D→H syncs) ---
         _dpai_p    = mlcanopy_inst.dpai_profile[p]
@@ -1721,32 +2088,61 @@ def LeafPhotosynthesis(
         _gbc_p     = mlcanopy_inst.gbc_leaf[p, :, il]
         _gbv_p     = mlcanopy_inst.gbv_leaf[p, :, il]
         _cair_p    = mlcanopy_inst.cair_profile[p]
-        _o2ref_p   = mlcanopy_inst.o2ref_forcing[p]
+        _o2ref_p   = mlcanopy_inst.o2ref_forcing[p]   # JAX scalar (runtime arg for WUE)
         _pref_p    = mlcanopy_inst.pref_forcing[p]
+        # For Medlyn/BB kernels, o2ref_p is used as a lru_cache key (float).
+        # Under jax.checkpoint, reading mlcanopy_inst.o2ref_forcing[p] returns
+        # an abstract tracer, so float() fails.  Use the pre-extracted Python
+        # float _o2ref_py when available (passed in by the diff-mode caller),
+        # otherwise fall back to float() for non-checkpoint use.
+        if _o2ref_py is not None:
+            _o2ref_cache_key = _o2ref_py  # Python float, always concrete
+        else:
+            _o2ref_cache_key = float(_o2ref_p)  # OK in eager / non-checkpoint mode
 
         if gs_type in (0, 1):
             # ---- Differentiable vmap path: no numpy accumulators ---
-            # _get_vmapped_photo_kernel is lru_cache'd by PFT constants,
-            # so the same JIT-compiled kernel is reused across all sub-steps
-            # for a fixed site (avoids repeated XLA recompilation).
-            # All args must be Python scalars for lru_cache hashability.
-            vmapped = _get_vmapped_photo_kernel(
-                is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
-                vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
-                vcmaxse=vcmaxse,       vcmaxc=vcmaxc,
-                jmaxha=jmaxha,         jmaxhd=jmaxhd,
-                jmaxse=jmaxse,         jmaxc=jmaxc,
-                rdc=rdc,
-                g0_val=g0_val,         g1_val=g1_val,
-                o2ref_p=float(_o2ref_p),
-            )
+            # For acclim_type == 0: vcmaxse/jmaxse/vcmaxc/jmaxc are Python
+            # floats, so use the standard lru_cache'd kernel factory.
+            # For acclim_type == 1: vcmaxse/jmaxse/vcmaxc/jmaxc are JAX traced
+            # arrays (computed from tacclim_forcing); use the acclim variant
+            # that accepts them as runtime broadcast scalars (in_axes=None)
+            # so the kernel is compatible with jax.checkpoint.
             _sl = slice(1, _ncan_p + 1)
-            layer_out = vmapped(
-                _dpai_p[_sl], _tleaf_p[_sl], _vcmax25_p[_sl],
-                _jmax25_p[_sl], _rd25_p[_sl], _kp25_p[_sl],
-                _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
-                _gbv_p[_sl], _cair_p[_sl],
-            )
+            if acclim_type == 0:
+                vmapped = _get_vmapped_photo_kernel(
+                    is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
+                    vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
+                    vcmaxse=vcmaxse,       vcmaxc=vcmaxc,
+                    jmaxha=jmaxha,         jmaxhd=jmaxhd,
+                    jmaxse=jmaxse,         jmaxc=jmaxc,
+                    rdc=rdc,
+                    g0_val=g0_val,         g1_val=g1_val,
+                    o2ref_p=_o2ref_cache_key,
+                )
+                layer_out = vmapped(
+                    _dpai_p[_sl], _tleaf_p[_sl], _vcmax25_p[_sl],
+                    _jmax25_p[_sl], _rd25_p[_sl], _kp25_p[_sl],
+                    _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
+                    _gbv_p[_sl], _cair_p[_sl],
+                )
+            else:
+                # acclim_type == 1: vcmaxse/vcmaxc/jmaxse/jmaxc are JAX scalars
+                vmapped = _get_vmapped_photo_kernel_acclim(
+                    is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
+                    vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
+                    jmaxha=jmaxha,         jmaxhd=jmaxhd,
+                    rdc=rdc,
+                    g0_val=g0_val,         g1_val=g1_val,
+                    o2ref_p=_o2ref_cache_key,
+                )
+                layer_out = vmapped(
+                    _dpai_p[_sl], _tleaf_p[_sl], _vcmax25_p[_sl],
+                    _jmax25_p[_sl], _rd25_p[_sl], _kp25_p[_sl],
+                    _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
+                    _gbv_p[_sl], _cair_p[_sl],
+                    vcmaxse, vcmaxc, jmaxse, jmaxc,
+                )
             # Write vmap JAX output directly (18-tuple) — skip numpy round-trip
             _out_names = [
                 'kc_leaf', 'ko_leaf', 'cp_leaf', 'vcmax_leaf', 'jmax_leaf',
@@ -1768,26 +2164,45 @@ def LeafPhotosynthesis(
 
         elif gs_type == 2:
             # ---- vmap path for WUE stomatal optimization (unified diff/non-diff) ---
-            # _get_vmapped_photo_kernel_wue is lru_cache'd by PFT constants.
-            # o2ref_p and pref_p are passed as broadcast (in_axes=None) args
-            # so per-sub-step pressure changes don't invalidate the JIT cache.
-            vmapped = _get_vmapped_photo_kernel_wue(
-                is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
-                vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
-                vcmaxse=vcmaxse,       vcmaxc=vcmaxc,
-                jmaxha=jmaxha,         jmaxhd=jmaxhd,
-                jmaxse=jmaxse,         jmaxc=jmaxc,
-                rdc=rdc,
-                iota_pft=_iota_pft,    gsmin_pft=_gsmin_pft,
-            )
+            # For acclim_type == 0: use standard kernel (vcmaxse/jmaxse are floats).
+            # For acclim_type == 1: use acclim variant that accepts vcmaxse/vcmaxc/
+            # jmaxse/jmaxc as runtime broadcast scalars (in_axes=None) to avoid
+            # float() on JAX traced values inside jax.checkpoint.
             _sl = slice(1, _ncan_p + 1)
-            layer_out = vmapped(
-                _dpai_p[_sl], _tleaf_p[_sl], _vcmax25_p[_sl],
-                _jmax25_p[_sl], _rd25_p[_sl], _kp25_p[_sl],
-                _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
-                _gbv_p[_sl], _cair_p[_sl],
-                _o2ref_p, _pref_p,
-            )
+            if acclim_type == 0:
+                vmapped = _get_vmapped_photo_kernel_wue(
+                    is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
+                    vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
+                    vcmaxse=vcmaxse,       vcmaxc=vcmaxc,
+                    jmaxha=jmaxha,         jmaxhd=jmaxhd,
+                    jmaxse=jmaxse,         jmaxc=jmaxc,
+                    rdc=rdc,
+                    iota_pft=_iota_pft,    gsmin_pft=_gsmin_pft,
+                )
+                layer_out = vmapped(
+                    _dpai_p[_sl], _tleaf_p[_sl], _vcmax25_p[_sl],
+                    _jmax25_p[_sl], _rd25_p[_sl], _kp25_p[_sl],
+                    _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
+                    _gbv_p[_sl], _cair_p[_sl],
+                    _o2ref_p, _pref_p,
+                )
+            else:
+                # acclim_type == 1: vcmaxse/vcmaxc/jmaxse/jmaxc are JAX scalars
+                vmapped = _get_vmapped_photo_kernel_wue_acclim(
+                    is_c3=is_c3,           c3psn_pft_val=_c3psn_val,
+                    vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
+                    jmaxha=jmaxha,         jmaxhd=jmaxhd,
+                    rdc=rdc,
+                    iota_pft=_iota_pft,    gsmin_pft=_gsmin_pft,
+                )
+                layer_out = vmapped(
+                    _dpai_p[_sl], _tleaf_p[_sl], _vcmax25_p[_sl],
+                    _jmax25_p[_sl], _rd25_p[_sl], _kp25_p[_sl],
+                    _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
+                    _gbv_p[_sl], _cair_p[_sl],
+                    _o2ref_p, _pref_p,
+                    vcmaxse, vcmaxc, jmaxse, jmaxc,
+                )
             _out_names = [
                 'kc_leaf', 'ko_leaf', 'cp_leaf', 'vcmax_leaf', 'jmax_leaf',
                 'rd_leaf', 'kp_leaf', 'leaf_esat_leaf', 'ceair_leaf', 'je_leaf',

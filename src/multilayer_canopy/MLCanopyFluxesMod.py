@@ -131,6 +131,7 @@ def MLCanopyFluxes(
     wateratm2lndbulk_inst: Any,
     waterdiagnosticbulk_inst: Any,
     grid: 'GridInfo | None' = None,
+    _o2ref_py: 'float | None' = None,
 ) -> mlcanopy_type:
     """
     Compute all multilayer canopy fluxes for one CLM timestep.
@@ -272,7 +273,8 @@ def MLCanopyFluxes(
         calday_interp_cur = calday_interp_bef = calday_interp_next = 0.0
 
     # Number of ML sub-steps — Fortran line 132
-    num_ml_steps: int = int(dtime_clm / dtime_ml)
+    # Re-read from module so test code can override MLclm_varctl.dtime_ml at runtime.
+    num_ml_steps: int = int(dtime_clm / _ml_ctl.dtime_ml)
 
     # ------------------------------------------------------------------
     # Build filter for patches to process — Fortran lines 152-160
@@ -447,11 +449,13 @@ def MLCanopyFluxes(
 
     # ------------------------------------------------------------------
     # Runge-Kutta configuration — Fortran lines 265-271
+    # Re-read from module so test code can override MLclm_varctl.runge_kutta_type at runtime.
     # ------------------------------------------------------------------
-    if runge_kutta_type == 10:
+    _runge_kutta_type = _ml_ctl.runge_kutta_type
+    if _runge_kutta_type == 10:
         nrk_steps = 0
-    elif runge_kutta_type >= 20:
-        nrk_steps = runge_kutta_type // 10
+    elif _runge_kutta_type >= 20:
+        nrk_steps = _runge_kutta_type // 10
     else:
         nrk_steps = 0
 
@@ -472,6 +476,20 @@ def MLCanopyFluxes(
         ncan_vals: tuple = tuple(grid.ncan for _ in filter_mlcan)
     else:
         ncan_vals: tuple = tuple(int(mlcanopy_inst.ncan_canopy[p]) for p in filter_mlcan)
+
+    # Pre-extract o2ref_p as a Python float before jax.checkpoint tracing.
+    # o2ref_forcing is atmospheric O2 — constant for the entire simulation.
+    # Used by LeafPhotosynthesis as a lru_cache key (must be a Python float).
+    # In diff mode, mlcanopy_inst may be abstract under jax.grad tracing,
+    # so we accept it as a pre-extracted parameter (_o2ref_py) from make_clm_ml_forward.
+    if _diff_mode:
+        if _o2ref_py is not None:
+            _o2ref_py_val: float = _o2ref_py
+        else:
+            # Fallback for callers that don't pass _o2ref_py (eager/non-grad context).
+            _o2ref_py_val = float(mlcanopy_inst.o2ref_forcing[grid.p])
+    else:
+        _o2ref_py_val = None  # non-diff mode: LeafPhotosynthesis reads it directly
 
     # ==================================================================
     # Multilayer canopy time-stepping loop — Fortran lines 261-330
@@ -519,8 +537,10 @@ def MLCanopyFluxes(
             inst = CanopyTurbulence(nstep_ml, num_mlcan, filter_mlcan, inst, grid=grid)
             inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isun, inst)
             inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isha, inst)
-            inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isun, inst, grid=grid)
-            inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isha, inst, grid=grid)
+            inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isun, inst, grid=grid,
+                                      _o2ref_py=_o2ref_py_val)
+            inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isha, inst, grid=grid,
+                                      _o2ref_py=_o2ref_py_val)
             inst = FluxProfileSolution(num_mlcan, filter_mlcan, inst, grid=grid)
             inst = LeafWaterPotential(num_mlcan, filter_mlcan, isun, inst)
             inst = LeafWaterPotential(num_mlcan, filter_mlcan, isha, inst)
@@ -542,20 +562,27 @@ def MLCanopyFluxes(
             )
 
         # Calendar day for this ML sub-step — Fortran lines 263-270
+        _dtime_ml = _ml_ctl.dtime_ml
         if met_type in (0, 2):
-            calday_interp_ml = curr_calday_beg + float(nstep_ml) * (dtime_ml / 86400.0)
+            calday_interp_ml = curr_calday_beg + float(nstep_ml) * (_dtime_ml / 86400.0)
         else:  # met_type == 3
             calday_interp_ml = (curr_calday_beg
-                                + (float(nstep_ml) - 0.5) * (dtime_ml / 86400.0))
+                                + (float(nstep_ml) - 0.5) * (_dtime_ml / 86400.0))
 
         if _diff_mode:
             # jax.checkpoint: save only mlcanopy_inst at step boundary;
             # recompute internal activations during backward.
             # Reduces backward memory from O(num_ml_steps × step_mem) to O(step_mem).
+            # Set CLM_ML_NO_CHECKPOINT=1 to disable (faster compilation, higher memory).
+            import os as _os
+            _use_checkpoint = _os.environ.get('CLM_ML_NO_CHECKPOINT', '0') != '1'
             _calday_ml_closed = calday_interp_ml
             def _step_for_checkpoint(inst, _c=_calday_ml_closed):
                 return _physics_step_fn(inst, _c)
-            mlcanopy_inst = jax.checkpoint(_step_for_checkpoint)(mlcanopy_inst)
+            if _use_checkpoint:
+                mlcanopy_inst = jax.checkpoint(_step_for_checkpoint)(mlcanopy_inst)
+            else:
+                mlcanopy_inst = _step_for_checkpoint(mlcanopy_inst)
         else:
             # NOTE: jax.jit(_physics_step_fn) was audited (session 6) and found
             # NOT feasible: XLA compilation OOM / excessive time because the
@@ -2000,6 +2027,9 @@ def make_clm_ml_forward(
         ntop=int(mlcanopy_inst_template.ntop_canopy[_p]),
         nbot=int(mlcanopy_inst_template.nbot_canopy[_p]),
     )
+    # Pre-extract o2ref as a concrete Python float from the template instance.
+    # mlcanopy_inst inside forward() is abstract under jax.grad tracing.
+    _o2ref_py_fwd: float = float(mlcanopy_inst_template.o2ref_forcing[_p])
 
     def forward(mlcanopy_inst: mlcanopy_type) -> jnp.ndarray:
         """Differentiable CLM-ML forward pass. Returns scalar loss."""
@@ -2021,6 +2051,7 @@ def make_clm_ml_forward(
             wateratm2lndbulk_inst=wateratm2lndbulk_inst,
             waterdiagnosticbulk_inst=waterdiagnosticbulk_inst,
             grid=grid,
+            _o2ref_py=_o2ref_py_fwd,
         )
         p = grid.p
         n = grid.ncan
