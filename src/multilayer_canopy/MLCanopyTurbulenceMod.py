@@ -177,7 +177,13 @@ def _psim_monin_obukhov(zeta):
         ψ for momentum.
     """
     zeta = jnp.asarray(zeta)
-    x        = jnp.sqrt(jnp.sqrt(jnp.abs(1.0 - 16.0 * zeta)))   # safe for zeta>=0 too
+    # jnp.maximum avoids jnp.abs(0)^(-3/4) * sign(0) = inf * 0 = NaN in backward.
+    # When zeta >= 0 the stable branch is selected; this branch expression is
+    # discarded but its VJP is still evaluated. Using jnp.maximum clips the
+    # derivative at the boundary (d(max(u,1e-10))/du = 0 when u <= 1e-10)
+    # so the unselected-branch gradient is 0 * finite = 0, not 0 * inf = NaN.
+    # Forward values are unchanged for any zeta actually selected (zeta < 0).
+    x        = jnp.sqrt(jnp.sqrt(jnp.maximum(1.0 - 16.0 * zeta, 1.0e-10)))
     unstable = (2.0 * jnp.log((1.0 + x) / 2.0)
                 + jnp.log((1.0 + x * x) / 2.0)
                 - 2.0 * jnp.arctan(x)
@@ -209,7 +215,9 @@ def _psic_monin_obukhov(zeta):
         ψ for scalars.
     """
     zeta = jnp.asarray(zeta)
-    x        = jnp.sqrt(jnp.sqrt(jnp.abs(1.0 - 16.0 * zeta)))   # safe for zeta>=0 too
+    # jnp.maximum avoids jnp.abs(0)^(-3/4) * sign(0) = inf * 0 = NaN in backward.
+    # Same reasoning as _psim_monin_obukhov above.
+    x        = jnp.sqrt(jnp.sqrt(jnp.maximum(1.0 - 16.0 * zeta, 1.0e-10)))
     unstable = 2.0 * jnp.log((1.0 + x * x) / 2.0)
     stable   = -5.0 * zeta
     return jnp.where(zeta < 0.0, unstable, stable)
@@ -1124,6 +1132,41 @@ def _ObuFuncPure_jax(
 # Private: fixed-iteration Obukhov solver (Task E)
 # ===========================================================================
 
+def _obu_body_pure(i, carry):
+    """Pure fori_loop body for the Obukhov secant solver.
+
+    Defined at module level (not as a closure) so ``jax.lax.fori_loop``
+    traces it once and reuses the compiled XLA program for every patch and
+    every sub-step.  All patch-level constants are threaded through ``carry``
+    as JAX arrays rather than closed-over Python scalars.
+
+    Carry layout: (x0, x1, f0, f1,
+                   Lc_p, ztop_p, lai_p, sai_p,
+                   zref_p, uref_p, thref_p, thvref_p,
+                   qref_p, rhomol_p, taf_p, qaf_p)
+    """
+    (x0, x1, f0, f1,
+     Lc_p, ztop_p, lai_p, sai_p,
+     zref_p, uref_p, thref_p, thvref_p,
+     qref_p, rhomol_p, taf_p, qaf_p) = carry
+    # sign * max(|df|, eps) avoids select-as-denominator → no select_divide_fusion
+    _df          = f1 - f0
+    _df_abs_safe = jnp.maximum(jnp.abs(_df), jnp.asarray(1e-30))
+    _df_sign     = jnp.where(_df < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
+    dx    = -f1 * (x1 - x0) * _df_sign / _df_abs_safe
+    x_new = x1 + dx
+    f_new = _ObuFuncPure_jax(
+        x_new,
+        Lc_p=Lc_p, ztop_p=ztop_p, lai_p=lai_p, sai_p=sai_p,
+        zref_p=zref_p, uref_p=uref_p, thref_p=thref_p, thvref_p=thvref_p,
+        qref_p=qref_p, rhomol_p=rhomol_p, taf_p=taf_p, qaf_p=qaf_p,
+    )
+    return (x1, x_new, f1, f_new,
+            Lc_p, ztop_p, lai_p, sai_p,
+            zref_p, uref_p, thref_p, thvref_p,
+            qref_p, rhomol_p, taf_p, qaf_p)
+
+
 def _obu_fixed_iter(init_obu, kwargs, n_iter: int = 25):
     """
     Fixed-iteration Obukhov-length solver via ``jax.lax.fori_loop``.
@@ -1139,33 +1182,60 @@ def _obu_fixed_iter(init_obu, kwargs, n_iter: int = 25):
     ``n_iter=25`` is conservative; Bonan et al. (2018) report typical
     convergence in < 10 iterations for moderate stability regimes.
 
+    The body function is defined at module level (:func:`_obu_body_pure`) so
+    ``jax.lax.fori_loop`` traces it **once** regardless of how many patches
+    or sub-steps are run.  Patch constants are passed through the carry tuple
+    as JAX scalars rather than being closed over as Python floats, which
+    previously caused one XLA ``scan`` recompilation per patch per sub-step.
+
     Args:
         init_obu: Initial Obukhov length (m) — JAX scalar.
         kwargs:   Dict of patch-level constants passed to
-                  :func:`_ObuFuncPure_jax`.
+                  :func:`_ObuFuncPure_jax`.  Values may be Python floats or
+                  JAX scalars; they are converted to JAX arrays here.
         n_iter:   Number of fixed iterations (default 25).
 
     Returns:
         Converged Obukhov length estimate (m) — JAX scalar.
     """
+    # Convert all kwargs to JAX scalars so they have stable abstract types
+    # and are passed through the carry rather than baked into the trace.
+    Lc_p     = jnp.asarray(kwargs['Lc_p'])
+    ztop_p   = jnp.asarray(kwargs['ztop_p'])
+    lai_p    = jnp.asarray(kwargs['lai_p'])
+    sai_p    = jnp.asarray(kwargs['sai_p'])
+    zref_p   = jnp.asarray(kwargs['zref_p'])
+    uref_p   = jnp.asarray(kwargs['uref_p'])
+    thref_p  = jnp.asarray(kwargs['thref_p'])
+    thvref_p = jnp.asarray(kwargs['thvref_p'])
+    qref_p   = jnp.asarray(kwargs['qref_p'])
+    rhomol_p = jnp.asarray(kwargs['rhomol_p'])
+    taf_p    = jnp.asarray(kwargs['taf_p'])
+    qaf_p    = jnp.asarray(kwargs['qaf_p'])
+
     obu0 = init_obu
     obu1 = jnp.asarray(-100.0)
 
-    f0 = _ObuFuncPure_jax(obu0, **kwargs)
-    f1 = _ObuFuncPure_jax(obu1, **kwargs)
+    f0 = _ObuFuncPure_jax(
+        obu0,
+        Lc_p=Lc_p, ztop_p=ztop_p, lai_p=lai_p, sai_p=sai_p,
+        zref_p=zref_p, uref_p=uref_p, thref_p=thref_p, thvref_p=thvref_p,
+        qref_p=qref_p, rhomol_p=rhomol_p, taf_p=taf_p, qaf_p=qaf_p,
+    )
+    f1 = _ObuFuncPure_jax(
+        obu1,
+        Lc_p=Lc_p, ztop_p=ztop_p, lai_p=lai_p, sai_p=sai_p,
+        zref_p=zref_p, uref_p=uref_p, thref_p=thref_p, thvref_p=thvref_p,
+        qref_p=qref_p, rhomol_p=rhomol_p, taf_p=taf_p, qaf_p=qaf_p,
+    )
 
-    def body(i, carry):
-        x0, x1, f0, f1 = carry
-        # sign * max(|df|, eps) avoids select-as-denominator → no select_divide_fusion
-        _df          = f1 - f0
-        _df_abs_safe = jnp.maximum(jnp.abs(_df), jnp.asarray(1e-30))
-        _df_sign     = jnp.where(_df < 0.0, jnp.asarray(-1.0), jnp.asarray(1.0))
-        dx    = -f1 * (x1 - x0) * _df_sign / _df_abs_safe
-        x_new = x1 + dx
-        f_new = _ObuFuncPure_jax(x_new, **kwargs)
-        return (x1, x_new, f1, f_new)
+    init_carry = (obu0, obu1, f0, f1,
+                  Lc_p, ztop_p, lai_p, sai_p,
+                  zref_p, uref_p, thref_p, thvref_p,
+                  qref_p, rhomol_p, taf_p, qaf_p)
 
-    _, obu_final, _, _ = jax.lax.fori_loop(0, n_iter, body, (obu0, obu1, f0, f1))
+    final_carry = jax.lax.fori_loop(0, n_iter, _obu_body_pure, init_carry)
+    obu_final = final_carry[1]   # x1 from final iteration
     return obu_final
 
 
