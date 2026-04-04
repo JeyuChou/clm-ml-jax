@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-04-03 — Fix jit(scan) recompilation in _obu_fixed_iter (session 11)
+
+**Status:** Root cause identified and fixed. Committed and pushed.
+
+### Root cause
+
+`_obu_fixed_iter` (in `MLCanopyTurbulenceMod.py`) used `jax.lax.fori_loop`
+with a `body` lambda that **closed over `kwargs`** — a dict of Python floats
+extracted from JAX arrays (one set per patch per sub-step).  Each unique
+combination of float values produced a structurally different Python function
+object.  Since `jax.lax.fori_loop` is implemented via `jax.lax.scan`, JAX
+compiled a new XLA `scan` program for every patch on every sub-step.
+
+With 1 patch × 30 sub-steps × ~3 Obukhov solver calls = **~90 scan
+recompilations per CLM timestep**, each taking ~0.68s → ~61s overhead per
+timestep.
+
+Detected with `JAX_LOG_COMPILES=1` in `diags/debug_recompile.py`:
+- Before fix: 90 `Compiling jit(scan)` events in 3 timesteps
+- After fix: 1 `Compiling jit(scan)` (initial only) — 0 on subsequent timesteps
+
+### Fix applied (`src/multilayer_canopy/MLCanopyTurbulenceMod.py`)
+
+1. Defined `_obu_body_pure` at **module level** (not as a closure inside
+   `_obu_fixed_iter`).
+2. All 12 patch-level constants (`Lc_p`, `ztop_p`, ...) now pass through the
+   `fori_loop` **carry tuple** as JAX scalars rather than being baked into the
+   trace as Python float literals.
+3. `_obu_fixed_iter` now converts all kwargs to `jnp.asarray(...)` and packs
+   them into the initial carry before calling `jax.lax.fori_loop`.
+
+### Timing results (3 CLM timesteps, CHATS7, V100S ~75% occupied)
+
+| Timestep | Before fix | After fix |
+|---|---|---|
+| 1 (compile+run) | ~342s | ~313s |
+| 2 (steady-state) | ~146s | ~120s |
+| 3 (steady-state) | ~146s | ~120s |
+
+~18% improvement in steady-state. The remaining ~120s is GPU execution
+time (zero recompilations in timesteps 2-3), not JIT overhead.
+
+### Analysis of remaining 120s
+
+With 0 jit/XLA activity on timestep 2+, the 120s is pure computation:
+- 30 sub-steps × 3 RK iterations × ~12 physics kernels = ~1080 kernel calls
+- ~111ms per kernel call average (on a 75%-occupied V100S)
+- This is compute-limited, not JIT-limited
+
+Possible next optimizations (diminishing returns):
+- Profile GPU utilization per sub-step to identify stalls
+- Fuse physics kernels with `jax.vmap` across sub-steps (if memory allows)
+- Reduce number of sub-steps / RK iterations at acceptable accuracy loss
+
+---
+
 ## 2026-04-03 — GPU benchmark post lru_cache fix (session 10)
 
 **Status:** Benchmark complete. Significant improvement measured; further recompilation still occurring.
