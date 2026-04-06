@@ -53,20 +53,29 @@ def _gb_layer(dpai_ic, wind_ic, tair_ic, tleaf_ic,
           * jnp.maximum(tleaf_ic - tair_ic, 0.0)
           / (tair_ic * visc * visc))
 
+    # Guard bases of fractional powers against zero to prevent inf gradients.
+    # When re=0 or gr=0, x^n has gradient n*x^(n-1) → inf.  Inside
+    # jnp.where(dpai>0, ..., 0) the inf gradient is multiplied by the mask
+    # 0 → 0*inf = NaN.  jnp.maximum clips to a tiny positive floor so the
+    # gradient is finite (n*eps^(n-1)), and 0*finite = 0.
+    _eps_pow = jnp.asarray(1.0e-30)
+    re_safe = jnp.maximum(re, _eps_pow)
+    gr_safe = jnp.maximum(gr, _eps_pow)
+
     # (i) Laminar forced convection — Fortran lines 87-90
-    nu_lam   = gb_factor * 0.66  * pr ** 0.33 * re ** 0.5
+    nu_lam   = gb_factor * 0.66  * pr ** 0.33 * re_safe ** 0.5
     gbh_lam  = jnp.maximum((dh * nu_lam  / dl) * rhomol_p, gbh_min)
     gbv_lam  = gbh_lam * dv_dh ** 0.67
     gbc_lam  = gbh_lam * dc_dh ** 0.67
 
     # (ii) Turbulent forced convection — Fortran lines 92-96
-    nu_turb  = gb_factor * 0.036 * pr ** 0.33 * re ** 0.8
+    nu_turb  = gb_factor * 0.036 * pr ** 0.33 * re_safe ** 0.8
     gbh_turb = jnp.maximum((dh * nu_turb / dl) * rhomol_p, gbh_min)
     gbv_turb = gbh_turb * dv_dh ** 0.67
     gbc_turb = gbh_turb * dc_dh ** 0.67
 
     # (iii) Free convection — Fortran lines 98-101
-    nu_free  = 0.54 * pr ** 0.25 * gr ** 0.25
+    nu_free  = 0.54 * pr ** 0.25 * gr_safe ** 0.25
     gbh_free = (dh * nu_free / dl) * rhomol_p
     gbv_free = gbh_free * dv_dh ** 0.75
     gbc_free = gbh_free * dc_dh ** 0.75
