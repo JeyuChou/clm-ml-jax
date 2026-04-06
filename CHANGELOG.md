@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-04-06 — Fix NaN gradients for differentiability (session 12)
+
+**Status:** Fixes applied and committed. Validation pending.
+
+### Problem
+
+`jax.grad` of the full CLM-ml forward pass produced NaN for `tair_profile`
+and `tleaf_leaf` gradients.  `eair_profile` and `tg_soil` gradients were
+finite, indicating the NaN source was in temperature-only code paths.
+
+### Root cause
+
+JAX evaluates **both branches** of `jnp.where(cond, f(x), g(x))` during
+the backward pass.  When one branch contains `x ** n` (0 < n < 1) or
+`1/x` with x = 0, the gradient is inf.  Even though the branch is masked
+to zero, `0 * inf = NaN` propagates.
+
+### Fixes applied
+
+| Module | Pattern | Fix |
+|--------|---------|-----|
+| `MLLeafBoundaryLayerMod.py` | `re**0.5`, `re**0.8`, `gr**0.25` at zero wind/neutral | `re_safe = jnp.maximum(re, 1e-30)` before powers |
+| `MLCanopyWaterMod.py` | `(h2ocan/h2ocanmx)**0.67` base = 0 | `fwet_base = jnp.maximum(..., 1e-30)` before power |
+| `MLPlantHydraulicsMod.py` | `1/soilr_v`, `1/nlayers_f`, `1/rld_v` at zero | `jnp.maximum(denom, eps)` guards on all denominators |
+| `MLMathToolsMod.py` | `sqrt(max(disc, 0))` discriminant = 0 | Floor changed from `0.0` to `1e-30` |
+| `MLCanopyTurbulenceMod.py` | `sqrt(max(..., 0))` in `_GetBeta_jax` both branches | Floor changed from `0.0` to `1e-30` |
+
+### Diagnostic scripts created
+
+- `diags/bisect_nan_grads.py` — stop_gradient bisection to isolate NaN modules
+- `diags/debug_tridiag_vjp.py` — instruments tridiag_2eq custom VJP backward
+- `diags/quick_grad_check.py` — fast JIT-based gradient NaN validation
+
+### Key finding: tridiag_2eq custom VJP is NOT the source
+
+Instrumented backward confirmed both cotangent inputs (g_t, g_q) and
+adjoint outputs (grad_d1, grad_d2) are finite.  The NaN enters in the
+gradient chain from flux-profile RHS coefficients back to temperature
+inputs, through the boundary layer conductance and canopy water modules.
+
+---
+
 ## 2026-04-03 — Fix jit(scan) recompilation in _obu_fixed_iter (session 11)
 
 **Status:** Root cause identified and fixed. Committed and pushed.
