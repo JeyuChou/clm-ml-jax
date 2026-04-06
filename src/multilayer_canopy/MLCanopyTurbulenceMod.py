@@ -1003,8 +1003,8 @@ def _GetBeta_jax(beta_neutral, LcL):
     # --- Unstable branch (LcL <= 0): solve β² = (-b + sqrt(b²-4ac)) / 2a ---
     bb_u = 16.0 * LcL * beta_neutral ** 4
     cc_u = -(beta_neutral ** 4)
-    disc_u = jnp.maximum(bb_u * bb_u - 4.0 * cc_u, 0.0)   # a=1
-    beta_u = jnp.sqrt((-bb_u + jnp.sqrt(disc_u)) / 2.0)
+    disc_u = jnp.maximum(bb_u * bb_u - 4.0 * cc_u, 1.0e-30)   # a=1
+    beta_u = jnp.sqrt(jnp.maximum((-bb_u + jnp.sqrt(disc_u)) / 2.0, 1.0e-30))
 
     # --- Stable branch (LcL > 0): Cardano formula for 5*LcL*β³ + β = β_n ---
     # Guard aa_s != 0 when LcL==0 so no NaN before jnp.where selects branch.
@@ -1015,7 +1015,7 @@ def _GetBeta_jax(beta_neutral, LcL):
     dd_s = -beta_neutral
     qq_s = jnp.sqrt(jnp.maximum(
         (27.0 * aa_s ** 2 * dd_s) ** 2 + 108.0 * aa_s ** 3,
-        0.0,
+        1.0e-30,
     ))
     rr_s = jnp.maximum(
         0.5 * (qq_s + 27.0 * aa_s ** 2 * dd_s),
