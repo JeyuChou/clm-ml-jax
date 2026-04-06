@@ -2,7 +2,18 @@
 
 ## 2026-04-06 — Fix NaN gradients for differentiability (session 12)
 
-**Status:** Fixes applied and committed. Validation pending.
+**Status:** COMPLETE. All gradients finite. Validated on GPU (V100S).
+
+### Validation result (Euler, 1 sub-step, JIT, no checkpoint)
+
+```
+grad(tair_profile ): FINITE  max_abs=7.8665e+05
+grad(eair_profile ): FINITE  max_abs=9.0199e+02
+grad(tleaf_leaf   ): FINITE  max_abs=3.3488e+02
+grad(tg_soil      ): FINITE  max_abs=4.3466e+01
+```
+
+Forward loss = -2903.83 (finite). Grad compilation time: 861s (V100S at 75% load).
 
 ### Problem
 
