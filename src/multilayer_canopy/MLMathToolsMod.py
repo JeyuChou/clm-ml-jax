@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 from typing import Callable, Tuple
 from jax import Array
+import jax
 import jax.numpy as jnp
 
 from clm_src_main.abortutils import endrun    # noqa: F401
@@ -535,7 +536,7 @@ def quadratic(a: float, b: float, c: float) -> Tuple[float, float]:
     """
     # Safe sqrt: clamp discriminant to ≥0 to avoid NaN when JAX traces
     # both branches unconditionally (e.g. inside jnp.where callers).
-    discriminant = jnp.sqrt(jnp.maximum(b * b - 4.0 * a * c, 0.0))
+    discriminant = jnp.sqrt(jnp.maximum(b * b - 4.0 * a * c, 1.0e-30))
 
     # Numerically stable branch selection via jnp.where — avoids
     # Python `if` on potentially JAX-traced `b`.
@@ -611,15 +612,17 @@ def tridiag(a: Array, b: Array, c: Array, r: Array, n: int) -> Array:
     u = jnp.zeros(n + 1, dtype=jnp.float64)
 
     # Forward elimination (Fortran lines similar to original)
-    # jnp.maximum avoids NaN gradients when bet → 0 (physical systems have bet > 0)
+    # Guard pivot (bet) away from zero to keep ratio coefficients bounded.
+    # Physical systems have bet > 0 (positive definite diagonal dominance).
+    _eps_bet = jnp.asarray(1.0e-10)
     bet = b[1]
-    bet_safe = jnp.maximum(jnp.abs(bet), 1.0e-30)
+    bet_safe = jnp.maximum(jnp.abs(bet), _eps_bet)
     u = u.at[1].set(r[1] / bet_safe)
 
     for j in range(2, n + 1):
         gam = gam.at[j].set(c[j - 1] / bet_safe)
         bet = b[j] - a[j] * gam[j]
-        bet_safe = jnp.maximum(jnp.abs(bet), 1.0e-30)
+        bet_safe = jnp.maximum(jnp.abs(bet), _eps_bet)
         u = u.at[j].set((r[j] - a[j] * u[j - 1]) / bet_safe)
 
     # Backward substitution
@@ -632,6 +635,26 @@ def tridiag(a: Array, b: Array, c: Array, r: Array, n: int) -> Array:
 # Public: coupled 2-equation tridiagonal solver
 # ---------------------------------------------------------------------------
 
+def _tridiag_2eq_fwd(
+    a1:  list[float], b11: list[float], b12: list[float],
+    c1:  list[float], d1:  list[float],
+    a2:  list[float], b21: list[float], b22: list[float],
+    c2:  list[float], d2:  list[float],
+    n:   int,
+) -> Tuple[list[float], list[float]]:
+    """Forward-pass implementation of the coupled 2-equation tridiagonal solver.
+
+    All arrays are **0-based** (indices 0..n-1).  Returns ``(t, q)`` solution
+    vectors.  Also used as the plain (non-differentiable) implementation via
+    the custom-VJP trampoline below.
+
+    Mirrors Fortran subroutine ``tridiag_2eq`` (lines 287-350).
+    """
+    t, q = _tridiag_2eq_solve(a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n)
+    return t, q
+
+
+@jax.custom_vjp
 def tridiag_2eq(
     a1:  list[float], b11: list[float], b12: list[float],
     c1:  list[float], d1:  list[float],
@@ -653,18 +676,15 @@ def tridiag_2eq(
         a2(i)*q(i-1) + b21(i)*T(i) + b22(i)*q(i) + c2(i)*q(i+1) = d2(i)
 
     Solved by forward elimination to express each layer in terms of the
-    layer above:
+    layer above, followed by back substitution from the top layer downward.
 
-    .. code-block:: none
-
-        T(i) = f1(i) - e11(i)*T(i+1) - e12(i)*q(i+1)
-        q(i) = f2(i) - e21(i)*T(i+1) - e22(i)*q(i+1)
-
-    followed by back substitution from the top layer downward.
+    A **custom VJP** is registered so that the backward pass solves the
+    transpose system ``A^T λ = g`` directly rather than differentiating
+    through the potentially ill-conditioned forward elimination, which can
+    produce huge intermediate ``e``-coefficients and NaN gradients.
 
     All arrays are **0-based** (indices 0..n-1), matching the calling
-    convention in ``ImplicitFluxProfileSolution`` where coefficients are
-    filled with ``for ic in range(n): a1.at[ic].set(...)``.
+    convention in ``ImplicitFluxProfileSolution``.
 
     Args:
         a1, b11, b12, c1, d1: Coefficients for the temperature equation,
@@ -676,8 +696,121 @@ def tridiag_2eq(
     Returns:
         Tuple ``(t, q)`` of solution vectors, each of length ``n``, 0-indexed.
     """
-    # Working arrays, 0-indexed (length n) — Fortran lines 318-323
-    # Hold JAX traced scalars so the solver is fully differentiable.
+    t, q = _tridiag_2eq_fwd(
+        a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n)
+    return t, q
+
+
+def _tridiag_2eq_fwd_rule(
+    a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n
+):
+    """Forward rule for custom VJP: runs the solver and saves residuals."""
+    t, q = _tridiag_2eq_fwd(
+        a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n)
+    # Save the inputs and solution for the backward pass.
+    residuals = (a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, t, q)
+    return (t, q), residuals
+
+
+def _tridiag_2eq_bwd_rule(residuals, g):
+    """Backward rule: solve the transpose system A^T λ = g.
+
+    For the block-tridiagonal system A x = d with x = [t; q]:
+
+      Row i:  a1[i]*T[i-1] + [[b11,b12],[b21,b22]][i] * [T;q][i]
+                            + c1[i]*T[i+1] + c2[i]*q[i+1] = [d1;d2][i]
+
+    where lower-diag block at row i is diag(a1[i], a2[i]),
+    main block is [[b11, b12],[b21, b22]], upper block is diag(c1[i], c2[i]).
+
+    The transpose system A^T λ = g (same block size n) has:
+      - lower-diag block at row i  = diag(c1[i-1], c2[i-1])  (was upper of A)
+      - main block at row i         = [[b11[i], b21[i]], [b12[i], b22[i]]]  (transposed B)
+      - upper-diag block at row i   = diag(a1[i+1], a2[i+1])  (was lower of A)
+
+    We solve A^T λ = g using the same block Thomas algorithm applied to
+    this transposed system.  The solution λ = [z1; z2] satisfies:
+
+        dL/d(d1[i]) = z1[i],    dL/d(d2[i]) = z2[i]
+
+    Gradients w.r.t. matrix coefficients are returned as zeros (we only
+    propagate through the RHS, which is the natural differentiable interface).
+    """
+    a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, _t, _q = residuals
+    g_t, g_q = g   # cotangents for t and q outputs (JAX arrays of length n)
+
+    n = len(d1)
+
+    # Build explicit arrays for A^T coefficients.
+    # A^T block structure (0-based, row i):
+    #   lower  (a^T): at row i it's the (i, i-1) block of A^T
+    #                 = (i-1, i) block of A = diag(c1[i-1], c2[i-1])
+    #                 → a1T[i] = c1[i-1],  a2T[i] = c2[i-1],  with a1T[0]=a2T[0]=0
+    #   main   (b^T): B_i^T = [[b11[i], b21[i]], [b12[i], b22[i]]]
+    #   upper  (c^T): at row i it's the (i, i+1) block of A^T
+    #                 = (i+1, i) block of A = diag(a1[i+1], a2[i+1])
+    #                 → c1T[i] = a1[i+1], c2T[i] = a2[i+1],  with c1T[n-1]=c2T[n-1]=0
+
+    # lower diagonal of A^T
+    a1T = [jnp.zeros(())] * n
+    a2T = [jnp.zeros(())] * n
+    for i in range(1, n):
+        a1T[i] = c1[i - 1]
+        a2T[i] = c2[i - 1]
+
+    # main diagonal of A^T (transposed 2x2 blocks)
+    # b11T[i] = b11[i], b12T[i] = b21[i], b21T[i] = b12[i], b22T[i] = b22[i]
+    b11T = [b11[i] for i in range(n)]
+    b12T = [b21[i] for i in range(n)]
+    b21T = [b12[i] for i in range(n)]
+    b22T = [b22[i] for i in range(n)]
+
+    # upper diagonal of A^T
+    c1T = [jnp.zeros(())] * n
+    c2T = [jnp.zeros(())] * n
+    for i in range(n - 1):
+        c1T[i] = a1[i + 1]
+        c2T[i] = a2[i + 1]
+
+    # RHS of A^T system = g = [g_t; g_q]
+    g1 = [g_t[i] for i in range(n)]
+    g2 = [g_q[i] for i in range(n)]
+
+    # Solve A^T λ = g using the same Thomas algorithm as _tridiag_2eq_fwd.
+    z1_list, z2_list = _tridiag_2eq_solve(a1T, b11T, b12T, c1T, g1,
+                                           a2T, b21T, b22T, c2T, g2, n)
+
+    # Gradient w.r.t. d1 and d2 is the adjoint λ = [z1; z2].
+    # Cotangents must match the primal input pytree structure.
+    _zeros = jnp.zeros(n, dtype=jnp.float64)
+    return (
+        _zeros,                   # grad a1
+        _zeros,                   # grad b11
+        _zeros,                   # grad b12
+        _zeros,                   # grad c1
+        jnp.stack(z1_list),       # grad d1  =  λ_t
+        _zeros,                   # grad a2
+        _zeros,                   # grad b21
+        _zeros,                   # grad b22
+        _zeros,                   # grad c2
+        jnp.stack(z2_list),       # grad d2  =  λ_q
+        None,                     # grad n (static int)
+    )
+
+
+def _tridiag_2eq_solve(
+    a1, b11, b12, c1, d1,
+    a2, b21, b22, c2, d2,
+    n,
+):
+    """Core Thomas algorithm for the block-2x2 tridiagonal system.
+
+    Accepts arbitrary list-like inputs (Python lists or slices thereof).
+    Returns (t_list, q_list) as Python lists of JAX scalars.
+    """
+    # n may be a JAX tracer if called inside a traced context; use len(d1)
+    # to always get a concrete Python int for list allocation and range().
+    n = len(d1)
     e11 = [jnp.zeros(())] * n
     e12 = [jnp.zeros(())] * n
     e21 = [jnp.zeros(())] * n
@@ -685,20 +818,19 @@ def tridiag_2eq(
     f1  = [jnp.zeros(())] * n
     f2  = [jnp.zeros(())] * n
 
-    # Initial "previous" values (Fortran e(0) = 0) — Fortran lines 325-330
     e11_prev = jnp.zeros(());  e12_prev = jnp.zeros(())
     e21_prev = jnp.zeros(());  e22_prev = jnp.zeros(())
     f1_prev  = jnp.zeros(());  f2_prev  = jnp.zeros(())
 
-    # Forward elimination — Fortran lines 332-352 (0-based: i=0..n-1)
+    _eps_det = jnp.asarray(1.0e-10)
     for i in range(n):
         ainv = b11[i] - a1[i] * e11_prev
         binv = b12[i] - a1[i] * e12_prev
         cinv = b21[i] - a2[i] * e21_prev
         dinv = b22[i] - a2[i] * e22_prev
         det  = ainv * dinv - binv * cinv
-        # jnp.maximum avoids NaN gradients from det → 0 (physical systems have det > 0)
-        det_safe = jnp.maximum(det, 1.0e-30)
+        _abs_det = jnp.abs(det)
+        det_safe = jnp.where(_abs_det > _eps_det, det, _eps_det)
 
         e11[i] =  dinv * c1[i] / det_safe
         e12[i] = -binv * c2[i] / det_safe
@@ -714,18 +846,18 @@ def tridiag_2eq(
         e21_prev, e22_prev = e21[i], e22[i]
         f1_prev,  f2_prev  = f1[i],  f2[i]
 
-    # Top layer solution — Fortran lines 354-356 (top = index n-1)
     t = [jnp.zeros(())] * n
     q = [jnp.zeros(())] * n
     t[n - 1] = f1[n - 1]
     q[n - 1] = f2[n - 1]
-
-    # Back substitution — Fortran lines 358-361 (i = n-2 down to 0)
     for i in range(n - 2, -1, -1):
         t[i] = f1[i] - e11[i] * t[i + 1] - e12[i] * q[i + 1]
         q[i] = f2[i] - e21[i] * t[i + 1] - e22[i] * q[i + 1]
 
     return t, q
+
+
+tridiag_2eq.defvjp(_tridiag_2eq_fwd_rule, _tridiag_2eq_bwd_rule)
 
 
 # ---------------------------------------------------------------------------
