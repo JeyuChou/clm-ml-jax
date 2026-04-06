@@ -216,6 +216,8 @@ def SoilResistance(
 
         # Root length density and mean inter-root distance — Fortran lines 125-128
         rld_v       = rbd_v / (root_density_SPA[pft] * root_cross_sec_area)
+        # Guard rld_v > 0 for safe 1/rld_v and sqrt(1/rld_v) gradients
+        rld_v       = jnp.maximum(rld_v, 1.0e-30)
         root_dist_v = jnp.sqrt(1.0 / (rld_v * pi))
 
         # Soil-to-root (A23) and root-to-stem (A24) resistance
@@ -224,16 +226,19 @@ def SoilResistance(
         soilr1_v = jnp.log(root_dist_v / rr) / (2.0 * pi * rld_v * dz_v * hk_v_safe)
         soilr2_v = root_resist_SPA[pft] / (rbd_v * dz_v)
         soilr_v  = soilr1_v + soilr2_v    # total belowground resistance
+        # Guard soilr_v > 0 for safe division gradients inside jnp.where
+        soilr_v_safe = jnp.maximum(soilr_v, 1.0e-30)
 
         # Maximum transpiration per layer (A26) — Fortran lines 145-148
-        evap_v = jnp.maximum((smp_mpa_v - minlwp_SPA) / soilr_v, 0.0)
+        evap_v = jnp.maximum((smp_mpa_v - minlwp_SPA) / soilr_v_safe, 0.0)
         # Zero out frozen layers and below-bedrock layers
         frozen_v = h2osoi_ice[c, 1:nlevsoi+1] > 0.0
         evap_v   = jnp.where(active_j & ~frozen_v, evap_v, 0.0)
 
         # Total belowground resistance (A25) — Fortran line 151
-        rsoil_sum = jnp.sum(jnp.where(active_j, 1.0 / soilr_v, 0.0))
-        rsoil     = rsoil.at[p].set(lai[p] / rsoil_sum)
+        rsoil_sum = jnp.sum(jnp.where(active_j, 1.0 / soilr_v_safe, 0.0))
+        rsoil_sum_safe = jnp.maximum(rsoil_sum, 1.0e-30)
+        rsoil     = rsoil.at[p].set(lai[p] / rsoil_sum_safe)
 
         # Weighted soil water potential and fractional uptake — Fortran 153-168
         totevap      = jnp.sum(evap_v)
@@ -246,7 +251,9 @@ def SoilResistance(
 
         # Fractional water uptake per layer
         nlayers_f         = nbedrock[c].astype(jnp.float32)
-        et_loss_uniform   = jnp.where(active_j, 1.0 / nlayers_f, 0.0)
+        # Guard nlayers_f > 0 for safe 1/nlayers_f gradient inside jnp.where
+        nlayers_f_safe    = jnp.maximum(nlayers_f, 1.0)
+        et_loss_uniform   = jnp.where(active_j, 1.0 / nlayers_f_safe, 0.0)
         soil_et_loss_v    = jnp.where(totevap > 0.0,
                                       evap_v / totevap_safe,
                                       et_loss_uniform)
