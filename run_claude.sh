@@ -38,3 +38,6 @@ tmux wait-for claude
 
 #### Optional: Attach to the tmux session to interact with the agent
 #srun --jobid=7201527 --overlap --pty tmux attach -t claude
+
+#### how to detach form claude session 
+# press ctrl+b then d 
