@@ -3,6 +3,9 @@
 .claude/
 
 # Python
+Paper/
+prompts/
+Domain-Litterature/
 logs/
 __pycache__/
 *.py[cod]
