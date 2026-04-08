@@ -3,7 +3,7 @@
 #SBATCH --job-name=claude-agent
 #SBATCH --output=logs/agent_%j.out
 #SBATCH --error=logs/agent_%j.err
-#SBATCH --time=10:00:00          # adjust to your run length
+#SBATCH --time=24:00:00          # adjust to your run length
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -37,4 +37,11 @@ tmux wait-for claude
 
 
 #### Optional: Attach to the tmux session to interact with the agent
-#srun --jobid=7201527 --overlap --pty tmux attach -t claude
+#srun --jobid=7211992 --overlap --pty tmux attach -t claude
+
+
+####
+#example prompts to test the agent
+# /ralph-loop:ralph-loop “Please keep working on the task until the success criterion 
+#of 0.1% accuracy across the entire parameter range is achieved.”
+# --max-iterations 20 --completion-promise “DONE”
