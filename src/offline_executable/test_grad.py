@@ -217,13 +217,17 @@ forward_fn = make_clm_ml_forward(
 )
 
 print("\nRunning differentiable forward pass...")
-loss = forward_fn(mlcanopy_inst)
+with jax.disable_jit():
+    loss = forward_fn(mlcanopy_inst)
 print(f"Forward loss = {loss}")
 
-print("\nComputing jax.grad (eager, no JIT to avoid XLA OOM)...")
+print("\nComputing jax.grad (eager, jax.disable_jit to avoid slow FPS recompilation)...")
 try:
     grad_fn = jax.grad(forward_fn, allow_int=True)
-    grads = grad_fn(mlcanopy_inst)
+    # Use disable_jit so _implicit_fps_jit runs as plain Python:
+    # this avoids the ~5-min XLA compilation of the backward pass through JIT.
+    with jax.disable_jit():
+        grads = grad_fn(mlcanopy_inst)
     print("jax.grad completed successfully!\n")
 
     for field_name in ['tair_profile', 'eair_profile', 'tleaf_leaf', 'tg_soil']:
