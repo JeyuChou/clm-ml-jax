@@ -103,13 +103,13 @@ print(f"  GPP = {float(baseline[2]):.3f} umol CO2/m2/s")
 
 # ── Jacobian via jacfwd ───────────────────────────────────────────────────────
 print("\n=== Computing Jacobian via jax.jacfwd ===", flush=True)
-jacfwd_fn = jax.jit(jax.jacfwd(forward_multi))
+jacrev_fn = jax.jit(jax.jacrev(forward_multi))
 
 t0 = time.time()
-J = jacfwd_fn(scales0)      # shape: (3, 5)
+J = jacrev_fn(scales0)      # shape: (3, 5)
 jax.block_until_ready(J)
-t_jacfwd = time.time() - t0
-print(f"  jacfwd completed in {t_jacfwd:.1f}s  (shape: {J.shape})")
+t_jacrev = time.time() - t0
+print(f"  jacrev completed in {t_jacrev:.1f}s  (shape: {J.shape})")
 
 J_np = np.array(J)
 print("\n  Raw Jacobian J[i,j] = d(output_i)/d(scale_j):")
@@ -126,10 +126,17 @@ J_norm = J_np / output_scale
 
 # ── Runtime comparison ────────────────────────────────────────────────────────
 n_params = 5
+n_outputs = 3
 print(f"\n=== Runtime comparison ===")
-print(f"  jacfwd (autodiff, {n_params} params, 3 outputs): {t_jacfwd:.1f}s")
-print(f"  FD equivalent ({n_params} × 2 forward passes):   ~{n_params * 2 * t_jacfwd / n_params:.1f}s")
-print(f"  (jacfwd cost ≈ {n_params} forward-mode passes; FD would require {n_params} × 2 = {n_params*2} evaluations)")
+print(f"  jacrev (autodiff, {n_outputs} outputs, {n_params} params): {t_jacrev:.1f}s")
+print(f"  (jacrev cost ≈ {n_outputs} backward passes; FD would need {n_params}×2 = {n_params*2} forward evaluations)")
+# Estimate single forward pass time for comparison
+t0 = time.time()
+_ = forward_multi(scales0)
+jax.block_until_ready(_)
+t_fwd = time.time() - t0
+print(f"  Single forward pass: {t_fwd:.1f}s")
+print(f"  FD equivalent cost estimate: ~{n_params * 2 * t_fwd:.1f}s")
 
 # ── Save CSV ──────────────────────────────────────────────────────────────────
 import csv
