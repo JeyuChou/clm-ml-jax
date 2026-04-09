@@ -130,20 +130,36 @@ def _section(title, rk_type, dtime_ml, nrk):
     finite_diff = jnp.isfinite(jnp.array(loss))
     print(f"  diff loss finite: {bool(finite_diff)}", flush=True)
 
-    # Gradient check (just verify no NaN/Inf)
+    # Gradient check via alpha_tref scale factor (jax.grad requires float inputs)
+    # Cannot use jax.grad(forward_fn)(mlcanopy_inst) directly — mlcanopy_inst has int fields.
+    # Instead differentiate w.r.t. a scalar alpha that scales tref_forcing, same as fd_grad_check.py.
     print("\n-- Gradient check (no NaN/Inf) --", flush=True)
+    from clm_src_main import clm_instMod as _ci
+    _atm = _ci.atm2lnd_inst
+    _wat = _ci.wateratm2lndbulk_inst
+    _mlcf_kwargs_no_atm = {k: v for k, v in _mlcf_kwargs.items()
+                           if k not in ("atm2lnd_inst", "wateratm2lndbulk_inst", "grid", "_o2ref_py")}
+
+    def _fwd_alpha_tref(alpha):
+        from multilayer_canopy.MLCanopyFluxesMod import MLCanopyFluxes as _MLCf
+        from diags.expt_init import compute_gpp as _cg
+        _mod_atm = _atm._replace(forc_t_downscaled_col=alpha * _atm.forc_t_downscaled_col)
+        inst2 = _MLCf(
+            mlcanopy_inst=mlcanopy_inst,
+            atm2lnd_inst=_mod_atm,
+            wateratm2lndbulk_inst=_wat,
+            grid=grid,
+            **_mlcf_kwargs_no_atm,
+        )
+        return _cg(inst2, grid.p, grid.ncan)
+
     t0 = time.perf_counter()
-    grads = jax.jit(jax.grad(forward_fn))(mlcanopy_inst)
+    grad_tref = float(jax.jit(jax.grad(_fwd_alpha_tref))(jnp.float64(1.0)))
     jax.effects_barrier()
     grad_time_s = time.perf_counter() - t0
-    # Check grad of tref_forcing (most representative leaf temperature path)
-    g = grads.tref_forcing
-    n_finite = int(jnp.sum(jnp.isfinite(g)))
-    n_total  = int(g.size)
-    max_g    = float(jnp.max(jnp.abs(jnp.where(jnp.isfinite(g), g, 0.0))))
-    print(f"  grad(tref_forcing): {n_finite}/{n_total} finite, max|g|={max_g:.3e}", flush=True)
-    flag = "OK" if n_finite == n_total and max_g < 1e10 else "WARN — check for NaN/large grads"
-    print(f"  Status: {flag}", flush=True)
+    finite = np.isfinite(grad_tref)
+    flag = "OK" if finite and abs(grad_tref) < 1e10 else "WARN — non-finite or large"
+    print(f"  dGPP/d(alpha_tref) = {grad_tref:.4e}  finite={finite}  Status: {flag}", flush=True)
     print(f"  grad() call time: {grad_time_s:.3f}s", flush=True)
 
     return diff_compile_s, diff_ss_s, nd_ss_s, speedup

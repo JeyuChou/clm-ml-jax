@@ -33,6 +33,28 @@ function for clean parameter injection. Supports `(field_name, pft_idx)` tuple k
 
 ---
 
+## 2026-04-09 — lax.scan benchmark results (job 7329052)
+
+### Euler diff mode (1 sub-step, 0 RK stages) — CONFIRMED
+
+| Mode | First call | Steady-state |
+|---|---|---|
+| DIFF MODE (lax.scan) | 290s (JIT compile) | **30.6 ms/step** |
+| NON-DIFF MODE (Python loop) | 6.6s | 6338.8 ms/step |
+| **Speedup** | — | **207×** |
+
+- Loss finite: True. Correctness: diff=-2903.83, non-diff sh+et=-2904.07+0.24=-2903.83 ✓
+- Gradient check: FAILED with `grad requires float inputs` — needs float-only wrapper.
+  Root cause: `jax.grad(forward_fn)(mlcanopy_inst)` fails because `mlcanopy_inst` has int fields.
+  FIX NEEDED: wrap `jax.grad` to differentiate w.r.t. a scalar alpha (like `fd_grad_check.py`).
+- Full RK4 benchmark: NOT run (job exited after grad check error).
+
+**Key insight:** 207× speedup is from lax.scan + JIT dispatch reduction.
+The Python loop (non-diff mode) re-dispatches to GPU 1 time per step (Euler).
+lax.scan compiles everything into a single XLA kernel, eliminating Python overhead.
+
+---
+
 ## 2026-04-09 — lax.scan over RK sub-steps (session 22)
 
 ### lax.scan refactoring — COMPLETE (commit 68de426)
