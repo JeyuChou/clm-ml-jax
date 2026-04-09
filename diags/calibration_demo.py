@@ -1,14 +1,18 @@
 """
 Experiment 4: Gradient-based parameter calibration demo.
 
-Demonstrates recovery of a known Vcmax25 scale factor (alpha_true = 1.0)
-from a perturbed starting point (alpha_init = 0.7) using:
+Demonstrates recovery of a known solar radiation scale factor (alpha_sw_true = 1.0)
+from a perturbed starting point (alpha_sw_init = 0.7) using:
   1. Gradient-based Adam optimizer (100 steps, using jax.grad)
   2. Gradient-free Nelder-Mead baseline (100 function evaluations)
 
-Both methods minimize a relative MSE loss between model outputs
-[H (sensible heat), LE (latent heat), GPP] and synthetic observations
-generated at the ground-truth parameter value.
+Calibration target: canopy GPP (gppveg_canopy[p], umol CO2/m2/s).
+Parameter:         alpha_sw — multiplicative scale on swskyb & swskyd forcing.
+
+Scientific rationale: solar radiation forcing is a key uncertainty in ESMs;
+GPP is commonly observed at flux towers. This demo shows that gradient-based
+calibration can recover the correct radiation scaling factor from synthetic
+GPP observations in far fewer forward evaluations than gradient-free methods.
 
 Usage (from project root):
     cd src && python ../diags/calibration_demo.py
@@ -40,67 +44,70 @@ FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Shared init ───────────────────────────────────────────────────────────────
 from diags.expt_init import (
-    forward_fn, mlcanopy_inst, grid, _mlcf_kwargs,
+    mlcanopy_inst, grid, _mlcf_kwargs,
     jax, jnp, MLCanopyFluxes,
+    atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp,
 )
 
-_p   = grid.p
-_n   = grid.ncan
+_p = grid.p
 
-# ── Multi-output forward function ────────────────────────────────────────────
-def forward_outputs(alpha) -> jnp.ndarray:
+# Build kwargs without atm2lnd_inst so we can pass it as a traced arg
+_mlcf_kwargs_no_atm = {k: v for k, v in _mlcf_kwargs.items()
+                       if k not in ("atm2lnd_inst", "wateratm2lndbulk_inst")}
+
+
+# ── GPP forward function (scalar output) ─────────────────────────────────────
+# IMPORTANT: MLCanopyFluxes.__init__ copies forc_solad_downscaled_col from
+# atm2lnd_inst into swskyb_cur_forcing, overwriting any mlcanopy_inst field.
+# Gradients for SW scaling must flow through atm2lnd_inst.
+
+def forward_gpp(alpha) -> jnp.ndarray:
     """
-    Run the model with Vcmax25 scaled by `alpha` and return [H, LE, GPP].
+    Run the model with SW radiation scaled by `alpha` and return canopy GPP.
 
     Args:
-        alpha: scalar (float64) — multiplicative scale on vcmax25_profile
-               and vcmax25_leaf.  Baseline (truth) = 1.0.
+        alpha: scalar (float64) — multiplicative scale on beam & diffuse SW.
+               Baseline (truth) = 1.0.
 
     Returns:
-        jnp.ndarray of shape (3,): [H_sum (W/m2), LE_sum (mol/m2/s), GPP (umol/m2/s)]
+        scalar: gppveg_canopy[p]  (umol CO2/m2/s)
     """
-    modified = mlcanopy_inst._replace(
-        vcmax25_profile = alpha * mlcanopy_inst.vcmax25_profile,
-        vcmax25_leaf    = alpha * mlcanopy_inst.vcmax25_leaf,
+    modified_atm = atm2lnd_inst._replace(
+        forc_solad_downscaled_col = alpha * atm2lnd_inst.forc_solad_downscaled_col,
+        forc_solai_grc            = alpha * atm2lnd_inst.forc_solai_grc,
     )
-    inst = MLCanopyFluxes(mlcanopy_inst=modified, **_mlcf_kwargs)
-
-    H   = jnp.sum(inst.shair_profile[_p, 1:_n + 1])   # W/m2 (sum over layers)
-    LE  = jnp.sum(inst.etair_profile[_p, 1:_n + 1])   # mol H2O/m2/s (sum over layers)
-    GPP = inst.gppveg_canopy[_p]                        # umol CO2/m2/s
-
-    return jnp.array([H, LE, GPP])
+    inst = MLCanopyFluxes(
+        mlcanopy_inst=mlcanopy_inst,
+        atm2lnd_inst=modified_atm,
+        wateratm2lndbulk_inst=wateratm2lndbulk_inst,
+        **_mlcf_kwargs_no_atm,
+    )
+    # gppveg_canopy not updated in diff mode; use agross_leaf directly.
+    return compute_gpp(inst, _p, grid.ncan)
 
 
 # ── Generate synthetic observations ──────────────────────────────────────────
-print("\n=== Generating synthetic observations (alpha_true = 1.0) ===", flush=True)
+print("\n=== Generating synthetic observations (alpha_sw_true = 1.0) ===", flush=True)
 alpha_true = jnp.float64(1.0)
 t0 = time.time()
-obs = forward_outputs(alpha_true)
-jax.block_until_ready(obs)
+obs_gpp = forward_gpp(alpha_true)
+jax.block_until_ready(obs_gpp)
 print(f"  Forward pass (truth) completed in {time.time() - t0:.2f}s", flush=True)
-print(f"  H   = {float(obs[0]):.4f} W/m2")
-print(f"  LE  = {float(obs[1]):.6f} mol H2O/m2/s")
-print(f"  GPP = {float(obs[2]):.4f} umol CO2/m2/s")
+print(f"  GPP (truth) = {float(obs_gpp):.4f} umol CO2/m2/s")
 
 
-# ── Relative MSE loss function ────────────────────────────────────────────────
+# ── Squared relative loss function ───────────────────────────────────────────
 def loss_fn(alpha):
-    """
-    Relative MSE between model outputs at `alpha` and synthetic observations.
-
-    Relative formulation avoids unit-mismatch domination and handles
-    near-zero nighttime values gracefully.
-    """
-    pred = forward_outputs(alpha)
-    return jnp.mean(((pred - obs) / (jnp.abs(obs) + 1e-6)) ** 2)
+    """Relative squared error between predicted GPP and synthetic observation."""
+    pred = forward_gpp(alpha)
+    return ((pred - obs_gpp) / (jnp.abs(obs_gpp) + 1e-6)) ** 2
 
 
 # ── Verify loss at truth is (near) zero ──────────────────────────────────────
 loss_truth = float(loss_fn(alpha_true))
-print(f"\n  Loss at alpha_true=1.0 : {loss_truth:.4e}  (should be ~0)", flush=True)
+print(f"\n  Loss at alpha_sw_true=1.0 : {loss_truth:.4e}  (should be ~0)", flush=True)
 loss_init = float(loss_fn(jnp.float64(0.7)))
-print(f"  Loss at alpha_init=0.7 : {loss_init:.4e}", flush=True)
+print(f"  Loss at alpha_sw_init=0.7 : {loss_init:.4e}", flush=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -116,7 +123,7 @@ beta1 = 0.9
 beta2 = 0.999
 eps   = 1e-8
 
-alpha = jnp.float64(0.7)   # perturbed starting point
+alpha = jnp.float64(0.7)   # perturbed starting point (30% less SW radiation)
 m, v, t_adam = 0.0, 0.0, 0
 
 grad_fn = jax.jit(jax.grad(loss_fn))
@@ -149,7 +156,7 @@ for step in range(100):
     # Each Adam step costs 1 grad eval (~2 forward passes) + 1 explicit loss eval
     history_adam.append((step + 1, l, float(alpha)))
     print(
-        f"  Adam step {step + 1:3d}: alpha={float(alpha):.4f}  "
+        f"  Adam step {step + 1:3d}: alpha_sw={float(alpha):.4f}  "
         f"loss={l:.4e}  grad={g:.4e}  ({t_elapsed:.2f}s/step)",
         flush=True,
     )
@@ -160,7 +167,7 @@ loss_adam_final  = float(loss_fn(jnp.float64(alpha_adam_final)))
 error_adam = abs(alpha_adam_final - 1.0)
 
 print(f"\n  Adam finished in {t_adam_total:.1f}s total", flush=True)
-print(f"  Final alpha = {alpha_adam_final:.6f}  (true=1.0, error={error_adam:.4f})", flush=True)
+print(f"  Final alpha_sw = {alpha_adam_final:.6f}  (true=1.0, error={error_adam:.4f})", flush=True)
 print(f"  Final loss  = {loss_adam_final:.4e}", flush=True)
 
 
@@ -203,7 +210,7 @@ error_nm       = abs(alpha_nm_final - 1.0)
 
 print(f"\n  Nelder-Mead finished in {t_nm_total:.1f}s total", flush=True)
 print(f"  Converged: {result.success}  |  {result.message}", flush=True)
-print(f"  Final alpha = {alpha_nm_final:.6f}  (true=1.0, error={error_nm:.4f})", flush=True)
+print(f"  Final alpha_sw = {alpha_nm_final:.6f}  (true=1.0, error={error_nm:.4f})", flush=True)
 print(f"  Final loss  = {loss_nm_final:.4e}", flush=True)
 print(f"  Function evaluations: {n_evals_nm[0]}", flush=True)
 
@@ -308,7 +315,7 @@ ax.plot(nm_evals,   nm_alphas,   color="darkorange", lw=2,
 ax.axhline(y=1.0, color="black", linestyle="--", lw=1.5, label="alpha_true = 1.0")
 ax.axhline(y=0.7, color="gray",  linestyle=":",  lw=1.2, label="alpha_init = 0.7")
 ax.set_xlabel("Number of forward evaluations", fontsize=12)
-ax.set_ylabel("alpha (Vcmax25 scale factor)", fontsize=12)
+ax.set_ylabel("alpha_sw (SW radiation scale factor)", fontsize=12)
 ax.set_title("Parameter trajectory vs evaluations", fontsize=12)
 ax.legend(fontsize=10)
 ax.grid(True, alpha=0.3)
@@ -331,7 +338,7 @@ if len(nm_alphas) > 0:
                 fontsize=9, color="darkorange")
 
 fig.suptitle(
-    "CLM-ml-jax Experiment 4: Vcmax25 calibration demo — CHATS7, May 1 2007\n"
+    "CLM-ml-jax Experiment 4: SW radiation calibration via GPP — CHATS7, May 1 2007\n"
     "Gradient-based Adam vs gradient-free Nelder-Mead (100 evaluations each)",
     fontsize=11,
 )

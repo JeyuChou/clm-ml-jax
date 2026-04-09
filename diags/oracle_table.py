@@ -23,7 +23,7 @@ SRC_DIR      = PROJECT_ROOT / "src"
 FIGURES_DIR  = Path(__file__).parent / "figures"
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
-JAX_DIR = SRC_DIR / "output_files" / "JAX_outputs_05_2007_1day"
+JAX_DIR = SRC_DIR / "output_files" / "JAX_outputs_05_2007_31days"
 REF_DIR = SRC_DIR / "output_files" / "validation_files" / "validation_files_05_2007_31days"
 SITE    = "CHATS7"
 PERIOD  = "2007-05"
@@ -40,13 +40,10 @@ def load_profile(directory: Path) -> np.ndarray:
 jax_flux = load_flux(JAX_DIR)
 ref_flux  = load_flux(REF_DIR)
 
-# Align: first 48 timesteps of JAX vs first 48 of Fortran (same calendar day)
-N = min(len(jax_flux), 48)
-jax_f = jax_flux[:N]
-ref_f = ref_flux[ref_flux[:, 0] < ref_flux[0, 0] + 1.0][:N]
-if len(ref_f) == 0:
-    ref_f = ref_flux[:N]
-M = min(len(jax_f), len(ref_f))
+# Use all timesteps (31 days × 48 half-hourly = 1488 steps)
+M = min(len(jax_flux), len(ref_flux))
+jax_f = jax_flux[:M]
+ref_f = ref_flux[:M]
 jax_f = jax_f[:M]
 ref_f = ref_f[:M]
 
@@ -60,7 +57,8 @@ flux_vars = [
     (12, "Friction vel.",   "u*",   "m s$^{-1}$"),
 ]
 
-print(f"\nOracle validation: CHATS7 May 1 2007 ({M} timesteps)\n")
+n_days = M // 48
+print(f"\nOracle validation: CHATS7 May 2007 ({M} timesteps = {n_days} days)\n")
 print(f"{'Variable':<22}  {'Unit':<22}  {'Max|err|':>10}  {'RMSE':>10}  {'Max rtol':>10}")
 print("-" * 80)
 
@@ -113,7 +111,7 @@ for col, long_name, short, unit in profile_vars:
 # ── LaTeX table ───────────────────────────────────────────────────────────────
 print("\n\n% ── LaTeX Table 1 (paste into paper) ─────────────────────────────────")
 print(r"\begin{table}[t]")
-print(r"\caption{Oracle validation: clm-ml-jax vs. Fortran reference, CHATS7 May 1 2007 (48 timesteps).}")
+print(r"\caption{Oracle validation: clm-ml-jax vs. Fortran reference, CHATS7 May 2007 (1488 half-hourly timesteps = 31 days).}")
 print(r"\label{tab:oracle}")
 print(r"\centering")
 print(r"\begin{tabular}{llrrr}")

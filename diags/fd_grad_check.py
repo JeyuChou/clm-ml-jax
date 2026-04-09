@@ -3,9 +3,19 @@ Experiment 2: Finite-difference gradient check.
 
 Verifies that jax.grad produces accurate gradients through the full
 CLM-ml-jax column by comparing against central finite differences for
-two physiological parameters:
-  - alpha_vcmax25: global scale factor on vcmax25_profile
-  - alpha_dpai:    global scale factor on dpai_profile (canopy structure)
+two parameters with clear, non-trivial pathways to canopy GPP:
+
+  - alpha_sw:     global scale factor on swskyb_forcing & swskyd_forcing
+                  (solar radiation → PAR → electron transport → GPP)
+  - alpha_vcmax25: global scale factor on vcmax25_profile & vcmax25_leaf
+                  (Rubisco capacity → carboxylation-limited photosynthesis)
+
+Output scalar: gppveg_canopy[p]  (total canopy GPP, umol CO2/m2/s)
+
+Note: at high-light conditions the canopy may be light-limited (Aj < Ac),
+in which case alpha_vcmax25 has a small but non-zero gradient (via the
+co-limitation blending in the Farquhar model).  alpha_sw always has a
+large gradient because it directly controls PAR → J.
 
 Usage (from project root):
     cd src && python ../diags/fd_grad_check.py
@@ -30,7 +40,8 @@ FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Shared init ───────────────────────────────────────────────────────────────
 from diags.expt_init import (
-    forward_fn, mlcanopy_inst, grid, jax, jnp
+    mlcanopy_inst, grid, _mlcf_kwargs, jax, jnp, MLCanopyFluxes,
+    atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp,
 )
 
 import numpy as np
@@ -38,35 +49,66 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# ── Parameter wrappers ────────────────────────────────────────────────────────
-def forward_vcmax_scale(alpha: jnp.ndarray) -> jnp.ndarray:
-    """Forward pass with vcmax25_profile scaled by alpha."""
-    modified = mlcanopy_inst._replace(
-        vcmax25_profile = alpha * mlcanopy_inst.vcmax25_profile,
-        vcmax25_leaf    = alpha * mlcanopy_inst.vcmax25_leaf,
+_p = grid.p
+
+# Build kwargs without atm2lnd_inst so we can pass it as a traced arg
+_mlcf_kwargs_no_atm = {k: v for k, v in _mlcf_kwargs.items()
+                       if k not in ("atm2lnd_inst", "wateratm2lndbulk_inst")}
+
+
+# ── GPP scalar forward functions ─────────────────────────────────────────────
+# IMPORTANT: MLCanopyFluxes.__init__ overwrites swskyb_cur_forcing and
+# tref_cur_forcing from atm2lnd_inst (lines 910-921 of MLCanopyFluxesMod.py).
+# Gradients must flow through atm2lnd_inst, NOT mlcanopy_inst forcing fields.
+
+def forward_gpp_sw(alpha: jnp.ndarray) -> jnp.ndarray:
+    """Forward pass: scale beam+diffuse SW by alpha via atm2lnd_inst, return GPP."""
+    modified_atm = atm2lnd_inst._replace(
+        forc_solad_downscaled_col = alpha * atm2lnd_inst.forc_solad_downscaled_col,
+        forc_solai_grc            = alpha * atm2lnd_inst.forc_solai_grc,
     )
-    return forward_fn(modified)
-
-
-def forward_dpai_scale(alpha: jnp.ndarray) -> jnp.ndarray:
-    """Forward pass with dpai_profile scaled by alpha."""
-    modified = mlcanopy_inst._replace(
-        dpai_profile = alpha * mlcanopy_inst.dpai_profile,
+    inst = MLCanopyFluxes(
+        mlcanopy_inst=mlcanopy_inst,
+        atm2lnd_inst=modified_atm,
+        wateratm2lndbulk_inst=wateratm2lndbulk_inst,
+        **_mlcf_kwargs_no_atm,
     )
-    return forward_fn(modified)
+    return compute_gpp(inst, _p, grid.ncan)
 
+
+def forward_gpp_tref(alpha: jnp.ndarray) -> jnp.ndarray:
+    """Forward pass: scale air temperature by alpha via atm2lnd_inst, return GPP.
+
+    Temperature affects photosynthesis via enzyme kinetics (Vcmax(T), Jmax(T)).
+    """
+    modified_atm = atm2lnd_inst._replace(
+        forc_t_downscaled_col = alpha * atm2lnd_inst.forc_t_downscaled_col,
+    )
+    inst = MLCanopyFluxes(
+        mlcanopy_inst=mlcanopy_inst,
+        atm2lnd_inst=modified_atm,
+        wateratm2lndbulk_inst=wateratm2lndbulk_inst,
+        **_mlcf_kwargs_no_atm,
+    )
+    return compute_gpp(inst, _p, grid.ncan)
+
+
+# ── Print baseline values ────────────────────────────────────────────────────
+print("\n=== Baseline outputs ===", flush=True)
+baseline_gpp = float(forward_gpp_sw(jnp.float64(1.0)))
+print(f"  GPP proxy (baseline) = {baseline_gpp:.4f} (agross_leaf weighted sum)", flush=True)
 
 # ── Compute JAX gradients ─────────────────────────────────────────────────────
 print("\n=== Computing JAX gradients ===", flush=True)
 
 t0 = time.time()
-grad_vcmax_jax = float(jax.jit(jax.grad(forward_vcmax_scale))(jnp.float64(1.0)))
-print(f"  grad(alpha_vcmax25) [JAX] = {grad_vcmax_jax:.6e}  ({time.time()-t0:.1f}s)",
+grad_sw_jax = float(jax.jit(jax.grad(forward_gpp_sw))(jnp.float64(1.0)))
+print(f"  dGPP/d(alpha_sw)   [JAX] = {grad_sw_jax:.6e}  ({time.time()-t0:.1f}s)",
       flush=True)
 
 t0 = time.time()
-grad_dpai_jax = float(jax.jit(jax.grad(forward_dpai_scale))(jnp.float64(1.0)))
-print(f"  grad(alpha_dpai)    [JAX] = {grad_dpai_jax:.6e}  ({time.time()-t0:.1f}s)",
+grad_tref_jax = float(jax.jit(jax.grad(forward_gpp_tref))(jnp.float64(1.0)))
+print(f"  dGPP/d(alpha_tref) [JAX] = {grad_tref_jax:.6e}  ({time.time()-t0:.1f}s)",
       flush=True)
 
 # ── Compute finite-difference gradients ───────────────────────────────────────
@@ -74,28 +116,28 @@ print("\n=== Computing finite-difference gradients ===", flush=True)
 EPS = 1e-4
 
 t0 = time.time()
-f_plus  = float(forward_vcmax_scale(jnp.float64(1.0 + EPS)))
-f_minus = float(forward_vcmax_scale(jnp.float64(1.0 - EPS)))
-grad_vcmax_fd = (f_plus - f_minus) / (2 * EPS)
-print(f"  grad(alpha_vcmax25) [FD]  = {grad_vcmax_fd:.6e}  ({time.time()-t0:.1f}s)",
+f_plus  = float(forward_gpp_sw(jnp.float64(1.0 + EPS)))
+f_minus = float(forward_gpp_sw(jnp.float64(1.0 - EPS)))
+grad_sw_fd = (f_plus - f_minus) / (2 * EPS)
+print(f"  dGPP/d(alpha_sw)   [FD]  = {grad_sw_fd:.6e}  ({time.time()-t0:.1f}s)",
       flush=True)
 
 t0 = time.time()
-f_plus  = float(forward_dpai_scale(jnp.float64(1.0 + EPS)))
-f_minus = float(forward_dpai_scale(jnp.float64(1.0 - EPS)))
-grad_dpai_fd = (f_plus - f_minus) / (2 * EPS)
-print(f"  grad(alpha_dpai)    [FD]  = {grad_dpai_fd:.6e}  ({time.time()-t0:.1f}s)",
+f_plus  = float(forward_gpp_tref(jnp.float64(1.0 + EPS)))
+f_minus = float(forward_gpp_tref(jnp.float64(1.0 - EPS)))
+grad_tref_fd = (f_plus - f_minus) / (2 * EPS)
+print(f"  dGPP/d(alpha_tref) [FD]  = {grad_tref_fd:.6e}  ({time.time()-t0:.1f}s)",
       flush=True)
 
 # ── Report ────────────────────────────────────────────────────────────────────
 print("\n=== Gradient accuracy summary ===")
-print(f"{'Parameter':<20}  {'JAX grad':>14}  {'FD grad':>14}  {'Rel error':>12}  {'Pass?':>6}")
-print("-" * 72)
+print(f"{'Parameter':<22}  {'JAX grad':>14}  {'FD grad':>14}  {'Rel error':>12}  {'Pass?':>6}")
+print("-" * 76)
 
 results = []
 for name, jax_val, fd_val in [
-    ("alpha_vcmax25", grad_vcmax_jax, grad_vcmax_fd),
-    ("alpha_dpai",    grad_dpai_jax,  grad_dpai_fd),
+    ("dGPP/d(alpha_sw)",   grad_sw_jax,   grad_sw_fd),
+    ("dGPP/d(alpha_tref)", grad_tref_jax, grad_tref_fd),
 ]:
     rel_err = abs(jax_val - fd_val) / (abs(fd_val) + 1e-30)
     passed  = rel_err < 0.01  # 1% tolerance
@@ -134,7 +176,7 @@ axes[1].set_ylabel("Relative error")
 axes[1].set_title("Gradient relative error (< 1% = pass)")
 axes[1].legend()
 
-fig.suptitle("CLM-ml-jax: Autodiff accuracy check (Exp 2)", fontsize=12)
+fig.suptitle("CLM-ml-jax: Autodiff accuracy — dGPP/d(param) via jax.grad vs central FD\n(Exp 2)", fontsize=12)
 fig.tight_layout()
 out = FIGURES_DIR / "fd_grad_check.png"
 fig.savefig(out, dpi=150, bbox_inches="tight")

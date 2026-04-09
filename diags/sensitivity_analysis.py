@@ -2,7 +2,7 @@
 Experiment 3: Jacobian-based global sensitivity analysis.
 
 Computes the full output-parameter Jacobian J = d[H, LE, GPP] / d[theta]
-via forward-mode autodiff (jax.jacfwd), where theta is a vector of
+via reverse-mode autodiff (jax.jacrev), where theta is a vector of
 five physiological and forcing scale factors:
   0: alpha_vcmax25  — scale on vcmax25_profile & vcmax25_leaf (Vcmax25)
   1: alpha_tref     — scale on tref_forcing (air temperature)
@@ -42,54 +42,71 @@ FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Shared init ───────────────────────────────────────────────────────────────
 from diags.expt_init import (
-    forward_fn, mlcanopy_inst, grid, _mlcf_kwargs,
-    jax, jnp, MLCanopyFluxes
+    mlcanopy_inst, grid, _mlcf_kwargs,
+    jax, jnp, MLCanopyFluxes,
+    atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp,
 )
 
 # ── Parameter names (for display) ─────────────────────────────────────────────
 PARAM_NAMES  = ["Vcmax25", "T_air", "SW_rad", "q_ref\n(humidity)", "dpai\n(leaf area)"]
-OUTPUT_NAMES = ["H (sensible)", "LE (latent)", "GPP"]
+OUTPUT_NAMES = ["GPP", "H (top layer)", "LE (top layer)"]
 
 _p   = grid.p
 _n   = grid.ncan
+
+# Build kwargs without atm2lnd_inst so we can pass it as a traced arg
+_mlcf_kwargs_no_atm = {k: v for k, v in _mlcf_kwargs.items()
+                       if k not in ("atm2lnd_inst", "wateratm2lndbulk_inst")}
 
 # ── Multi-output forward function ────────────────────────────────────────────
 def forward_multi(scales: jnp.ndarray) -> jnp.ndarray:
     """
     Args:
         scales: float64 array of shape (5,) — scale factors at baseline = 1.0
+          0: alpha_vcmax25  — scale on vcmax25_profile & vcmax25_leaf
+          1: alpha_tair     — scale on atm2lnd_inst.forc_t_downscaled_col
+          2: alpha_sw       — scale on atm2lnd_inst.forc_solad & forc_solai
+          3: alpha_qref     — scale on wateratm2lndbulk_inst.forc_q_downscaled_col
+          4: alpha_dpai     — scale on mlcanopy_inst.dpai_profile
 
     Returns:
-        jnp.ndarray of shape (3,): [H_sum (W/m2), LE_sum (mol/m2/s), GPP (umol/m2/s)]
+        jnp.ndarray of shape (3,): [GPP (umol CO2/m2/s), H_toplayer (W/m2), LE_toplayer]
+
+    NOTE: T_air, SW_rad, q_ref are scaled via atm2lnd_inst/wateratm2lndbulk_inst
+    because MLCanopyFluxes.__init__ copies forcing fields from those instances
+    into mlcanopy_inst, overwriting any mlcanopy_inst fields. Vcmax25 and dpai
+    are scaled via mlcanopy_inst (they are not overwritten from atm2lnd_inst).
     """
-    modified = mlcanopy_inst._replace(
-        vcmax25_profile  = scales[0] * mlcanopy_inst.vcmax25_profile,
-        vcmax25_leaf     = scales[0] * mlcanopy_inst.vcmax25_leaf,
-        tref_forcing     = scales[1] * mlcanopy_inst.tref_forcing,
-        tref_bef_forcing = scales[1] * mlcanopy_inst.tref_bef_forcing,
-        tref_cur_forcing = scales[1] * mlcanopy_inst.tref_cur_forcing,
-        tref_next_forcing= scales[1] * mlcanopy_inst.tref_next_forcing,
-        swskyb_forcing   = scales[2] * mlcanopy_inst.swskyb_forcing,
-        swskyb_bef_forcing=scales[2] * mlcanopy_inst.swskyb_bef_forcing,
-        swskyb_cur_forcing=scales[2] * mlcanopy_inst.swskyb_cur_forcing,
-        swskyb_next_forcing=scales[2] * mlcanopy_inst.swskyb_next_forcing,
-        swskyd_forcing   = scales[2] * mlcanopy_inst.swskyd_forcing,
-        swskyd_bef_forcing=scales[2] * mlcanopy_inst.swskyd_bef_forcing,
-        swskyd_cur_forcing=scales[2] * mlcanopy_inst.swskyd_cur_forcing,
-        swskyd_next_forcing=scales[2] * mlcanopy_inst.swskyd_next_forcing,
-        qref_forcing     = scales[3] * mlcanopy_inst.qref_forcing,
-        qref_bef_forcing = scales[3] * mlcanopy_inst.qref_bef_forcing,
-        qref_cur_forcing = scales[3] * mlcanopy_inst.qref_cur_forcing,
-        qref_next_forcing= scales[3] * mlcanopy_inst.qref_next_forcing,
-        dpai_profile     = scales[4] * mlcanopy_inst.dpai_profile,
+    # Scale vegetation/structure parameters via mlcanopy_inst
+    modified_ml = mlcanopy_inst._replace(
+        vcmax25_profile = scales[0] * mlcanopy_inst.vcmax25_profile,
+        vcmax25_leaf    = scales[0] * mlcanopy_inst.vcmax25_leaf,
+        dpai_profile    = scales[4] * mlcanopy_inst.dpai_profile,
     )
-    inst = MLCanopyFluxes(mlcanopy_inst=modified, **_mlcf_kwargs)
+    # Scale forcing via atm2lnd_inst (actual source used by physics)
+    modified_atm = atm2lnd_inst._replace(
+        forc_t_downscaled_col     = scales[1] * atm2lnd_inst.forc_t_downscaled_col,
+        forc_solad_downscaled_col = scales[2] * atm2lnd_inst.forc_solad_downscaled_col,
+        forc_solai_grc            = scales[2] * atm2lnd_inst.forc_solai_grc,
+    )
+    modified_watm = wateratm2lndbulk_inst._replace(
+        forc_q_downscaled_col = scales[3] * wateratm2lndbulk_inst.forc_q_downscaled_col,
+    )
 
-    H   = jnp.sum(inst.shair_profile[_p, 1:_n + 1])       # W/m2 (summed over layers)
-    LE  = jnp.sum(inst.etair_profile[_p, 1:_n + 1])        # mol H2O/m2/s (sum over layers)
-    GPP = inst.gppveg_canopy[_p]                            # umol CO2/m2/s
+    inst = MLCanopyFluxes(
+        mlcanopy_inst=modified_ml,
+        atm2lnd_inst=modified_atm,
+        wateratm2lndbulk_inst=modified_watm,
+        **_mlcf_kwargs_no_atm,
+    )
 
-    return jnp.array([H, LE, GPP])
+    # gppveg_canopy is NOT updated in diff mode (CanopyFluxesDiagnostics is skipped).
+    # Use agross_leaf directly — updated by LeafPhotosynthesis in _physics_step_fn.
+    GPP = compute_gpp(inst, _p, _n)                        # proportional to umol CO2/m2/s
+    H   = inst.shair_profile[_p, 1]                        # top layer W/m2
+    LE  = inst.etair_profile[_p, 1]                        # top layer mol H2O/m2/s
+
+    return jnp.array([GPP, H, LE])
 
 
 # ── Baseline outputs ─────────────────────────────────────────────────────────
@@ -97,12 +114,12 @@ print("\n=== Computing baseline outputs ===", flush=True)
 scales0  = jnp.ones(5, dtype=jnp.float64)
 baseline = forward_multi(scales0)
 jax.block_until_ready(baseline)
-print(f"  H   = {float(baseline[0]):.3f} W/m2 (sum over {_n} layers)")
-print(f"  LE  = {float(baseline[1]):.6f} mol H2O/m2/s (sum over {_n} layers)")
-print(f"  GPP = {float(baseline[2]):.3f} umol CO2/m2/s")
+print(f"  GPP = {float(baseline[0]):.3f} umol CO2/m2/s")
+print(f"  H   = {float(baseline[1]):.3f} W/m2 (top canopy layer)")
+print(f"  LE  = {float(baseline[2]):.6f} mol H2O/m2/s (top canopy layer)")
 
 # ── Jacobian via jacfwd ───────────────────────────────────────────────────────
-print("\n=== Computing Jacobian via jax.jacfwd ===", flush=True)
+print("\n=== Computing Jacobian via jax.jacrev ===", flush=True)
 jacrev_fn = jax.jit(jax.jacrev(forward_multi))
 
 t0 = time.time()
@@ -182,7 +199,7 @@ plt.colorbar(im1, ax=axes[1], label="Normalised ∂output/∂scale")
 
 fig.suptitle(
     "CLM-ml-jax: Jacobian sensitivity analysis — CHATS7, May 1 2007, t=1\n"
-    "(computed via jax.jacfwd in a single forward-mode pass)",
+    "(computed via jax.jacrev in a single reverse-mode pass)",
     fontsize=11,
 )
 fig.tight_layout()

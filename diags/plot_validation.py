@@ -60,7 +60,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 # -----------------------------------------------------------------------
 # Default paths
 # -----------------------------------------------------------------------
-DEFAULT_JAX_DIR = SRC_DIR / "output_files" / "JAX_outputs_05_2007_1day"
+DEFAULT_JAX_DIR = SRC_DIR / "output_files" / "JAX_outputs_05_2007_31days"
 DEFAULT_REF_DIR = SRC_DIR / "output_files" / "validation_files" / "validation_files_05_2007_31days"
 SITE = "CHATS7"
 PERIOD = "2007-05"
@@ -87,15 +87,13 @@ def plot_flux_comparison(jax_dir: Path, ref_dir: Path, out_dir: Path) -> None:
     jax = load_flux(jax_dir)
     ref = load_flux(ref_dir)
 
-    # Restrict to the same time range (first day if ref is longer)
-    n = min(len(jax), 48)   # max 48 half-hours = 1 day
+    # Use all available timesteps (both files are 31-day runs)
+    n = min(len(jax), len(ref))
     jax = jax[:n]
-    ref_day = ref[ref[:, 0] < ref[:, 0][0] + 1.0][:n]
-    if len(ref_day) == 0:
-        ref_day = ref[:n]
+    ref_day = ref[:n]
 
-    t_jax = calday_to_hour(jax[:, 0])
-    t_ref = calday_to_hour(ref_day[:, 0])
+    t_jax = jax[:, 0]   # calday (fractional day-of-year)
+    t_ref = ref_day[:, 0]
 
     panels = [
         (1,  "Net radiation (W m$^{-2}$)",  "Rn"),
@@ -118,9 +116,9 @@ def plot_flux_comparison(jax_dir: Path, ref_dir: Path, out_dir: Path) -> None:
         ax.grid(alpha=0.3)
 
     for ax in axes[-3:]:
-        ax.set_xlabel("Hour of day", fontsize=9)
+        ax.set_xlabel("Day of year (calday)", fontsize=9)
 
-    fig.suptitle(f"CHATS7 May 1, 2007 — Surface fluxes: JAX vs Fortran", fontsize=12)
+    fig.suptitle(f"CHATS7 May 2007 (31 days) — Surface fluxes: JAX vs Fortran", fontsize=12)
     fig.tight_layout()
 
     out_path = out_dir / "validation_flux.png"
@@ -204,12 +202,9 @@ def plot_scatter_comparison(jax_dir: Path, ref_dir: Path, out_dir: Path) -> None
     jax = load_flux(jax_dir)
     ref = load_flux(ref_dir)
 
-    n = min(len(jax), 48)
-    jax = jax[:n]
-    ref_day = ref[ref[:, 0] < ref[:, 0][0] + 1.0][:n]
-    if len(ref_day) == 0:
-        ref_day = ref[:n]
-    nref = min(len(jax), len(ref_day))
+    nref = min(len(jax), len(ref))
+    jax = jax[:nref]
+    ref_day = ref[:nref]
 
     var_names = ["Rn", "H", "LE", "Rabs", "LWup", "ET",
                  "GPP", "SWdn", "Tair", "Tveg", "Tsoil",
@@ -237,7 +232,7 @@ def plot_scatter_comparison(jax_dir: Path, ref_dir: Path, out_dir: Path) -> None
     for ax in axes[len(var_names):]:
         ax.set_visible(False)
 
-    fig.suptitle("JAX vs Fortran — All flux variables (first day)", fontsize=13)
+    fig.suptitle("JAX vs Fortran — All flux variables (31 days, 1488 timesteps)", fontsize=13)
     fig.tight_layout()
 
     out_path = out_dir / "validation_scatter.png"

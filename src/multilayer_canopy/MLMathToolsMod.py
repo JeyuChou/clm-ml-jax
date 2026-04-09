@@ -733,8 +733,22 @@ def _tridiag_2eq_bwd_rule(residuals, g):
 
         dL/d(d1[i]) = z1[i],    dL/d(d2[i]) = z2[i]
 
-    Gradients w.r.t. matrix coefficients are returned as zeros (we only
-    propagate through the RHS, which is the natural differentiable interface).
+    Gradients w.r.t. matrix coefficients follow from the implicit function
+    theorem.  For A(θ)y = d(θ), the full VJP is λᵀ(∂d/∂θ − ∂A/∂θ · y),
+    so for each matrix entry:
+
+        dL/dA[i,j] = -λ[i] * y[j]
+
+    Expanded for the block structure (0-based index i, solution (t, q)):
+
+        dL/da1[i]  = -z1[i] * t[i-1]   (t[-1] = 0 by boundary)
+        dL/db11[i] = -z1[i] * t[i]
+        dL/db12[i] = -z1[i] * q[i]
+        dL/dc1[i]  = -z1[i] * t[i+1]   (t[n]  = 0 by boundary)
+        dL/da2[i]  = -z2[i] * q[i-1]   (q[-1] = 0 by boundary)
+        dL/db21[i] = -z2[i] * t[i]
+        dL/db22[i] = -z2[i] * q[i]
+        dL/dc2[i]  = -z2[i] * q[i+1]   (q[n]  = 0 by boundary)
     """
     a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, _t, _q = residuals
     g_t, g_q = g   # cotangents for t and q outputs (JAX arrays of length n)
@@ -781,20 +795,51 @@ def _tridiag_2eq_bwd_rule(residuals, g):
                                            a2T, b21T, b22T, c2T, g2, n)
 
     # Gradient w.r.t. d1 and d2 is the adjoint λ = [z1; z2].
+    g_d1 = jnp.stack(z1_list)
+    g_d2 = jnp.stack(z2_list)
+
+    # Gradients w.r.t. matrix coefficients: dL/dA[i,j] = -λ[i] * y[j]
+    # where y = (t, q) is the primal solution.
+    # Boundary ghost values: t[-1] = t[n] = q[-1] = q[n] = 0.
+    _zero = jnp.zeros(())
+    g_a1_list  = []
+    g_b11_list = []
+    g_b12_list = []
+    g_c1_list  = []
+    g_a2_list  = []
+    g_b21_list = []
+    g_b22_list = []
+    g_c2_list  = []
+    for i in range(n):
+        t_prev = _t[i - 1] if i > 0 else _zero
+        t_curr = _t[i]
+        t_next = _t[i + 1] if i < n - 1 else _zero
+        q_prev = _q[i - 1] if i > 0 else _zero
+        q_curr = _q[i]
+        q_next = _q[i + 1] if i < n - 1 else _zero
+
+        g_a1_list.append(-z1_list[i] * t_prev)
+        g_b11_list.append(-z1_list[i] * t_curr)
+        g_b12_list.append(-z1_list[i] * q_curr)
+        g_c1_list.append(-z1_list[i] * t_next)
+        g_a2_list.append(-z2_list[i] * q_prev)
+        g_b21_list.append(-z2_list[i] * t_curr)
+        g_b22_list.append(-z2_list[i] * q_curr)
+        g_c2_list.append(-z2_list[i] * q_next)
+
     # Cotangents must match the primal input pytree structure.
-    _zeros = jnp.zeros(n, dtype=jnp.float64)
     return (
-        _zeros,                   # grad a1
-        _zeros,                   # grad b11
-        _zeros,                   # grad b12
-        _zeros,                   # grad c1
-        jnp.stack(z1_list),       # grad d1  =  λ_t
-        _zeros,                   # grad a2
-        _zeros,                   # grad b21
-        _zeros,                   # grad b22
-        _zeros,                   # grad c2
-        jnp.stack(z2_list),       # grad d2  =  λ_q
-        None,                     # grad n (static int)
+        jnp.stack(g_a1_list),    # grad a1
+        jnp.stack(g_b11_list),   # grad b11
+        jnp.stack(g_b12_list),   # grad b12
+        jnp.stack(g_c1_list),    # grad c1
+        g_d1,                    # grad d1  =  λ_t
+        jnp.stack(g_a2_list),    # grad a2
+        jnp.stack(g_b21_list),   # grad b21
+        jnp.stack(g_b22_list),   # grad b22
+        jnp.stack(g_c2_list),    # grad c2
+        g_d2,                    # grad d2  =  λ_q
+        None,                    # grad n (static int)
     )
 
 

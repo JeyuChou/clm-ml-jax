@@ -213,3 +213,32 @@ _mlcf_kwargs = dict(
 )
 
 print(f"expt_init: ready. patch={_p}, ncan={grid.ncan}", flush=True)
+
+# Export atmospheric forcing instances so experiments can scale them directly.
+# NOTE: scaling mlcanopy_inst.swskyb_forcing does NOT affect the radiation
+# computation because MLCanopyFluxes.__init__ overwrites swskyb_cur_forcing from
+# atm2lnd_inst.forc_solad_downscaled_col (lines 910-921 of MLCanopyFluxesMod).
+# Correct gradients require scaling atm2lnd_inst and wateratm2lndbulk_inst.
+atm2lnd_inst          = clm_instMod.atm2lnd_inst
+wateratm2lndbulk_inst = clm_instMod.wateratm2lndbulk_inst
+
+from multilayer_canopy.MLclm_varpar import isun, isha
+
+
+def compute_gpp(inst, p: int, ncan: int) -> jnp.ndarray:
+    """Compute canopy GPP from agross_leaf (differentiable in diff mode).
+
+    In diff mode, MLCanopyFluxes skips _CanopyFluxesDiagnostics, so
+    gppveg_canopy is never updated.  agross_leaf IS updated by
+    LeafPhotosynthesis inside _physics_step_fn and is the correct
+    differentiable proxy for GPP.
+
+    Units: proportional to umol CO2 m-2 s-1 (sum over layers, sun+shade).
+    """
+    agross_sun = inst.agross_leaf[p, 1:ncan + 1, isun]
+    agross_sha = inst.agross_leaf[p, 1:ncan + 1, isha]
+    fracsun    = inst.fracsun_profile[p, 1:ncan + 1]
+    dpai       = inst.dpai_profile[p, 1:ncan + 1]
+    return jnp.sum(
+        (agross_sun * fracsun + agross_sha * (1.0 - fracsun)) * dpai
+    )
