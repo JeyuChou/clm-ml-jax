@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-04-09 — IFT fix confirmed PASS; fd_grad_check resubmitted (session 18)
+
+**Status:** IFT fix verified. Stage 2/3 gradients now PASS at machine precision (job 7314583).
+Paper updated. Full fd_grad_check submitted as job 7315181 (A100, `--constraint=a100`).
+
+### IFT fix confirmed (job 7314583 — isolate_grad_path, A100)
+- Stage 1 d(apar)/d(alpha_sw):   JAX=2408.725, FD=2408.725, rel=1.18e-09 **PASS**
+- Stage 2 d(agross)/d(alpha_sw): JAX=21.707,   FD=21.707,   rel=1.76e-07 **PASS** ✅ (was 16.1% FAIL)
+- Stage 3 dGPP/d(alpha_sw):      JAX=10.701,   FD=10.701,   rel=3.68e-07 **PASS** ✅ (was 15.76% FAIL)
+
+Root cause of prior failure: WUE bisection (`_bisect_gs_jax`) differentiated incorrectly through
+`jax.lax.fori_loop` + `jnp.where`. Fixed by Newton-refinement IFT in `_bisect_gs_ift`.
+
+### Paper updates (JAXES.tex)
+- Exp 2 table: updated with confirmed PASS values (alpha_sw: rel=3.7e-07 PASS; alpha_tair: pending)
+- Exp 2 prose: added IFT derivation paragraph explaining the fix
+- alpha_tair result pending job 7315181
+
+### fd_grad_check script fixed
+- Old script used `.venv` + no `--constraint`; failed on non-A100 nodes
+- New script: `conda activate clm-ml-jax`, `--constraint=a100`, `CLM_ML_NO_CHECKPOINT=1`
+
 ## 2026-04-09 — IFT fix for WUE bisection gradient (session 17)
 
 **Status:** Newton-refinement IFT implemented. Jobs 7314582/7314583 pending on A100 to verify.
