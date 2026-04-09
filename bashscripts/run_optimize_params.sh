@@ -3,13 +3,13 @@
 #SBATCH --job-name=opt-params
 #SBATCH --output=logs/%j_optimize_params.out
 #SBATCH --error=logs/%j_optimize_params.err
-#SBATCH --time=08:00:00
+#SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --qos=hpc_test
+#SBATCH --partition=short
 #SBATCH --constraint=a100
 
 # Gradient-based parameter optimization for CLM-ML-JAX.
@@ -46,7 +46,7 @@ echo ""
 echo "=== Phase 1: vcmaxpft identifiability test (synthetic CHATS7 obs) ==="
 cd /burg-archive/home/al4385/clm-ml-jax/src
 CLM_ML_NO_CHECKPOINT=1 python ../diags/optimize_params.py \
-    --synthetic --vcmax-true 125.0 --n-steps 200
+    --synthetic --vcmax-true 125.0 --n-steps 100
 
 echo ""
 echo "=== run_optimize_params.sh complete ==="
