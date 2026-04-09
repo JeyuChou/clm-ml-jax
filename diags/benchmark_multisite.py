@@ -58,6 +58,11 @@ parser.add_argument(
     "--backend", choices=["gpu", "cpu", "both"], default="gpu",
     help="JAX backend to benchmark (default: gpu)",
 )
+parser.add_argument(
+    "--full-physics", action="store_true",
+    help="Use full RK4 physics (runge_kutta_type=41, dtime_ml=300s, 6 sub-steps x 4 RK stages). "
+         "Default is Euler (1 sub-step) as used by expt_init.",
+)
 args = parser.parse_args()
 N_LIST    = [int(x) for x in args.n_sites.split(",")]
 N_REPEATS = args.repeats
@@ -82,6 +87,20 @@ from diags.expt_init import (
 from multilayer_canopy.MLCanopyFluxesMod import MLCanopyFluxes
 
 print(f"Site ready: p={grid.p}, ncan={grid.ncan}", flush=True)
+
+# ── Physics settings ──────────────────────────────────────────────────────────
+# expt_init sets Euler (runge_kutta_type=10) after warmup for fast experiments.
+# --full-physics restores the production RK4 settings (41, dtime_ml=300s).
+from multilayer_canopy import MLclm_varctl as _varctl
+if args.full_physics:
+    _varctl.runge_kutta_type = 41
+    _varctl.dtime_ml         = 300.0
+    _varctl.nrk              = 4
+    print("Physics: FULL RK4  (runge_kutta_type=41, dtime_ml=300s, "
+          "6 sub-steps x 4 RK stages)", flush=True)
+else:
+    print("Physics: EULER     (runge_kutta_type=10, 1 sub-step, 0 RK stages)",
+          flush=True)
 
 # ── Single-site step (pure functional, diff_mode via grid=GridInfo) ────────────
 # Captures all CLM state in closure. Only mlcanopy_inst is the variable input.

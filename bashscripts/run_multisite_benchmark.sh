@@ -3,7 +3,7 @@
 #SBATCH --job-name=multisite-vmap
 #SBATCH --output=logs/%j_multisite_benchmark.out
 #SBATCH --error=logs/%j_multisite_benchmark.err
-#SBATCH --time=04:00:00
+#SBATCH --time=06:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -33,20 +33,22 @@ python -c "import jax; print('JAX devices:', jax.devices()); print('backend:', j
 # ── Move to project root ──────────────────────────────────────────────────────
 cd /burg-archive/home/al4385/clm-ml-jax
 
-# ── Run benchmark: GPU only, N = 1,2,4,8,16,32 ───────────────────────────────
+# ── Run benchmark: full RK4 physics, GPU + CPU, N = 1,2,4,8,16,32 ────────────
 echo ""
-echo "=== Multi-site vmap benchmark (GPU) ==="
-python diags/benchmark_multisite.py \
+echo "=== Multi-site vmap benchmark — FULL RK4 (GPU) ==="
+CLM_ML_NO_CHECKPOINT=1 python diags/benchmark_multisite.py \
     --n-sites 1,2,4,8,16,32 \
     --repeats 3 \
-    --backend gpu
+    --backend gpu \
+    --full-physics
 
 echo ""
-echo "=== Multi-site vmap benchmark (CPU) ==="
-python diags/benchmark_multisite.py \
+echo "=== Multi-site vmap benchmark — FULL RK4 (CPU) ==="
+CLM_ML_NO_CHECKPOINT=1 python diags/benchmark_multisite.py \
     --n-sites 1,2,4,8 \
     --repeats 2 \
-    --backend cpu
+    --backend cpu \
+    --full-physics
 
 echo ""
 echo "=== run_multisite_benchmark.sh complete ==="
