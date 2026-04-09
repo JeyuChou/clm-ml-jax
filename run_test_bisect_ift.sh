@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint=rtx8000
+#SBATCH --constraint=a100
 #SBATCH --account=glab
 
 nvidia-smi
