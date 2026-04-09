@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-04-09 — lax.scan over RK sub-steps (session 22)
+
+### lax.scan refactoring — COMPLETE (commit 68de426)
+
+**Goal:** Replace Python for-loop over ML sub-steps with `jax.lax.scan` in diff
+mode so XLA sees one dispatch instead of `num_ml_steps` separate traces, enabling
+better fusion and O(step_mem) backward memory via `jax.checkpoint`.
+
+**Changes in `src/multilayer_canopy/MLCanopyFluxesMod.py`:**
+- `nstep_ml = 0` initialised before `_physics_step_fn` (closure fix for diff mode)
+- DIFF MODE: builds `_calday_arr` (pre-computed calday per sub-step), runs
+  `jax.lax.scan(_scan_body_fn, mlcanopy_inst, _calday_arr)` with optional
+  `jax.checkpoint` (disabled by `CLM_ML_NO_CHECKPOINT=1`)
+- NON-DIFF MODE: Python loop calls new `_MLAccumulateFluxes` per step then
+  `_MLScaleAndWriteBack` once after the loop
+- `_MLAccumulateFluxes` and `_MLScaleAndWriteBack` added (split from old function)
+- `_MLTimeStepFluxIntegration` removed (replaced by two-function split)
+
+**Why split matters:** `_MLAccumulateFluxes` has no Python conditionals on
+`nstep_ml`, and `ncan_vals` is pre-computed (no D→H syncs). This is a prerequisite
+for future `lax.fori_loop` usage once all non-diff mode physics are XLA-traceable.
+
+**Diff mode works because:**
+- All physics in diff mode (grid ≠ None) are JAX-traceable
+- `TimeInterpolation3` already uses `jnp.where` for traced `calday_ml`
+- `CanopyTurbulence` in diff mode calls `_HF2008_diff` which ignores `nstep_ml`
+
+**Non-diff mode unchanged in correctness:** accumulators zero-initialised by
+`jnp.zeros` before loop; no reinit needed inside loop.
+
+---
+
 ## 2026-04-09 — Fortran baseline timing + full-physics vmap benchmark (session 20)
 
 ### Fortran CLM-ml-v2 timing (CONFIRMED, Exp 5b)
