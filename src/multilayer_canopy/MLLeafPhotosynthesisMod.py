@@ -1519,45 +1519,46 @@ def _bisect_gs_jax(gsmin, gs_upper, se_kwargs, n_iter=20):
 
 
 def _bisect_gs_ift(gsmin, gs_upper, se_kwargs, n_iter=20):
-    """Bisection root-finder with IFT-based VJP via jax.lax.custom_root.
+    """Bisection root-finder with IFT-based gradient via Newton refinement.
 
-    Uses the Implicit Function Theorem for the backward pass:
+    Uses the Implicit Function Theorem for the backward pass instead of
+    differentiating through bisection iterations (which gives wrong gradients
+    due to discrete jnp.where branch selections):
+
         d(gs*)/d(theta) = -(df/dtheta) / (df/dgs)  at gs*
-    instead of differentiating through bisection iterations (which gives
-    wrong gradients due to discrete jnp.where branch selections).
+
+    Implementation — Newton refinement identity:
+        gs_ift = gs0 - f(gs0; theta) / stop_grad(df/dgs)
+
+    where gs0 = stop_gradient(bisection result).
+
+    - Forward: f(gs0) ≈ 0  ⟹  gs_ift ≈ gs0 = gs*  (correct root value)
+    - Backward: d(gs_ift)/d(theta) = -∂f/∂theta / stop_grad(df/dgs) = IFT  ✓
+
+    Avoids jax.lax.custom_root (which has version-dependent API for
+    tangent_solve argument type).
     """
-    gsmin_j     = jnp.asarray(gsmin,    dtype=jnp.float64)
-    gs_upper_j  = jnp.asarray(gs_upper, dtype=jnp.float64)
+    # Forward: find root via bisection (gradient through bisection is wrong)
+    gs_opt = _bisect_gs_jax(gsmin, gs_upper, se_kwargs, n_iter)
+    gs0 = jax.lax.stop_gradient(gs_opt)   # stop bisection gradient
 
-    def residual(gs):
-        return _StomataEfficiencyJax(gs, **se_kwargs)
+    # Residual at gs0: gradient through se_kwargs flows here (correct IFT gradient)
+    f0 = _StomataEfficiencyJax(gs0, **se_kwargs)
 
-    def bisect_solve(f, init):
-        fa = f(gsmin_j)
-        fb = f(gs_upper_j)
-        bracket_ok = fa * fb < 0.0
+    # df/dgs at gs0: forward-difference, gradients stopped (denominator only)
+    _delta = jnp.asarray(1e-4, dtype=gs0.dtype)
+    df_dgs = jax.lax.stop_gradient(
+        (_StomataEfficiencyJax(gs0 + _delta, **se_kwargs)
+         - _StomataEfficiencyJax(gs0 - _delta, **se_kwargs))
+        / (2.0 * _delta)
+    )
+    _eps = jnp.asarray(1e-15, dtype=gs0.dtype)
+    safe_denom = jnp.where(jnp.abs(df_dgs) > _eps, df_dgs, _eps)
 
-        def body(_, carry):
-            a, b, f_a = carry
-            mid = 0.5 * (a + b)
-            f_mid = f(mid)
-            same_sign = f_a * f_mid > 0.0
-            new_a  = jnp.where(same_sign, mid, a)
-            new_b  = jnp.where(same_sign, b,   mid)
-            new_fa = jnp.where(same_sign, f_mid, f_a)
-            return (new_a, new_b, new_fa)
-
-        a0, b0, _ = jax.lax.fori_loop(0, n_iter, body, (gsmin_j, gs_upper_j, fa))
-        return jnp.where(bracket_ok, 0.5 * (a0 + b0), gsmin_j)
-
-    def tangent_solve(g, y):
-        """Solve (df/dgs) * x = g  ⟹  x = g / (df/dgs)."""
-        df_dgs = jax.grad(residual)(y)
-        _eps = jnp.asarray(1e-15, dtype=df_dgs.dtype)
-        safe_denom = jnp.where(jnp.abs(df_dgs) > _eps, df_dgs, _eps)
-        return g / safe_denom
-
-    return jax.lax.custom_root(residual, gsmin_j, bisect_solve, tangent_solve)
+    # gs_ift = gs0 - f0 / safe_denom
+    # Forward: gs0 - ~0 = gs0 = gs*  ✓
+    # Backward: -∂f/∂theta / safe_denom = IFT  ✓
+    return gs0 - f0 / safe_denom
 
 
 @functools.lru_cache(maxsize=None)
