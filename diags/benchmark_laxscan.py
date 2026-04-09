@@ -165,7 +165,8 @@ def _section(title, rk_type, dtime_ml, nrk):
 
 
 # ── Run benchmarks ────────────────────────────────────────────────────────────
-print("\n=== Benchmark: Euler (1 sub-step) ===", flush=True)
+# Euler result already known (207× speedup) — run again for grad check, then RK4.
+print("\n=== Benchmark: Euler (1 sub-step) — grad check ===", flush=True)
 _section("EULER — 1 sub-step, 0 RK stages", rk_type=10, dtime_ml=float(_ctl.dtime_ml), nrk=0)
 
 print("\n=== Benchmark: Full RK4 (6 sub-steps × 4 RK stages) ===", flush=True)
