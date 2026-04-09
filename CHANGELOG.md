@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-04-09 — lax.scan benchmark results (session 22 / job 7329052)
+
+### Benchmark: lax.scan diff mode vs Python loop non-diff mode (A100 GPU)
+
+**Euler physics (1 sub-step, 0 RK stages):**
+
+| Mode | Steady-state time | Speedup |
+|---|---|---|
+| Diff mode — lax.scan | 30.6 ms | — |
+| Non-diff — Python for-loop | 6,339 ms | **207×** |
+
+**Correctness (Euler):**
+- diff mode loss = −2903.8322; non-diff sum(shair+etair) = −2903.8322 ✓ (5 sig figs)
+- diff loss is finite ✓
+
+**Full RK4 results:** pending job 7329441 (resubmitted with fixed gradient check).
+
+### Why 207× speedup?
+- Non-diff mode: Python loop issues **one GPU dispatch per sub-step** (and in Euler,
+  even 1 sub-step costs 6.3s because each call re-triggers Python→XLA overhead for
+  every `jnp.` operation in the physics chain).
+- Diff mode (lax.scan): XLA sees the entire loop as **one fused kernel**; compiles
+  once (290s), then runs in 30.6 ms.
+- lax.scan also enables `jax.checkpoint` for O(step_mem) backward memory.
+
+### Files
+- `diags/benchmark_laxscan.py` — benchmark script
+- `bashscripts/run_laxscan_benchmark.sh` — SLURM job script
+
+---
+
+## 2026-04-09 — Session 23: gradient check jobs, optimize_params submission
+
+### Fixes committed
+- `diags/benchmark_laxscan.py` (commit 9054134): fixed gradient check kwargs filter.
+  Now only filters `atm2lnd_inst` and `wateratm2lndbulk_inst` (keeps `grid`+`_o2ref_py`).
+  Previous version removed `grid` and `_o2ref_py` causing MLCanopyFluxes to fail.
+
+### Jobs running
+- 7329012: fd_grad_check — running (verifying bracket_ok fix, dGPP/d(alpha_sw) + dGPP/d(alpha_tref))
+- 7329322: param_sensitivity — running (vcmax25 JAX grad finiteness check)
+- 7329437: opt-params — pending (200-step Adam optimization, vcmaxpft identifiability test)
+- 7328915: multisite-vmap full RK4 — running 90+ min (full RK4 JIT compile is very slow)
+
+### SLURM fix
+- `bashscripts/run_optimize_params.sh`: reduced `--time` from 8h to 2h, removed `--qos=hpc_test`
+  (hpc_test has 2h wall limit), added `--partition=short` for longer jobs.
+
+---
+
 ## 2026-04-09 — Optimization experiment implementation (session 22, continued)
 
 ### Files created (all committed to `differentiable-physics`)
