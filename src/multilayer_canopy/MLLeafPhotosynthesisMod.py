@@ -1495,7 +1495,12 @@ def _StomataEfficiencyJax(
 
 
 def _bisect_gs_jax(gsmin, gs_upper, se_kwargs, n_iter=20):
-    """JAX-traceable bisection for stomatal optimization via fori_loop."""
+    """JAX-traceable bisection for stomatal optimization via fori_loop.
+
+    Returns (gs_opt, bracket_ok) where bracket_ok=True means a sign change
+    was found and gs_opt is near the root; bracket_ok=False means no root
+    exists and gs_opt=gsmin.
+    """
     fa = _StomataEfficiencyJax(gsmin, **se_kwargs)
     fb = _StomataEfficiencyJax(gs_upper, **se_kwargs)
 
@@ -1515,7 +1520,7 @@ def _bisect_gs_jax(gsmin, gs_upper, se_kwargs, n_iter=20):
 
     a0, b0, fa0 = jax.lax.fori_loop(0, n_iter, body, (gsmin, gs_upper, fa))
     gs_opt = jnp.where(bracket_ok, 0.5 * (a0 + b0), gsmin)
-    return gs_opt
+    return gs_opt, bracket_ok
 
 
 def _bisect_gs_ift(gsmin, gs_upper, se_kwargs, n_iter=20):
@@ -1539,29 +1544,33 @@ def _bisect_gs_ift(gsmin, gs_upper, se_kwargs, n_iter=20):
     tangent_solve argument type).
     """
     # Forward: find root via bisection (gradient through bisection is wrong)
-    gs_opt = _bisect_gs_jax(gsmin, gs_upper, se_kwargs, n_iter)
+    gs_opt, bracket_ok = _bisect_gs_jax(gsmin, gs_upper, se_kwargs, n_iter)
     gs0 = jax.lax.stop_gradient(gs_opt)   # stop bisection gradient
 
     # Residual at gs0: gradient through se_kwargs flows here (correct IFT gradient)
     f0 = _StomataEfficiencyJax(gs0, **se_kwargs)
 
-    # df/dgs at gs0: forward-difference, gradients stopped (denominator only)
+    # df/dgs at gs0: central finite difference, gradients stopped (denominator only)
     _delta = jnp.asarray(1e-4, dtype=gs0.dtype)
     df_dgs = jax.lax.stop_gradient(
         (_StomataEfficiencyJax(gs0 + _delta, **se_kwargs)
          - _StomataEfficiencyJax(gs0 - _delta, **se_kwargs))
         / (2.0 * _delta)
     )
-    # Degenerate-root guard: when |df/dgs| < eps the IFT is undefined
-    # (the efficiency function is flat — typically inactive/dark canopy layers).
-    # Zero out the Newton correction term so those layers contribute zero
-    # gradient instead of 1 / near-zero blow-up.
-    # Forward: gs_ift = gs0 - 0/1 = gs0 (correct; f0 ≈ 0 at bisection root)
-    # Backward: d(gs_ift)/dθ = -d(0)/dθ / 1 = 0  (safe)
-    _eps = jnp.asarray(1e-6, dtype=gs0.dtype)
-    is_valid = jnp.abs(df_dgs) > _eps
-    safe_f0    = jnp.where(is_valid, f0,     jnp.zeros_like(f0))
-    safe_denom = jnp.where(is_valid, df_dgs, jnp.ones_like(df_dgs))
+
+    # Apply Newton refinement only when:
+    #   (a) bracket_ok=True: bisection found a root, so f(gs0) ≈ 0 and the
+    #       Newton step is a small correction, not a catastrophic extrapolation.
+    #       When bracket_ok=False (dark/no-root layers), f(gsmin) can be O(0.01),
+    #       making gs_ift = gsmin - f/df blow up far from gsmin.
+    #   (b) |df/dgs| > eps: the IFT is well-defined (non-degenerate root).
+    #
+    # Forward: safe_f0/safe_denom = 0/1 = 0  →  gs_ift = gs0  ✓
+    # Backward: d(gs_ift)/dθ = 0  (zero gradient for no-root / degenerate layers) ✓
+    _eps  = jnp.asarray(1e-6, dtype=gs0.dtype)
+    apply = bracket_ok & (jnp.abs(df_dgs) > _eps)
+    safe_f0    = jnp.where(apply, f0,     jnp.zeros_like(f0))
+    safe_denom = jnp.where(apply, df_dgs, jnp.ones_like(df_dgs))
 
     # gs_ift = gs0 - f0 / safe_denom
     # Forward: gs0 - ~0 = gs0 = gs*  ✓
