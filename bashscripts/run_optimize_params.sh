@@ -44,11 +44,9 @@ cd /burg-archive/home/al4385/clm-ml-jax
 # ── Run optimization: synthetic case (vcmaxpft recovery) ──────────────────────
 echo ""
 echo "=== Phase 1: vcmaxpft identifiability test (synthetic CHATS7 obs) ==="
-CLM_ML_NO_CHECKPOINT=1 python -c "
-import sys; sys.path.insert(0, 'src')
-sys.argv = ['optimize_params.py', '--synthetic', '--vcmax-true', '125.0', '--n-steps', '200']
-exec(open('diags/optimize_params.py').read())
-" -- --synthetic --vcmax-true 125.0 --n-steps 200
+cd /burg-archive/home/al4385/clm-ml-jax/src
+CLM_ML_NO_CHECKPOINT=1 python ../diags/optimize_params.py \
+    --synthetic --vcmax-true 125.0 --n-steps 200
 
 echo ""
 echo "=== run_optimize_params.sh complete ==="

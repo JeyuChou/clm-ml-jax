@@ -43,10 +43,8 @@ cd /burg-archive/home/al4385/clm-ml-jax
 # ── Run parameter sensitivity analysis ───────────────────────────────────────
 echo ""
 echo "=== Parameter sensitivity analysis (CHATS7, Euler 1 sub-step) ==="
-CLM_ML_NO_CHECKPOINT=1 python -c "
-import sys; sys.path.insert(0, 'src')
-exec(open('diags/param_sensitivity.py').read())
-"
+cd /burg-archive/home/al4385/clm-ml-jax/src
+CLM_ML_NO_CHECKPOINT=1 python ../diags/param_sensitivity.py
 
 echo ""
 echo "=== run_param_sensitivity.sh complete ==="
