@@ -2,7 +2,19 @@
 
 ## 2026-04-09 — Multi-site vmap benchmark (session 18)
 
-**Status:** Benchmark script and SLURM job created. Job pending on A100.
+**Status:** Benchmark script and SLURM job created. Job 7315861 pending on A100.
+
+### fd_grad_check results (job 7315181, A100): MIXED
+- dGPP/d(alpha_sw):   JAX=1.070e+01, FD=1.070e+01, rel=3.68e-07 **PASS** ✓
+- dGPP/d(alpha_tref): JAX=6.575e+144, FD=-4.869e+01, rel=1.35e+143 **FAIL** — gradient explosion
+
+**alpha_tref explosion root cause (hypothesis):** IFT `safe_denom` clamp.
+When temperature changes, the stomatal efficiency function f(gs) may be nearly
+flat w.r.t. gs (df/dgs ≈ 0). The `safe_denom = jnp.where(|df/dgs| > 1e-15, df/dgs, 1e-15)`
+then uses 1e-15 as denominator. The IFT gradient -(∂f/∂T) / 1e-15 explodes.
+This is a NEW issue introduced by the IFT fix — alpha_sw is unaffected because
+its gradient path keeps df/dgs well-conditioned.
+**Next step:** diagnose and fix the denominator clamping strategy for alpha_tref.
 
 ### Plan
 Root cause of JAX slowdown vs Fortran: single-column model = ~0% GPU occupancy.
