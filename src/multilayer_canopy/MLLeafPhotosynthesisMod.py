@@ -1552,13 +1552,21 @@ def _bisect_gs_ift(gsmin, gs_upper, se_kwargs, n_iter=20):
          - _StomataEfficiencyJax(gs0 - _delta, **se_kwargs))
         / (2.0 * _delta)
     )
-    _eps = jnp.asarray(1e-15, dtype=gs0.dtype)
-    safe_denom = jnp.where(jnp.abs(df_dgs) > _eps, df_dgs, _eps)
+    # Degenerate-root guard: when |df/dgs| < eps the IFT is undefined
+    # (the efficiency function is flat — typically inactive/dark canopy layers).
+    # Zero out the Newton correction term so those layers contribute zero
+    # gradient instead of 1 / near-zero blow-up.
+    # Forward: gs_ift = gs0 - 0/1 = gs0 (correct; f0 ≈ 0 at bisection root)
+    # Backward: d(gs_ift)/dθ = -d(0)/dθ / 1 = 0  (safe)
+    _eps = jnp.asarray(1e-6, dtype=gs0.dtype)
+    is_valid = jnp.abs(df_dgs) > _eps
+    safe_f0    = jnp.where(is_valid, f0,     jnp.zeros_like(f0))
+    safe_denom = jnp.where(is_valid, df_dgs, jnp.ones_like(df_dgs))
 
     # gs_ift = gs0 - f0 / safe_denom
     # Forward: gs0 - ~0 = gs0 = gs*  ✓
     # Backward: -∂f/∂theta / safe_denom = IFT  ✓
-    return gs0 - f0 / safe_denom
+    return gs0 - safe_f0 / safe_denom
 
 
 @functools.lru_cache(maxsize=None)
