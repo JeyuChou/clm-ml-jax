@@ -1,5 +1,213 @@
 # Changelog
 
+## 2026-04-08 — Gradient isolation: custom_vjp ruled out, photosynthesis kernel test running (session 15)
+
+**Status:** grad_mode_comparison (job 7314294) COMPLETE. custom_vjp in tridiag_2eq is NOT the bug.
+Two isolation jobs running: 7314377 (stage-by-stage apar→agross→GPP), 7314396 (kernel-direct grad test).
+
+### Key results from grad_mode_comparison (job 7314294)
+
+Both flux_profile_type=1 (custom_vjp ACTIVE) and flux_profile_type=0 (custom_vjp ABSENT) give:
+- alpha_sw: rel_err=1.129e-01 (11.3%)
+- alpha_tair: rel_err=7.016e-01 (70.2%)
+
+**Conclusion: custom_vjp in tridiag_2eq/ImplicitFluxProfileSolution is NOT the root cause.**
+
+Caveat: mode=0 likely uses stale JIT cache from mode=1 (flux_profile_type is Python module var,
+not a JAX static arg). But the mode=1 result alone is conclusive: bug exists even in the single
+Euler step where agross_leaf is set by LeafPhotosynthesis BEFORE FluxProfileSolution runs.
+Therefore tridiag_2eq is NOT in the gradient path for d(agross)/d(alpha_sw).
+
+### Gradient path analysis
+
+In a single Euler step (num_ml_steps=1, nrk_steps=0):
+```
+alpha_sw → forc_solad → swskyb_cur → swskyb_forcing
+         → SolarRadiation → apar_leaf (depends linearly on alpha)
+         → LeafPhotosynthesis → agross_leaf
+         → FluxProfileSolution  [runs AFTER LeafPhoto, does NOT affect agross]
+         → compute_gpp → GPP
+```
+- `fracsun_profile` does NOT depend on alpha_sw (only canopy geometry)
+- `CanopyTurbulence (_HF2008_diff)` does NOT read rnleaf_leaf or depend on alpha_sw
+- `tridiag_2eq` in FluxProfileSolution NOT in gradient path
+
+### New diagnostics running
+
+1. **isolate_grad_path.py** (job 7314377, CLM_ML_NO_CHECKPOINT=1):
+   - Stage 1: d(sum(apar_leaf))/d(alpha_sw) — should = sum(apar) if solar radiation gradient correct
+   - Stage 2: d(sum(agross_leaf))/d(alpha_sw) — isolates photosynthesis gradient
+   - Stage 3: d(GPP)/d(alpha_sw) — should reproduce 9.008 vs 10.693 discrepancy
+
+2. **test_photo_kernel_grad.py** (job 7314396, CLM_ML_NO_CHECKPOINT=1):
+   - Calls vmapped photosynthesis kernel DIRECTLY with baseline leaf data
+   - Tests d(sum(agross))/d(apar_scale) at the kernel level
+   - If PASS: bug is in data flow (MLCanopyFluxes level), not in kernel
+   - If FAIL: bug is inside the photosynthesis kernel
+
+### JAX version: 0.9.2
+
+---
+
+## 2026-04-08 — Gradient diagnostic: jacfwd ruled out, flux_profile_type=0 test queued (session 14 cont.)
+
+**Status:** job 7314173 (grad_mode_comparison) failed with TypeError. jacfwd impossible.
+Next: rerun with flux_profile_type=0 vs 1 comparison (job TBD).
+
+### jacfwd is impossible through custom_vjp (JAX limitation)
+
+Attempted `jax.jvp(forward_gpp_sw, ...)` to bypass `custom_vjp` in `ImplicitFluxProfileSolution`
+and compare forward-mode gradient vs FD. JAX raised:
+
+```
+TypeError: can't apply forward-mode autodiff (jvp) to a custom_vjp function.
+```
+
+This is a hard JAX constraint — `custom_vjp` functions block all forward-mode AD.
+The `jacfwd` diagnostic strategy is ruled out entirely.
+
+### New diagnostic plan: flux_profile_type=0 vs 1
+
+The only remaining isolation test: switch `MLclm_varctl.flux_profile_type = 0` (well-mixed
+turbulence, no iterative solver, no `custom_vjp`) and compare `jax.grad` vs FD.
+
+- If `jacrev ≈ FD` at `flux_profile_type=0` but `jacrev ≠ FD` at `flux_profile_type=1`
+  → `custom_vjp` in `ImplicitFluxProfileSolution` is the confirmed bug.
+- If `jacrev ≠ FD` at both modes → bug is elsewhere (NaN gradients, stop_gradient, etc.).
+
+`grad_mode_comparison.py` rewritten to:
+- Drop jacfwd (crashes)
+- Test both flux_profile_type=0 and 1
+- FD at 5 epsilons per mode
+- Print automated conclusion
+
+---
+
+## 2026-04-08 — Paper experiments: job results + gradient discrepancy diagnosis (session 14)
+
+**Status:** Jobs 7312754/55/56 completed. Gradients non-zero (3-layer fix confirmed working).
+New finding: 4th zero-gradient layer (Vcmax25/dpai overwritten by physics). Gradient accuracy
+test fails — suspected cause: incorrect `custom_vjp` in `ImplicitFluxProfileSolution`.
+
+### Experiment results (jobs 7312754/55/56)
+
+**Exp 2 — Gradient correctness (fd_grad_check, job 7312754): FAIL**
+```
+dGPP/d(alpha_sw)   JAX=9.008e+00   FD=1.069e+01   rel_error=15.8%   FAIL
+dGPP/d(alpha_tair) JAX=-8.559e+01  FD=-4.869e+01  rel_error=75.8%   FAIL
+```
+- Gradients are **non-zero** — the 3-layer fix (compute_gpp via agross_leaf + atm2lnd_inst scaling) worked.
+- Signs are physically correct (+SW→GPP, +Tair→-GPP at high T).
+- BUT JAX and FD disagree significantly; fails <1% criterion.
+- Suspected root cause: `ImplicitFluxProfileSolution` uses `custom_vjp`. If the custom adjoint
+  is incorrect/approximate, `jax.grad` gives wrong values while FD (evaluating forward function
+  directly) gives the right answer. Temperature shows larger discrepancy (76%) because alpha_tair
+  gradient path passes through the turbulence solver more heavily than alpha_sw (15%).
+- **Not yet investigated.** Three diagnostics to run:
+  1. FD at multiple epsilons — confirm FD is stable (rules out nonlinearity / wrong eps)
+  2. Switch `flux_profile_type=0` (no implicit solver, no custom_vjp) — if JAX≈FD, custom_vjp is culprit
+  3. Compare `jacfwd` vs `jacrev` vs FD — `jacfwd` bypasses custom_vjp; if jacfwd≈FD≠jacrev, confirmed
+
+**Exp 3 — Jacobian sensitivity (sensitivity_analysis, job 7312755): COMPLETED**
+```
+Raw Jacobian J[output, param]:
+               Vcmax25      T_air     SW_rad   q_humidity      dpai
+GPP           0.000e+00  -8.559e+01  9.008e+00  -2.701e-01   0.000e+00
+H (top)       0.000e+00   3.005e+04 -2.131e+00   9.530e+01   0.000e+00
+LE (top)      0.000e+00  -5.842e-02  5.464e-06  -2.729e-04   0.000e+00
+```
+- Non-zero gradients for T_air, SW_rad, q_humidity — working.
+- Vcmax25 and dpai (LAI) are **still zero** — see 4th zero-gradient layer below.
+- Timing: jacrev=1094.8s vs FD estimate ~118.1s (single fwd=11.8s × 10 evaluations).
+  jacrev is ~9× SLOWER than FD because backward pass through custom_vjp is expensive.
+  (This is the opposite of the claimed speedup — revise paper framing.)
+
+**Exp 4 — Calibration demo (calibration_demo, job 7312756): COMPLETED**
+```
+Method              Final alpha   |error|    Final loss   N evals  Wall time
+Adam (grad-based)   1.000760      7.60e-4    6.92e-8       100      1548s
+Nelder-Mead         1.000000      0.000000   4.94e-16       42      465s
+```
+- Both methods recover alpha_sw=1.0 from 0.7 perturbation.
+- Nelder-Mead converges to machine precision in 42 evals; Adam reaches only 7.6e-4 error in 100 evals.
+- For this 1D problem, gradient-free Nelder-Mead outperforms Adam. The gradient-based advantage
+  appears at higher dimensionality (O(p) evals for gradient vs O(2p) for FD-based gradient-free).
+  Paper should clarify this caveat.
+
+### 4th zero-gradient layer: Vcmax25 and dpai recomputed inside physics
+
+Even after all 3 previous fixes, Vcmax25 and dpai show zero Jacobian entries. Root cause:
+
+- **`vcmax25_profile` / `vcmax25_leaf`**: recomputed from scratch every call by `CanopyNitrogenProfile`
+  (called at line 524 of `MLCanopyFluxesMod.py` inside `_physics_step_fn`). The value comes from
+  `MLpftcon.vcmaxpft[pft]` — a fixed PFT lookup constant — not from the `mlcanopy_inst` field.
+  Scaling `vcmax25_profile` in `modified_ml` has zero effect; it's immediately overwritten.
+
+- **`dpai_profile`**: recomputed in `MLCanopyFluxes.__init__` (lines 388-394) from
+  `dlai_frac_profile * elai_patch` where `elai_patch` comes from `canopystate_inst`. Scaling
+  `dpai_profile` in `modified_ml` is overwritten before the physics runs.
+
+To get non-zero Vcmax25 gradient: need to scale `MLpftcon.vcmaxpft` (global) or pass a scale
+factor into `CanopyNitrogenProfile` as a traced argument. This requires modifying `_physics_step_fn`.
+Not attempted yet.
+
+### Script label fix needed
+`sensitivity_analysis.py` docstring and print statement say "jacfwd" but code uses `jax.jacrev`.
+Labels need updating (edit was not applied this session).
+
+---
+
+## 2026-04-08 — Paper experiments: diagnose zero-gradient root cause (session 13)
+
+**Status:** Root cause fully traced (3 layers deep). Jobs 7312754/55/56 resubmitted. Waiting on results.
+
+### Zero gradient diagnosis
+
+Exp 2–4 scripts were getting gradient = 0 for all outputs. Root cause identified in two parts:
+
+**Part A — Radiation overwrite bug:**
+`MLCanopyFluxes.__init__` (lines 910-921) overwrites `swskyb_cur_forcing` and `swskyd_cur_forcing`
+from `atm2lnd_inst.forc_solad_downscaled_col` and `forc_solai_grc`. Similarly, `tref_cur_forcing`
+is overwritten from `atm2lnd_inst.forc_t_downscaled_col`, and `qref_cur_forcing` from
+`wateratm2lndbulk_inst.forc_q_downscaled_col`. Scaling fields in `mlcanopy_inst` has NO effect
+because they are immediately overwritten in the `for fp in range(...)` loop.
+
+**Fix:** All experiment scripts now scale `atm2lnd_inst` and `wateratm2lndbulk_inst` directly
+(using `._replace(forc_solad_downscaled_col=alpha*...)`) and pass them as traced arguments
+to `MLCanopyFluxes`. `_mlcf_kwargs_no_atm` excludes `atm2lnd_inst` / `wateratm2lndbulk_inst`
+so they can be passed as separate traced args.
+
+**Part B — Physical light-limitation:**
+`dGPP/d(alpha_vcmax25) ≈ 0` is physically correct: CHATS7 walnut orchard at noon in May
+is strongly light-limited (Aj < Ac for all layers), so Vcmax25 doesn't limit GPP.
+
+### Sensitivity analysis result (job 7312602 — COMPLETED with wrong forward fn)
+All Jacobian entries near zero because of Part A above. Needs re-run with fixed forward_multi.
+
+### Third zero-gradient layer: diff-mode skips CanopyFluxesDiagnostics
+
+`MLCanopyFluxes` sets `_diff_mode = grid is not None` (line 242). In diff mode, `_CanopyFluxesDiagnostics`
+is SKIPPED (`if not _diff_mode`, line 644). This function is the ONLY place that sets `gppveg_canopy`.
+So `gppveg_canopy` is always stale (pre-step value) when called from our gradient experiments (which
+always pass `grid`).
+
+`agross_leaf` IS updated by `LeafPhotosynthesis` inside `_physics_step_fn` (which always runs).
+
+**Fix:** Added `compute_gpp(inst, p, ncan)` helper in `expt_init.py` that reads `agross_leaf` and
+computes the fracsun/dpai-weighted sum — exactly what `_CanopyFluxesDiagnostics` does but without
+the Python-level flux accumulator.
+
+### Scripts updated
+- `diags/expt_init.py`: exports `atm2lnd_inst`, `wateratm2lndbulk_inst`, `isun`, `isha`, `compute_gpp`
+- `diags/sensitivity_analysis.py`: forward_multi scales atm2lnd_inst; uses compute_gpp; output [GPP, H_top, LE_top]
+- `diags/fd_grad_check.py`: tests dGPP/d(alpha_sw) and dGPP/d(alpha_tref) via atm2lnd_inst + compute_gpp
+- `diags/calibration_demo.py`: calibrates alpha_sw via atm2lnd_inst + compute_gpp
+
+### Oracle validation updated to 31-day run
+Table 1 and all paper metric strings updated to 1488 timesteps (31 days). H RMSE=0.063, GPP exact.
+
+---
+
 ## 2026-04-06 — Fix NaN gradients for differentiability (session 12)
 
 **Status:** COMPLETE. All gradients finite. Validated on GPU (V100S).
