@@ -33,6 +33,7 @@ from multilayer_canopy.MLLeafPhotosynthesisMod import (
     _ft, _fth,
 )
 from multilayer_canopy.MLpftconMod import MLpftcon
+from clm_src_main.PatchType import patch
 from multilayer_canopy.MLMathToolsMod import quadratic
 from multilayer_canopy.MLWaterVaporMod import SatVap_py
 import numpy as np
@@ -68,7 +69,7 @@ eair    = float(mlcanopy_inst.eair_profile[_p, ic])
 o2ref   = float(mlcanopy_inst.o2ref_forcing[_p])
 pref    = float(mlcanopy_inst.pref_forcing[_p])
 
-pft_idx   = int(mlcanopy_inst.pft_canopy[_p])
+pft_idx   = int(patch.itype[_p])
 iota_pft  = float(np.asarray(MLpftcon.iota_SPA)[pft_idx])
 gsmin_pft = float(np.asarray(MLpftcon.gsmin_SPA)[pft_idx])
 

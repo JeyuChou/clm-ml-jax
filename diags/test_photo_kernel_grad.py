@@ -40,6 +40,7 @@ from multilayer_canopy.MLclm_varcon import (
 )
 from clm_src_main.pftconMod import pftcon as _pftcon
 from multilayer_canopy.MLpftconMod import MLpftcon as _MLpftcon
+from clm_src_main.PatchType import patch
 import numpy as np
 
 _p    = grid.p
@@ -56,7 +57,7 @@ print("="*70)
 _sl = slice(1, _ncan + 1)
 
 # PFT for patch p
-pft_idx = int(mlcanopy_inst.pft_canopy[_p])
+pft_idx = int(patch.itype[_p])
 
 # Photosynthesis parameters (acclim_type==0: module-level constants)
 vcmaxha    = vcmaxha_noacclim

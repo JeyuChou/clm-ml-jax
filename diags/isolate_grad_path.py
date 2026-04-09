@@ -42,8 +42,11 @@ def forward_apar_sum(alpha: jnp.ndarray) -> jnp.ndarray:
         wateratm2lndbulk_inst=wateratm2lndbulk_inst,
         **_mlcf_kwargs_no_atm,
     )
-    # Return sum of apar_leaf across all layers and valid leaf types (isun, isha)
-    return jnp.sum(inst.apar_leaf[_p, 1:grid.ncan+1, isun:isha+1])
+    # Use dpai-weighted sum to mask inactive layers (dpai=0 → no spval contamination)
+    # Inactive layers have spval=1e36 in apar_leaf; plain sum causes FD cancellation
+    dpai = inst.dpai_profile[_p, 1:grid.ncan+1]  # shape [ncan], 0 for inactive
+    apar = inst.apar_leaf[_p, 1:grid.ncan+1, isun:isha+1]  # shape [ncan, 2]
+    return jnp.sum(dpai[:, None] * apar)
 
 t0 = time.time()
 jax_grad_apar = float(jax.jit(jax.grad(forward_apar_sum))(jnp.float64(1.0)))
@@ -75,8 +78,10 @@ def forward_agross_sum(alpha: jnp.ndarray) -> jnp.ndarray:
         wateratm2lndbulk_inst=wateratm2lndbulk_inst,
         **_mlcf_kwargs_no_atm,
     )
-    # sum over all layers and valid leaf types (isun, isha)
-    return jnp.sum(inst.agross_leaf[_p, 1:grid.ncan+1, isun:isha+1])
+    # Use dpai-weighted sum to mask inactive layers (same reason as Stage 1)
+    dpai = inst.dpai_profile[_p, 1:grid.ncan+1]
+    agross = inst.agross_leaf[_p, 1:grid.ncan+1, isun:isha+1]
+    return jnp.sum(dpai[:, None] * agross)
 
 t0 = time.time()
 jax_grad_agross = float(jax.jit(jax.grad(forward_agross_sum))(jnp.float64(1.0)))
@@ -128,8 +133,11 @@ inst0 = MLCanopyFluxes(
     wateratm2lndbulk_inst=wateratm2lndbulk_inst,
     **_mlcf_kwargs_no_atm,
 )
-print(f"apar_leaf[p, 1:5, isun] = {inst0.apar_leaf[_p, 1:5, isun]}")
-print(f"agross_leaf[p, 1:5, isun] = {inst0.agross_leaf[_p, 1:5, isun]}")
+dpai0 = inst0.dpai_profile[_p, 1:5]
+print(f"dpai_profile[p, 1:5] = {dpai0}")
+print(f"apar_leaf[p, 1:5, isun] (raw) = {inst0.apar_leaf[_p, 1:5, isun]}")
+print(f"apar_leaf[p, 1:5, isun] (dpai-masked) = {dpai0 * inst0.apar_leaf[_p, 1:5, isun]}")
+print(f"agross_leaf[p, 1:5, isun] (raw) = {inst0.agross_leaf[_p, 1:5, isun]}")
 print(f"fracsun_profile[p, 1:5] = {inst0.fracsun_profile[_p, 1:5]}")
 print(f"dpai_profile[p, 1:5] = {inst0.dpai_profile[_p, 1:5]}")
 print(f"GPP = {float(compute_gpp(inst0, _p, grid.ncan)):.4f}", flush=True)

@@ -37,6 +37,7 @@ from clm_src_main.clm_varcon import tfrz
 from multilayer_canopy.MLclm_varcon import rgas
 from multilayer_canopy.MLLeafPhotosynthesisMod import _fth25_py
 from multilayer_canopy.MLpftconMod import MLpftcon
+from clm_src_main.PatchType import patch
 from multilayer_canopy.MLMathToolsMod import quadratic
 from multilayer_canopy.MLWaterVaporMod import SatVap_py
 from multilayer_canopy.MLclm_varcon import dh2o_to_dco2, vpd_min_MED
@@ -71,7 +72,7 @@ print(f"\nLayer ic={ic}, il=isun")
 print(f"  tleaf={tleaf:.2f}K, vcmax25={vcmax25:.2f}, apar={apar:.2f}")
 print(f"  gbc={gbc:.4f}, gbv={gbv:.4f}, cair={cair:.2f}, o2ref={o2ref:.2f}")
 
-pft_idx = int(mlcanopy_inst.pft_canopy[_p])
+pft_idx = int(patch.itype[_p])
 g0_p = float(np.asarray(MLpftcon.g0_MED)[pft_idx])
 g1_p = float(np.asarray(MLpftcon.g1_MED)[pft_idx])
 
