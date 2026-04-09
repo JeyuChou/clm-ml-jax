@@ -49,9 +49,8 @@ FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 # ── Shared init ───────────────────────────────────────────────────────────────
 from diags.expt_init import (
     mlcanopy_inst, grid, _mlcf_kwargs, jax, jnp, MLCanopyFluxes,
-    atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp,
+    atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp, compute_le,
 )
-from diags.param_sensitivity import compute_le
 
 import numpy as np
 import matplotlib

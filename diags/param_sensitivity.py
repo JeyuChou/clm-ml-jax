@@ -47,7 +47,7 @@ FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 # ── Shared init ───────────────────────────────────────────────────────────────
 from diags.expt_init import (
     mlcanopy_inst, grid, _mlcf_kwargs, jax, jnp, MLCanopyFluxes,
-    atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp,
+    atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp, compute_le,
 )
 
 import numpy as np
@@ -66,25 +66,6 @@ _ncan = grid.ncan
 # ── Build kwargs without atm2lnd so we can inject scaled versions ─────────────
 _mlcf_kwargs_no_atm = {k: v for k, v in _mlcf_kwargs.items()
                        if k not in ("atm2lnd_inst", "wateratm2lndbulk_inst")}
-
-
-# ── LE proxy (leaf-level latent heat, diff-mode safe) ─────────────────────────
-def compute_le(inst, p: int, ncan: int) -> jnp.ndarray:
-    """Compute canopy LE proxy from lhleaf_leaf (updated in diff mode).
-
-    lhleaf_leaf is set by FluxProfileSolution (MLFluxProfileSolutionMod.py:453)
-    inside the RK inner loop, so it IS available in diff mode even though
-    _CanopyFluxesDiagnostics is skipped.
-
-    Units: W m-2 (weighted sum over layers, sun+shade).
-    """
-    lhleaf_sun = inst.lhleaf_leaf[p, 1:ncan + 1, isun]
-    lhleaf_sha = inst.lhleaf_leaf[p, 1:ncan + 1, isha]
-    fracsun    = inst.fracsun_profile[p, 1:ncan + 1]
-    dpai       = inst.dpai_profile[p, 1:ncan + 1]
-    return jnp.sum(
-        (lhleaf_sun * fracsun + lhleaf_sha * (1.0 - fracsun)) * dpai
-    )
 
 
 # ── Forward functions ──────────────────────────────────────────────────────────

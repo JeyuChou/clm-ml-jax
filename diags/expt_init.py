@@ -242,3 +242,21 @@ def compute_gpp(inst, p: int, ncan: int) -> jnp.ndarray:
     return jnp.sum(
         (agross_sun * fracsun + agross_sha * (1.0 - fracsun)) * dpai
     )
+
+
+def compute_le(inst, p: int, ncan: int) -> jnp.ndarray:
+    """Compute canopy LE proxy from lhleaf_leaf (differentiable in diff mode).
+
+    lhleaf_leaf is set by FluxProfileSolution (MLFluxProfileSolutionMod.py:453)
+    inside the RK inner loop — available in diff mode even though
+    _CanopyFluxesDiagnostics is skipped.
+
+    Units: W m-2 (weighted sum over layers, sun+shade).
+    """
+    lhleaf_sun = inst.lhleaf_leaf[p, 1:ncan + 1, isun]
+    lhleaf_sha = inst.lhleaf_leaf[p, 1:ncan + 1, isha]
+    fracsun    = inst.fracsun_profile[p, 1:ncan + 1]
+    dpai       = inst.dpai_profile[p, 1:ncan + 1]
+    return jnp.sum(
+        (lhleaf_sun * fracsun + lhleaf_sha * (1.0 - fracsun)) * dpai
+    )
