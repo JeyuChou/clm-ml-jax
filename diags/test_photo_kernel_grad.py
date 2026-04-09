@@ -30,7 +30,14 @@ from multilayer_canopy.MLLeafPhotosynthesisMod import (
     _get_vmapped_photo_kernel, _make_leaf_photo_kernel,
 )
 from multilayer_canopy import MLclm_varpar as _vpar
-from multilayer_canopy import pftconMod
+from clm_src_main.pftconMod import pftcon as _pftcon
+from multilayer_canopy.MLpftconMod import MLpftcon as _MLpftcon
+from multilayer_canopy.MLclm_varcon import (
+    vcmaxha_noacclim, vcmaxhd_noacclim, vcmaxse_noacclim,
+    jmaxha_noacclim, jmaxhd_noacclim, jmaxse_noacclim,
+    rdhd, rdse,
+)
+from multilayer_canopy.MLLeafPhotosynthesisMod import _fth25_py
 import numpy as np
 
 _p    = grid.p
@@ -66,28 +73,28 @@ for il, leaf_label in [(isun, 'isun'), (isha, 'isha')]:
     # PFT for patch p
     pft_idx = int(mlcanopy_inst.pft_canopy[_p])
 
-    # Stomatal parameters
+    # Stomatal parameters from MLpftcon
     if gs_type == 0:
-        g0_val = float(pftconMod._g0_MED_np[pft_idx])
-        g1_val = float(pftconMod._g1_MED_np[pft_idx])
+        g0_val = float(np.asarray(_MLpftcon.g0_MED)[pft_idx])
+        g1_val = float(np.asarray(_MLpftcon.g1_MED)[pft_idx])
     elif gs_type == 1:
-        g0_val = float(pftconMod._g0_BB_np[pft_idx])
-        g1_val = float(pftconMod._g1_BB_np[pft_idx])
+        g0_val = float(np.asarray(_MLpftcon.g0_BB)[pft_idx])
+        g1_val = float(np.asarray(_MLpftcon.g1_BB)[pft_idx])
     else:
         print("WUE gs_type not supported in this test"); continue
 
-    # Photosynthesis parameters from pftconMod
-    c3psn_val  = float(pftconMod.c3psn[pft_idx])
+    # Photosynthesis parameters (acclim_type==0: module-level constants)
+    c3psn_val  = float(np.asarray(_pftcon.c3psn)[pft_idx])
     is_c3_bool = round(c3psn_val) == 1
-    vcmaxha    = float(pftconMod.vcmaxha[pft_idx])
-    vcmaxhd    = float(pftconMod.vcmaxhd[pft_idx])
-    vcmaxse    = float(pftconMod.vcmaxse[pft_idx])
-    vcmaxc     = float(pftconMod.vcmaxc[pft_idx])
-    jmaxha     = float(pftconMod.jmaxha[pft_idx])
-    jmaxhd     = float(pftconMod.jmaxhd[pft_idx])
-    jmaxse     = float(pftconMod.jmaxse[pft_idx])
-    jmaxc      = float(pftconMod.jmaxc[pft_idx])
-    rdc        = float(pftconMod.rdc[pft_idx])
+    vcmaxha    = vcmaxha_noacclim
+    vcmaxhd    = vcmaxhd_noacclim
+    vcmaxse    = vcmaxse_noacclim
+    vcmaxc     = _fth25_py(vcmaxhd_noacclim, vcmaxse_noacclim)
+    jmaxha     = jmaxha_noacclim
+    jmaxhd     = jmaxhd_noacclim
+    jmaxse     = jmaxse_noacclim
+    jmaxc      = _fth25_py(jmaxhd_noacclim, jmaxse_noacclim)
+    rdc        = _fth25_py(rdhd, rdse)
 
     vmapped = _get_vmapped_photo_kernel(
         is_c3=is_c3_bool,

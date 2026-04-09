@@ -42,8 +42,8 @@ def forward_apar_sum(alpha: jnp.ndarray) -> jnp.ndarray:
         wateratm2lndbulk_inst=wateratm2lndbulk_inst,
         **_mlcf_kwargs_no_atm,
     )
-    # Return sum of apar_leaf across all layers and leaf types
-    return jnp.sum(inst.apar_leaf[_p, 1:grid.ncan+1, :])
+    # Return sum of apar_leaf across all layers and valid leaf types (isun, isha)
+    return jnp.sum(inst.apar_leaf[_p, 1:grid.ncan+1, isun:isha+1])
 
 t0 = time.time()
 jax_grad_apar = float(jax.jit(jax.grad(forward_apar_sum))(jnp.float64(1.0)))
@@ -75,8 +75,8 @@ def forward_agross_sum(alpha: jnp.ndarray) -> jnp.ndarray:
         wateratm2lndbulk_inst=wateratm2lndbulk_inst,
         **_mlcf_kwargs_no_atm,
     )
-    # sum over all layers and leaf types
-    return jnp.sum(inst.agross_leaf[_p, 1:grid.ncan+1, :])
+    # sum over all layers and valid leaf types (isun, isha)
+    return jnp.sum(inst.agross_leaf[_p, 1:grid.ncan+1, isun:isha+1])
 
 t0 = time.time()
 jax_grad_agross = float(jax.jit(jax.grad(forward_agross_sum))(jnp.float64(1.0)))
