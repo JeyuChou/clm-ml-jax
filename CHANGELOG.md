@@ -44,9 +44,17 @@ updated to use `_bisect_gs_ift`.
 - `diags/test_bisect_ift.py`: targeted test of `_bisect_gs_ift` gradient (single layer, ~5-10min)
 - `run_test_bisect_ift.sh`: SLURM job script for above
 
-### Verification pending
-Jobs 7314582 (bisect-ift) and 7314583 (isolate-grad-path) submitted with `--constraint=a100`.
-Expected results: Stage 2 rel_err should drop from 16.1% → <1%.
+### Verification: CONFIRMED (job 7314583, A100 node)
+
+- Stage 1 d(apar)/d(alpha_sw):  rel=1.18e-09 **PASS** (unchanged)
+- Stage 2 d(agross)/d(alpha_sw): rel=**1.76e-07 PASS** (was 16.1% — fix confirmed)
+- Stage 3 dGPP/d(alpha_sw):      rel=**3.68e-07 PASS** (was 15.76% — fix confirmed)
+
+Newton-refinement IFT works. The ~15% gradient error for alpha_sw is fully explained
+by the WUE bisection gradient bug (not jnp.where kinks as hypothesized in session 16).
+
+**Job 7315181 (fd_grad_check, full run, A100 g284): IN PROGRESS**
+Testing both alpha_sw and alpha_tref gradients. Expected to complete soon.
 
 ---
 
