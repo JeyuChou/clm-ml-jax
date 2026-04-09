@@ -2,14 +2,14 @@
 
 ## 2026-04-09 — IFT fix for WUE bisection gradient (session 17)
 
-**Status:** IFT fix implemented in `_bisect_gs_jax` → `_bisect_gs_ift`. Job 7314501 submitted to verify.
+**Status:** Newton-refinement IFT implemented. Jobs 7314582/7314583 pending on A100 to verify.
 
 ### Root cause confirmed (job 7314440)
 - Stage 1 d(apar)/d(alpha_sw): JAX=2408.725, FD=2408.725, rel=1.18e-09 **PASS** — solar rad gradient EXACT
 - Stage 2 d(agross)/d(alpha_sw): JAX=18.20, FD=21.69, rel=16.1% **FAIL** — bug in photosynthesis
 - Stage 3 dGPP/d(alpha_sw): JAX=9.008, FD=10.693, rel=15.76% **FAIL**
 
-### Fix: `_bisect_gs_ift` — IFT-based VJP for WUE stomatal bisection
+### Fix: `_bisect_gs_ift` — IFT-based gradient for WUE stomatal bisection
 
 **File:** `src/multilayer_canopy/MLLeafPhotosynthesisMod.py`
 
@@ -17,21 +17,36 @@ The WUE stomatal optimization (`gs_type=2`) uses `_bisect_gs_jax` (20-iteration 
 via `jax.lax.fori_loop` + `jnp.where` branch selection). Differentiating through the bisection
 gives wrong gradients because `jnp.where` propagates gradients through BOTH branches.
 
-**Solution:** `_bisect_gs_ift` wraps the bisection with `jax.lax.custom_root`, which uses the
-Implicit Function Theorem for the backward pass:
-```
-d(gs*)/d(theta) = -(df/dtheta) / (df/dgs)  at gs*
-```
-where `f = _StomataEfficiencyJax(gs, **se_kwargs)`.
+**Initial attempt**: `jax.lax.custom_root` → FAILED due to JAX version issue:
+`tangent_solve` received a `Partial` (function) instead of a scalar,
+causing `TypeError: unsupported operand type(s) for /: 'Partial' and 'DynamicJaxprTracer'`.
 
-- `bisect_solve`: runs the same bisection for the forward pass
-- `tangent_solve(g, y)`: computes `g / (df/dgs)` at the root y
-- `custom_root` automatically propagates gradients through all closed-over JAX arrays in se_kwargs
+**Final fix**: Newton-refinement identity avoids `custom_root` entirely:
+```python
+gs_ift = gs0 - f(gs0; theta) / stop_grad(df/dgs)
+```
+where `gs0 = stop_gradient(bisect result)`.
+- Forward: `f(gs0) ≈ 0` → `gs_ift ≈ gs0 = gs*` (correct root value)
+- Backward: `d(gs_ift)/d(theta) = -∂f/∂theta / stop_grad(df/dgs) = IFT` ✓
+- `df/dgs` computed via finite differences with `stop_gradient` (denominator only)
+- `f(gs0; theta)` computed once with JAX array gradients flowing (provides IFT numerator)
 
 Both WUE kernels (`_make_leaf_photo_kernel_wue` and `_make_leaf_photo_kernel_wue_acclim`)
-updated to use `_bisect_gs_ift`. The old `_bisect_gs_jax` is kept for reference.
+updated to use `_bisect_gs_ift`.
 
-Job 7314501: re-running `isolate_grad_path.py` to verify Stages 1/2/3 now PASS.
+### SLURM node constraint fix
+- Added `--constraint=a100` to all grad-check SLURM scripts
+- V100S nodes (--constraint=v100s) have broken conda env (base anaconda + ~/.local = conflict)
+- rtx8000 nodes (Quadro RTX 8000) have same issue
+- A100 nodes (g189-g193, g283-g284) work correctly
+
+### New diagnostic scripts
+- `diags/test_bisect_ift.py`: targeted test of `_bisect_gs_ift` gradient (single layer, ~5-10min)
+- `run_test_bisect_ift.sh`: SLURM job script for above
+
+### Verification pending
+Jobs 7314582 (bisect-ift) and 7314583 (isolate-grad-path) submitted with `--constraint=a100`.
+Expected results: Stage 2 rel_err should drop from 16.1% → <1%.
 
 ---
 
