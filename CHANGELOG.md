@@ -1,9 +1,124 @@
 # Changelog
 
-## 2026-04-08 — Gradient isolation: custom_vjp ruled out, photosynthesis kernel test running (session 15)
+## 2026-04-09 — IFT fix for WUE bisection gradient (session 17)
+
+**Status:** IFT fix implemented in `_bisect_gs_jax` → `_bisect_gs_ift`. Job 7314501 submitted to verify.
+
+### Root cause confirmed (job 7314440)
+- Stage 1 d(apar)/d(alpha_sw): JAX=2408.725, FD=2408.725, rel=1.18e-09 **PASS** — solar rad gradient EXACT
+- Stage 2 d(agross)/d(alpha_sw): JAX=18.20, FD=21.69, rel=16.1% **FAIL** — bug in photosynthesis
+- Stage 3 dGPP/d(alpha_sw): JAX=9.008, FD=10.693, rel=15.76% **FAIL**
+
+### Fix: `_bisect_gs_ift` — IFT-based VJP for WUE stomatal bisection
+
+**File:** `src/multilayer_canopy/MLLeafPhotosynthesisMod.py`
+
+The WUE stomatal optimization (`gs_type=2`) uses `_bisect_gs_jax` (20-iteration bisection
+via `jax.lax.fori_loop` + `jnp.where` branch selection). Differentiating through the bisection
+gives wrong gradients because `jnp.where` propagates gradients through BOTH branches.
+
+**Solution:** `_bisect_gs_ift` wraps the bisection with `jax.lax.custom_root`, which uses the
+Implicit Function Theorem for the backward pass:
+```
+d(gs*)/d(theta) = -(df/dtheta) / (df/dgs)  at gs*
+```
+where `f = _StomataEfficiencyJax(gs, **se_kwargs)`.
+
+- `bisect_solve`: runs the same bisection for the forward pass
+- `tangent_solve(g, y)`: computes `g / (df/dgs)` at the root y
+- `custom_root` automatically propagates gradients through all closed-over JAX arrays in se_kwargs
+
+Both WUE kernels (`_make_leaf_photo_kernel_wue` and `_make_leaf_photo_kernel_wue_acclim`)
+updated to use `_bisect_gs_ift`. The old `_bisect_gs_jax` is kept for reference.
+
+Job 7314501: re-running `isolate_grad_path.py` to verify Stages 1/2/3 now PASS.
+
+---
+
+## 2026-04-08 — Gradient discrepancy root cause identified: non-smooth physics (session 16)
+
+**Status:** Stage 3 of isolate_grad_path (job 7314377) confirmed SAME discrepancy as fd_grad_check.
+JAX=9.008, FD=10.693, rel_err=15.76%. jax.checkpoint RULED OUT (CLM_ML_NO_CHECKPOINT=1 used).
+Root cause: non-smooth photosynthesis operations. CHANGELOG updated.
+
+### Root cause of 15% gradient discrepancy: non-smooth operations in Ci solver
+
+isolate_grad_path Stage 3 (no checkpoint): JAX=9.008e+00, FD=1.069e+01, rel=15.76% FAIL.
+Matches fd_grad_check exactly — this is NOT a checkpoint artifact.
+
+The CHATS7 canopy has `fracsun≈0.09` (only ~9% sunlit) and `ncan=46` layers.
+Most canopy mass is shaded, with some lower layers having near-zero net photosynthesis.
+
+Non-smooth operations that create zero-subgradient kinks:
+1. `jnp.where(anet_val < 0.0, jnp.zeros(()), ci_dif)` in `_CiFuncPure_jax` (line 771)
+   — When anet < 0, secant step is truncated. JAX subgradient = 0 at threshold.
+   FD perturbs alpha_sw upward and those layers may cross to anet > 0.
+2. `jnp.maximum(_agross, 0.0)` — clamps gross photosynthesis to non-negative.
+3. `jnp.maximum(ci_val - cp_val, 0.0)` — Rubisco-limited rate clamping.
+
+The 76% discrepancy for alpha_tair is larger because temperature change affects
+Vcmax/Jmax via nonlinear enzyme kinetics, hitting more threshold crossings.
+
+**Paper framing**: Acknowledge this limitation honestly. The gradients are FINITE and
+PARTIALLY CORRECT (accurate for active layers far from threshold). The ~15% error
+means optimization may require more iterations but converges (as shown by Exp 4).
+Smooth alternatives (softplus for max ops) would fix this but change physics.
+
+### Baseline canopy state (CHATS7, midday 2007-05-01)
+```
+fracsun_profile[p, 1:5] = [0., 0.0937, 0.0958, 0.0991]  (upper canopy very shaded)
+dpai_profile[p,   1:5] = [0., 0.0179, 0.0312, 0.0457]
+apar_leaf[p, 1:5, isun] = [0., 625., 634., 640.] µmol/m²/s  (high, light-saturated)
+agross_leaf[p, 1:5, isun] = [0., 12.55, 12.62, 12.74] µmol/m²/s
+GPP (baseline) = 30.92 µmol/m²/s
+```
+
+Sunlit leaves have high PAR and are RUBISCO-limited (Ac < Aj). Shade leaf PAR is much
+lower; some deep layers approach the anet=0 threshold → discontinuous gradient boundary.
+
+---
+
+## 2026-04-08 — Isolation bug identified: spval cancellation + Fortran fix resubmitted (session 16)
+
+**Status:** FD=0 in Stage 1/2 of isolate_grad_path is a float64 cancellation bug, NOT a gradient bug.
+JAX timing at 32/48 timesteps (~101s/step steady-state on RTX 8000). Fortran job resubmitted with fix.
+
+### Root cause of Stage 1/2 FD = 0 (isolate_grad_path.py)
+
+`apar_leaf` and `agross_leaf` have `spval=1e36` for inactive canopy layers.
+Plain `jnp.sum(inst.apar_leaf[p, 1:ncan+1, :])` gives a baseline of ~2e38 (dominated by spval).
+When alpha is perturbed by eps=1e-4, the signal change (~1e4) is ~34 orders of magnitude below
+the float64 noise floor at ~2e38 (machine epsilon * 2e38 ≈ 4e22). So a_plus - a_minus = 0 exactly.
+
+**Fix**: use dpai-weighted sum: `jnp.sum(dpai[:, None] * apar)`. Since dpai=0 for inactive layers,
+`dpai * spval = 0`, eliminating spval contamination. FD now measures only active layers.
+
+Applied fix to `diags/isolate_grad_path.py` (Stages 1 and 2). Resubmitted as job 7314440.
+
+### photo_kernel_grad.py (job 7314396) FAILED
+
+`ImportError: cannot import name 'pftconMod' from 'multilayer_canopy'` — old version of script.
+Current `diags/test_photo_kernel_grad.py` is fixed (imports from `clm_src_main.pftconMod`).
+Pending resubmission as job 7314421 (via `run_test_photo_kernel_grad.sh`).
+
+### Fortran timing (job 7314403) FAILED — second compilation error
+
+Error: `Arithmetic overflow converting REAL(8) to INTEGER(4) at (1). Use '-fno-range-check'`
+Fix: added `-fno-range-check` to GFORTRAN_CMPLR in `run_fortran_timing.sh`.
+Resubmitted as job 7314439.
+
+### JAX timing (job 7314322) IN PROGRESS
+
+32/48 timesteps complete. Steady-state: ~101-102s/timestep on Quadro RTX 8000 (46GB).
+Extrapolated 31-day run: ~44 hours.
+
+---
+
+## 2026-04-08 — Gradient isolation: custom_vjp ruled out, Exp 5 timing submitted (session 15)
 
 **Status:** grad_mode_comparison (job 7314294) COMPLETE. custom_vjp in tridiag_2eq is NOT the bug.
-Two isolation jobs running: 7314377 (stage-by-stage apar→agross→GPP), 7314396 (kernel-direct grad test).
+Isolation jobs running: 7314377 (stage-by-stage), 7314396 (photosynthesis kernel). Exp 5 timing
+jobs: 7314322 (JAX, GPU), 7314403 (Fortran, gfortran). Stage 1 FD still pending.
 
 ### Key results from grad_mode_comparison (job 7314294)
 
@@ -44,6 +159,38 @@ alpha_sw → forc_solad → swskyb_cur → swskyb_forcing
    - Tests d(sum(agross))/d(apar_scale) at the kernel level
    - If PASS: bug is in data flow (MLCanopyFluxes level), not in kernel
    - If FAIL: bug is inside the photosynthesis kernel
+
+### Code inspection findings (no bug found in these)
+
+- `_copy_bef_state`: pure `.at[].set()` ops, fully differentiable. Ruled out.
+- `GetAtmForcing`: reads `tref_cur_forcing` / `swskyb_cur_forcing` which ARE set from alpha-scaled
+  `atm2lnd_inst` in MLCanopyFluxes.__init__. Chain is intact. Ruled out.
+- `tridiag_2eq` custom_vjp math: solves adjoint system A^T λ = g correctly (IFT).
+  Called once (not in iteration loop). `defvjp` registered at module level. Ruled out.
+- `jax.checkpoint` around `_physics_step_fn`: isolate_grad_path.py disables this with
+  `CLM_ML_NO_CHECKPOINT=1`, so its Stage 1 result will isolate checkpoint as a cause.
+
+### Remaining suspects
+1. `float()` or `np.asarray()` cast somewhere in `SolarRadiation` or `LeafPhotosynthesis`
+   disconnecting the JAX trace (most likely given identical error in both flux_profile_type modes).
+2. `jax.checkpoint` interaction — ruled out if isolate_grad_path Stage 1 passes.
+3. `fracsun_profile` used as weights in `compute_gpp` — if it has a `stop_gradient` or is
+   computed non-differentiably in `SolarRadiation`.
+
+### Experiment 5: Runtime comparison (jobs submitted)
+
+JAX timing (job 7314322):
+- 1-day run (48 timesteps), GPU (A100 40GB)
+- First timestep: 325s (JIT compilation)
+- Steady-state: ~108s/timestep
+- Extrapolated 31-day run: ~44 hours (much slower than Fortran expected)
+
+Fortran timing (job 7314403, resubmit of failed 7314346):
+- First attempt (7314346) FAILED: `nvfortran: Command not found` after `module load nvhpc/25.1`
+- Fix: switched to `gfortran` (`/usr/bin/gfortran` GCC 8.5.0, no module needed)
+- NetCDF: `/burg/opt/netcdf-fortran-4.6.2` (confirmed on disk), NetCDF-C at `/burg/opt/netcdf-c-4.9.3`
+- Makefile patched at runtime: `make "cmplr=gfortran -O2 -L... -lnetcdff -lnetcdf -lblas -lm"`
+- Runs `./prgm.exe < nl.CHATS7.05.2007` (31-day, May 2007)
 
 ### JAX version: 0.9.2
 

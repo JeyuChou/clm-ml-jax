@@ -1518,6 +1518,48 @@ def _bisect_gs_jax(gsmin, gs_upper, se_kwargs, n_iter=20):
     return gs_opt
 
 
+def _bisect_gs_ift(gsmin, gs_upper, se_kwargs, n_iter=20):
+    """Bisection root-finder with IFT-based VJP via jax.lax.custom_root.
+
+    Uses the Implicit Function Theorem for the backward pass:
+        d(gs*)/d(theta) = -(df/dtheta) / (df/dgs)  at gs*
+    instead of differentiating through bisection iterations (which gives
+    wrong gradients due to discrete jnp.where branch selections).
+    """
+    gsmin_j     = jnp.asarray(gsmin,    dtype=jnp.float64)
+    gs_upper_j  = jnp.asarray(gs_upper, dtype=jnp.float64)
+
+    def residual(gs):
+        return _StomataEfficiencyJax(gs, **se_kwargs)
+
+    def bisect_solve(f, init):
+        fa = f(gsmin_j)
+        fb = f(gs_upper_j)
+        bracket_ok = fa * fb < 0.0
+
+        def body(_, carry):
+            a, b, f_a = carry
+            mid = 0.5 * (a + b)
+            f_mid = f(mid)
+            same_sign = f_a * f_mid > 0.0
+            new_a  = jnp.where(same_sign, mid, a)
+            new_b  = jnp.where(same_sign, b,   mid)
+            new_fa = jnp.where(same_sign, f_mid, f_a)
+            return (new_a, new_b, new_fa)
+
+        a0, b0, _ = jax.lax.fori_loop(0, n_iter, body, (gsmin_j, gs_upper_j, fa))
+        return jnp.where(bracket_ok, 0.5 * (a0 + b0), gsmin_j)
+
+    def tangent_solve(g, y):
+        """Solve (df/dgs) * x = g  ⟹  x = g / (df/dgs)."""
+        df_dgs = jax.grad(residual)(y)
+        _eps = jnp.asarray(1e-15, dtype=df_dgs.dtype)
+        safe_denom = jnp.where(jnp.abs(df_dgs) > _eps, df_dgs, _eps)
+        return g / safe_denom
+
+    return jax.lax.custom_root(residual, gsmin_j, bisect_solve, tangent_solve)
+
+
 @functools.lru_cache(maxsize=None)
 def _make_leaf_photo_kernel_wue(
     *,
@@ -1599,7 +1641,7 @@ def _make_leaf_photo_kernel_wue(
             iota=iota_pft, pref_p=pref_p, eair_ic=eair_ic,
             gbv_ic=gbv_ic, lesat_ic=lesat_val, **ci_kwargs,
         )
-        gs_opt = _bisect_gs_jax(gsmin_pft, 2.0, se_kwargs)
+        gs_opt = _bisect_gs_ift(gsmin_pft, 2.0, se_kwargs)
 
         # Final photosynthesis at gs_opt
         ci_f, ac_f, aj_f, ap_f, agross_f, anet_f, cs_f = (
@@ -1739,7 +1781,7 @@ def _make_leaf_photo_kernel_wue_acclim(
             iota=iota_pft, pref_p=pref_p, eair_ic=eair_ic,
             gbv_ic=gbv_ic, lesat_ic=lesat_val, **ci_kwargs,
         )
-        gs_opt = _bisect_gs_jax(gsmin_pft, 2.0, se_kwargs)
+        gs_opt = _bisect_gs_ift(gsmin_pft, 2.0, se_kwargs)
 
         ci_f, ac_f, aj_f, ap_f, agross_f, anet_f, cs_f = (
             _CiFuncGsJax(gs_opt, **ci_kwargs))
