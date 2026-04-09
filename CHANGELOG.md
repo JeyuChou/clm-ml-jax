@@ -8,13 +8,19 @@
 - dGPP/d(alpha_sw):   JAX=1.070e+01, FD=1.070e+01, rel=3.68e-07 **PASS** ✓
 - dGPP/d(alpha_tref): JAX=6.575e+144, FD=-4.869e+01, rel=1.35e+143 **FAIL** — gradient explosion
 
-**alpha_tref explosion root cause (hypothesis):** IFT `safe_denom` clamp.
-When temperature changes, the stomatal efficiency function f(gs) may be nearly
-flat w.r.t. gs (df/dgs ≈ 0). The `safe_denom = jnp.where(|df/dgs| > 1e-15, df/dgs, 1e-15)`
-then uses 1e-15 as denominator. The IFT gradient -(∂f/∂T) / 1e-15 explodes.
-This is a NEW issue introduced by the IFT fix — alpha_sw is unaffected because
-its gradient path keeps df/dgs well-conditioned.
-**Next step:** diagnose and fix the denominator clamping strategy for alpha_tref.
+**alpha_tref explosion root cause (confirmed):** IFT `safe_denom` clamp.
+Dark/inactive canopy layers have `df/dgs ≈ 0` (flat efficiency function — no PAR).
+The old `safe_denom = jnp.where(|df/dgs| > 1e-15, df/dgs, 1e-15)` divided by
+1e-15, cascading the `-(∂f/∂T)/1e-15` explosion multiplicatively through
+downstream ops → 6.58e+144.
+
+**Fix applied (session 19, job 7328527 pending):**  
+Replace safe_denom clamp with zero-gradient fallback. When `|df/dgs| < 1e-6`,
+zero out the Newton correction term (`safe_f0 = 0`, `safe_denom = 1`):
+- Forward: `gs_ift = gs0 - 0/1 = gs0` (correct; bisection root unchanged)
+- Backward: `d(gs_ift)/dθ = -d(0)/dθ / 1 = 0` (safe, not undefined)
+Physical meaning: inactive layers contribute zero gradient to parameter updates.
+File: `src/multilayer_canopy/MLLeafPhotosynthesisMod.py` lines 1555-1569.
 
 ### Plan
 Root cause of JAX slowdown vs Fortran: single-column model = ~0% GPU occupancy.
