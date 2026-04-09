@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-04-09 — Optimization experiment implementation (session 22, continued)
+
+### Files created (all committed to `differentiable-physics`)
+
+**`diags/param_sensitivity.py`** — prerequisite sanity check for optimization.
+Computes dGPP/dθ and dLE/dθ at CHATS7 operating point for:
+- `alpha_sw`, `alpha_tref`: JAX autodiff (existing paths)
+- `alpha_vcmax25`: JAX autodiff via module-global mutation of `MLpftconMod.MLpftcon`
+  — differentiable because `CanopyNitrogenProfileMod.py` reads `MLpftcon.vcmaxpft[pft]`
+  via JAX dynamic gather (no `np.asarray` → `float()` in critical path)
+- `alpha_iota`: FD only — `iota_SPA` is extracted as `float(_iota_np[pft])` inside
+  the kernel factory in `MLLeafPhotosynthesisMod.py` (lines 2067+). Making it
+  JAX-differentiable requires passing `iota` as a runtime arg to vmapped kernels
+  (Phase 2 refactoring — documented in code, not yet done).
+
+**`diags/expt_load_obs.py`** — AmeriFlux observation loader. Reads FLUXNET2015 FULLSET
+CSV, applies daytime/u*/QC filters, aligns to model timesteps.
+
+**`diags/optimize_params.py`** — Phase 1: vcmaxpft recovery from synthetic CHATS7 obs.
+Adam optimizer with cosine LR annealing. Synthetic case: recover vcmaxpft=125 from
+CLM default 57.7. Gradient flows via module-global mutation (same as param_sensitivity).
+
+**`src/multilayer_canopy/MLpftconMod.py`** — added `make_pft_params(theta_dict)` factory
+function for clean parameter injection. Supports `(field_name, pft_idx)` tuple keys.
+
+### Jobs pending
+- 7329012: fd_grad_check (bracket_ok fix verification) — pending (Resources)
+- 7328915: multisite benchmark full RK4 — running (1h+, stuck in JIT compile)
+- 7329052: laxscan benchmark — running, still in warmup
+- 7329181: param_sensitivity — pending (Priority)
+
+---
+
 ## 2026-04-09 — lax.scan over RK sub-steps (session 22)
 
 ### lax.scan refactoring — COMPLETE (commit 68de426)
