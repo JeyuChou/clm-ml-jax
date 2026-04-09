@@ -135,23 +135,22 @@ def _section(title, rk_type, dtime_ml, nrk):
     # Instead differentiate w.r.t. a scalar alpha that scales tref_forcing, same as fd_grad_check.py.
     print("\n-- Gradient check (no NaN/Inf) --", flush=True)
     from clm_src_main import clm_instMod as _ci
+    from diags.expt_init import compute_gpp as _compute_gpp
     _atm = _ci.atm2lnd_inst
     _wat = _ci.wateratm2lndbulk_inst
-    _mlcf_kwargs_no_atm = {k: v for k, v in _mlcf_kwargs.items()
-                           if k not in ("atm2lnd_inst", "wateratm2lndbulk_inst", "grid", "_o2ref_py")}
+    # Keep grid and _o2ref_py in kwargs (same pattern as fd_grad_check.py)
+    _mlcf_kwargs_no_atm2 = {k: v for k, v in _mlcf_kwargs.items()
+                            if k not in ("atm2lnd_inst", "wateratm2lndbulk_inst")}
 
     def _fwd_alpha_tref(alpha):
-        from multilayer_canopy.MLCanopyFluxesMod import MLCanopyFluxes as _MLCf
-        from diags.expt_init import compute_gpp as _cg
         _mod_atm = _atm._replace(forc_t_downscaled_col=alpha * _atm.forc_t_downscaled_col)
-        inst2 = _MLCf(
+        inst2 = MLCanopyFluxes(
             mlcanopy_inst=mlcanopy_inst,
             atm2lnd_inst=_mod_atm,
             wateratm2lndbulk_inst=_wat,
-            grid=grid,
-            **_mlcf_kwargs_no_atm,
+            **_mlcf_kwargs_no_atm2,
         )
-        return _cg(inst2, grid.p, grid.ncan)
+        return _compute_gpp(inst2, grid.p, grid.ncan)
 
     t0 = time.perf_counter()
     grad_tref = float(jax.jit(jax.grad(_fwd_alpha_tref))(jnp.float64(1.0)))
