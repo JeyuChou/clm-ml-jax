@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-04-09 — Multi-site vmap benchmark (session 18)
+
+**Status:** Benchmark script and SLURM job created. Job pending on A100.
+
+### Plan
+Root cause of JAX slowdown vs Fortran: single-column model = ~0% GPU occupancy.
+46-element arrays cannot saturate thousands of CUDA cores.
+Fix: run N sites simultaneously via `jax.vmap` — GPU time per site drops ~Nx.
+
+### Implementation: thin wrapper at driver level only
+No physics files changed. `MLCanopyFluxes` in `_diff_mode` (grid=GridInfo) is
+already pure-functional. vmap operates on it from outside.
+
+**Files created:**
+- `diags/benchmark_multisite.py`: benchmark script
+  - Initializes 1 CHATS7 site via `expt_init.py`
+  - Stacks N copies of `mlcanopy_inst` via `jax.tree_util.tree_map(stack, ...)`
+  - Times `jit(vmap(_single_site_step))(batched)` vs N sequential `jit(step)` calls
+  - Sweeps N = 1, 2, 4, 8, 16, 32
+  - Reports: vmap_first_s, vmap_steady_s, seq_total_s, speedup, ms/site/step
+  - Saves `diags/figures/multisite_benchmark.csv`
+- `bashscripts/run_multisite_benchmark.sh`: SLURM script (A100, 4 hr, 64GB)
+
+**Key insight:** `vmap` over leading batch dim of `mlcanopy_inst` works because:
+- `_diff_mode` uses `grid.ncan` (Python int) instead of `int(mlcanopy_inst.ncan_canopy[p])`
+- All `for p in filter_mlcan:` loops use `p=1` (concrete Python int)
+- `.at[1].set()` broadcasts correctly under vmap over leading N dim
+
+### Expected result
+- Sequential N=1: baseline ~Xs/step
+- vmap N=8: ~8x throughput (near-linear scaling if compute-bound)
+- vmap N=32: saturate A100 → near-constant wall time → ~32x sites/second
+- GPU vmap vs CPU seq: demonstrates GPU value for ensemble runs
+
+---
+
 ## 2026-04-09 — IFT fix for WUE bisection gradient (session 17)
 
 **Status:** Newton-refinement IFT implemented. Jobs 7314582/7314583 pending on A100 to verify.
