@@ -18,6 +18,7 @@ module load cuda12.8/toolkit/12.8.61
 
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate clm-ml-jax
+export PYTHONNOUSERSITE=1
 
 SITE_PKGS=$(python -c "import site; print(site.getsitepackages()[0])")
 if [ -d "$SITE_PKGS/nvidia" ]; then
