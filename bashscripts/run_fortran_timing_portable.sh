@@ -180,7 +180,7 @@ else
 fi
 
 if [ "$FC" = "gfortran" ]; then
-    CMPLR="gfortran -O2 -fno-range-check ${NETCDF_FLAGS} -lblas -lm -L/usr/lib64"
+    CMPLR="gfortran -O2 -fno-range-check -ffree-line-length-none ${NETCDF_FLAGS} -lblas -lm -L/usr/lib64"
 else
     # nvfortran
     CMPLR="nvfortran -O2 -L${NETCDF_F_PREFIX}/lib -I${NETCDF_F_PREFIX}/include -lnetcdff -lnetcdf -lblas -lm -L/usr/lib64"
