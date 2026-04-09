@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-04-09 — Fortran baseline timing + full-physics vmap benchmark (session 20)
+
+### Fortran CLM-ml-v2 timing (CONFIRMED, Exp 5b)
+- **Platform:** NCAR Derecho, Intel Ice Lake CPU, gfortran 12
+- **Run:** CHATS7 May 2007, 31 days, 1488 half-hourly timesteps
+- **Wall-clock time: 1m 52.6s (112.6s)**
+- Compilation fixes required for gfortran portability:
+  - `MLLeafPhotosynthesisMod.F90`: removed duplicate `private :: RealizedRate` (ACCESS spec error)
+  - `Makefile`: added `-ffree-line-length-none` to gfortran build line (lines >132 chars)
+  - Both fixes pushed to `AyaLahlou/CLM-ml_v2.CHATS` main branch
+
+### Performance comparison (partial — full-physics vmap pending)
+| Scenario | Platform | Wall time |
+|---|---|---|
+| Fortran single-site, 31 days | Derecho CPU | **112.6s** |
+| JAX single-site, per-step (steady) | A100 GPU | ~100s/step |
+| JAX single-site, 31 days (extrapolated) | A100 GPU | ~41 hrs |
+| JAX vmap N=32, per-step (Euler physics) | A100 GPU | 0.394s/step |
+| JAX vmap N=32, 31 days (Euler, extrapolated) | A100 GPU | ~586s |
+
+- Euler benchmark (job 7315861) used reduced physics (1 sub-step, 0 RK stages)
+- Full-physics benchmark (job 7328915, A100) submitted with `--full-physics` flag
+  (runge_kutta_type=41, dtime_ml=300s, 6 sub-steps × 4 RK stages)
+- Full-physics results needed to confirm vmap speedup numbers for paper
+
+### Paper update (JAXES.tex, Section 4 + Limitations)
+- Hardware line: updated to Derecho/Intel Ice Lake for Fortran timing
+- Limitations paragraph: updated with exact Fortran wall time (112.6s),
+  ~1300× JAX single-site slowdown, and preliminary 3.5× vmap N=32 result
+
+---
+
 ## 2026-04-09 — Multi-site vmap benchmark (session 18)
 
 **Status:** Benchmark script and SLURM job created. Job 7315861 pending on A100.
