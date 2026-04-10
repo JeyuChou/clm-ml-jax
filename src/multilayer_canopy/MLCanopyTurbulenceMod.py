@@ -1299,10 +1299,47 @@ def _GetObu(p: int, mlcanopy_inst: mlcanopy_type, diff_mode: bool = False) -> ml
         taf_p     = mlcanopy_inst.taf_canopy[p],
         qaf_p     = mlcanopy_inst.qaf_canopy[p],
     )
-    obu_converged = _obu_fixed_iter(jnp.asarray(100.0), _kwargs, n_iter=25)
 
-    # Recompute all derived quantities from the converged obu (JAX-traceable)
-    mlcanopy_inst = _obu_writeback_jax(p, obu_converged, _kwargs, mlcanopy_inst)
+    # IFT-based gradient for the Obukhov-length fixed-point solver.
+    #
+    # Differentiating through the 25-iteration secant solver (_obu_fixed_iter)
+    # gives exploding gradients: each secant step's Jacobian accumulates over
+    # 25 iterations, producing |J|^25 amplification (observed: ~1e+144).
+    #
+    # Fix (same pattern as _bisect_gs_ift):
+    #   obu_ift = obu0 - F(obu0; theta) / stop_grad(dF/dobu)
+    # where F(obu) = _ObuFuncPure_jax(obu, theta) = obu_new(obu, theta) - obu.
+    #
+    # Forward: F(obu0) ≈ 0  ⟹  obu_ift ≈ obu0 = obu*  ✓
+    # Backward: d(obu_ift)/dtheta = -∂F/∂theta / stop_grad(dF/dobu) = IFT  ✓
+    #
+    # dF/dobu = dobu_new/dobu - 1 < 0 for a converging fixed-point.
+
+    # Forward solve (stop gradient through iterations)
+    obu_raw = _obu_fixed_iter(jnp.asarray(100.0), _kwargs, n_iter=25)
+    obu0    = jax.lax.stop_gradient(obu_raw)
+
+    # Residual at obu0 — gradient flows through theta (thref_p, thvref_p, ...)
+    f0 = _ObuFuncPure_jax(obu0, **_kwargs)
+
+    # dF/dobu via central FD — stop_gradient (denominator only)
+    _delta_obu = jnp.asarray(1.0, dtype=obu0.dtype)   # 1 m step (obu is O(100-10000 m))
+    df_dobu = jax.lax.stop_gradient(
+        (_ObuFuncPure_jax(obu0 + _delta_obu, **_kwargs)
+         - _ObuFuncPure_jax(obu0 - _delta_obu, **_kwargs))
+        / (2.0 * _delta_obu)
+    )
+
+    # Gate Newton step on |df_dobu| > eps (IFT well-conditioned)
+    _eps_ift   = jnp.asarray(1e-6)
+    apply      = jnp.abs(df_dobu) > _eps_ift
+    safe_f0    = jnp.where(apply, f0,     jnp.zeros_like(f0))
+    safe_denom = jnp.where(apply, df_dobu, -jnp.ones_like(df_dobu))
+    # Default safe_denom = -1.0: when apply=False, safe_f0/safe_denom = 0 → obu_ift = obu0 ✓
+    obu_ift = obu0 - safe_f0 / safe_denom
+
+    # Recompute all derived quantities from the IFT-corrected obu (JAX-traceable)
+    mlcanopy_inst = _obu_writeback_jax(p, obu_ift, _kwargs, mlcanopy_inst)
     return mlcanopy_inst
 
 

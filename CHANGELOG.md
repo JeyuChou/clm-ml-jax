@@ -1,5 +1,57 @@
 # Changelog
 
+## 2026-04-10 — Gradient explosion fix: Obukhov-length IFT (session 24)
+
+### Root cause of `dGPP/d(alpha_tref) = 9.95e+144`
+
+The gradient explosion came from differentiating through `_obu_fixed_iter`,
+a 25-iteration secant solver for the Obukhov stability length.
+
+**Gradient path:** `alpha_tref → thref/thvref → _GetObu (secant, 25 iters) → obu →
+_obu_writeback_jax → ustar → wind_profile → LeafBoundaryLayer → gbc/gbv →
+LeafPhotosynthesis → GPP`
+
+Differentiating through 25 secant iterations accumulates Jacobians: `|J|^25 ≈ 1e144`.
+The stomatal bisection (`_bisect_gs_ift`) was already fixed with IFT in session 21.
+The Obukhov solver was the remaining source of explosion.
+
+### Fix: IFT applied to `_GetObu` (diff_mode=True)
+
+Same Newton-refinement pattern as `_bisect_gs_ift`:
+
+```python
+obu0    = stop_gradient(_obu_fixed_iter(..., n_iter=25))
+f0      = _ObuFuncPure_jax(obu0, **kwargs)            # gradient flows through theta
+df_dobu = stop_gradient(FD of F w.r.t. obu)           # denominator frozen
+obu_ift = obu0 - safe_f0 / safe_denom                 # IFT Newton step
+```
+
+- Forward: `F(obu0) ≈ 0` → `obu_ift ≈ obu0 = obu*` ✓
+- Backward: `d(obu_ift)/dtheta = -∂F/∂theta / stop_grad(dF/dobu)` = IFT ✓
+
+**File:** `src/multilayer_canopy/MLCanopyTurbulenceMod.py` — `_GetObu` diff_mode branch.
+
+### Verification (CPU, isolated unit test)
+
+```
+obu* = 8.0909 m   F(obu*) = 0.00e+00   obu_ift = 8.0909 m (forward correct)
+d(obu)/d(thvref):  JAX=5.40e-02  FD=5.38e-02  rel=3.88e-03  PASS
+d(obu)/d(thref):   JAX=-7.53e+00  FD=-7.50e+00  rel=3.88e-03  PASS
+d(obu)/d(rhomol):  JAX=0.00e+00   FD=0.00e+00   rel=0.00e+00  PASS
+```
+
+### Why `z0m` (RoughnessLength_jax) does NOT need IFT
+
+`z0m_canopy` is only used in non-diff-mode diagnostics (`_CanopyFluxesDiagnostics`,
+`_MLScaleAndWriteBack`). It is NOT on the gradient path from alpha_tref to GPP.
+
+### Next step
+
+Submit `run_fd_grad_check.sh` on A100 to confirm `dGPP/d(alpha_tref) ≈ -49`
+(matching FD value from job 7315181, rel error < 1%).
+
+---
+
 ## 2026-04-10 — GPU performance optimizations (session 24)
 
 ### Changes implemented (all committed to `differentiable-physics`)
