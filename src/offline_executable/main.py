@@ -21,6 +21,16 @@ import jax
 # Enable 64-bit floats in JAX before any module-level array creation.
 jax.config.update("jax_enable_x64", True)
 
+# Persistent JIT compilation cache — avoids 290s recompile on subsequent runs.
+# Cache dir can be overridden via JAX_COMPILATION_CACHE_DIR env var.
+_jax_cache_dir = os.environ.get(
+    "JAX_COMPILATION_CACHE_DIR",
+    os.path.expanduser("~/.cache/jax_compile_cache"),
+)
+os.makedirs(_jax_cache_dir, exist_ok=True)
+jax.config.update("jax_compilation_cache_dir", _jax_cache_dir)
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 10.0)
+
 from clm_src_main.decompMod        import bounds_type
 from clm_src_cpl.lnd_comp_nuopc   import InitializeRealize, ModelAdvance
 from offline_driver import controlMod

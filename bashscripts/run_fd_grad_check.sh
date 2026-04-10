@@ -27,5 +27,11 @@ fi
 
 python -c "import jax; print('JAX devices:', jax.devices()); print('backend:', jax.default_backend())"
 
+# ── JAX compilation cache (eliminates 290s recompile on subsequent runs) ──────
+export JAX_COMPILATION_CACHE_DIR=/burg-archive/home/al4385/.cache/jax_compile_cache
+export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=10
+mkdir -p "$JAX_COMPILATION_CACHE_DIR"
+echo "JAX cache dir: $JAX_COMPILATION_CACHE_DIR"
+
 cd /burg-archive/home/al4385/clm-ml-jax
 CLM_ML_NO_CHECKPOINT=1 python diags/fd_grad_check.py

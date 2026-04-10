@@ -29,6 +29,7 @@ from clm_src_main.PatchType import patch                            # noqa: F401
 from clm_src_main.pftconMod import pftcon                           # noqa: F401
 from multilayer_canopy.MLclm_varcon import visc0, dh0, dv0, dc0, gb_factor, gbh_min  # noqa: F401
 from multilayer_canopy.MLclm_varctl import gb_type                       # noqa: F401
+from multilayer_canopy.MLclm_varpar import isun, isha                    # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type           # noqa: F401
 
 
@@ -109,6 +110,14 @@ def _gb_layer(dpai_ic, wind_ic, tair_ic, tleaf_ic,
 _gb_layers = jax.vmap(
     _gb_layer,
     in_axes=(0, 0, 0, 0, None, None, None, None, None, None),
+)
+
+# Double-vmap: outer axis is sun/shade (axis 0 of tleaf_both = shape (2, nlevmlcan));
+# dpai, wind, tair are shared across sun/shade (in_axes=None for outer vmap).
+# One GPU kernel dispatch computes boundary layer for both sun and shade leaves.
+_gb_layers_both = jax.vmap(
+    _gb_layers,
+    in_axes=(None, None, None, 0, None, None, None, None, None, None),
 )
 
 
@@ -226,6 +235,92 @@ def LeafBoundaryLayer(
         gbh = gbh.at[p, 1:, il].set(gbh_v)
         gbv = gbv.at[p, 1:, il].set(gbv_v)
         gbc = gbc.at[p, 1:, il].set(gbc_v)
+
+    return mlcanopy_inst._replace(
+        gbh_leaf=gbh,
+        gbv_leaf=gbv,
+        gbc_leaf=gbc,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public: batched sun+shade driver (one GPU dispatch for both leaf types)
+# ---------------------------------------------------------------------------
+
+@partial(jax.jit, static_argnums=(0, 1))
+def LeafBoundaryLayerBoth(
+    num_filter: int,
+    filter_patch: Sequence[int],
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """Compute leaf boundary layer conductance for both sun and shade in one
+    fused GPU kernel dispatch.
+
+    Replaces two sequential ``LeafBoundaryLayer(isun, ...)`` +
+    ``LeafBoundaryLayer(isha, ...)`` calls.  The only per-leaf input that
+    differs between sun and shade is ``tleaf``; all diffusivity corrections
+    and layer-geometry inputs are shared.  By stacking ``tleaf`` as a
+    ``(2, nlevmlcan)`` tensor and using ``_gb_layers_both`` (an outer vmap
+    over the sun/shade dimension), both leaf types are computed in a single
+    XLA kernel — halving the number of GPU dispatches vs the sequential path.
+
+    Args:
+        num_filter: Number of patches in the filter.
+        filter_patch: Patch index filter.
+        mlcanopy_inst: Canopy container; ``gbh_leaf``, ``gbv_leaf``,
+            and ``gbc_leaf`` are updated for both ``isun`` and ``isha``.
+
+    Returns:
+        Updated :class:`mlcanopy_type`.
+    """
+    dleaf = pftcon.dleaf
+
+    gbh = mlcanopy_inst.gbh_leaf
+    gbv = mlcanopy_inst.gbv_leaf
+    gbc = mlcanopy_inst.gbc_leaf
+
+    for fp in range(num_filter):
+        p   = filter_patch[fp]
+        pft = patch.itype[p]
+
+        # Diffusivity correction (same for sun and shade) — Fortran lines 72-76
+        pref_p   = mlcanopy_inst.pref_forcing[p]
+        tref_p   = mlcanopy_inst.tref_forcing[p]
+        fac      = 101325.0 / pref_p * (tref_p / tfrz) ** 1.81
+        visc     = visc0 * fac
+        dh       = dh0   * fac
+        dv       = dv0   * fac
+        dc       = dc0   * fac
+        rhomol_p = mlcanopy_inst.rhomol_forcing[p]
+        dl       = dleaf[pft]
+        dv_dh    = dv / dh
+        dc_dh    = dc / dh
+
+        # Stack sun and shade tleaf: shape (2, nlevmlcan)
+        # [0] = isun (index 1), [1] = isha (index 2)
+        tleaf_both = jnp.stack([
+            mlcanopy_inst.tleaf_leaf[p, 1:, isun],
+            mlcanopy_inst.tleaf_leaf[p, 1:, isha],
+        ], axis=0)
+
+        # One fused vmap over sun/shade + layers — half the GPU dispatches
+        # vs two sequential LeafBoundaryLayer calls.
+        # Results: (gbh_v, gbv_v, gbc_v) each shape (2, nlevmlcan)
+        gbh_v, gbv_v, gbc_v = _gb_layers_both(
+            mlcanopy_inst.dpai_profile[p, 1:],
+            mlcanopy_inst.wind_profile[p, 1:],
+            mlcanopy_inst.tair_profile[p, 1:],
+            tleaf_both,
+            visc, dh, dv_dh, dc_dh, dl, rhomol_p,
+        )
+
+        # Write back: [0]=sun, [1]=shade
+        gbh = (gbh.at[p, 1:, isun].set(gbh_v[0])
+                   .at[p, 1:, isha].set(gbh_v[1]))
+        gbv = (gbv.at[p, 1:, isun].set(gbv_v[0])
+                   .at[p, 1:, isha].set(gbv_v[1]))
+        gbc = (gbc.at[p, 1:, isun].set(gbc_v[0])
+                   .at[p, 1:, isha].set(gbc_v[1]))
 
     return mlcanopy_inst._replace(
         gbh_leaf=gbh,

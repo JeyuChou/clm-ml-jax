@@ -52,7 +52,7 @@ from multilayer_canopy.MLCanopyWaterMod import (                                
 from multilayer_canopy.MLinitVerticalMod import (                               # noqa: F401
     initVerticalProfiles, initVerticalStructure, getPADparameters,
 )
-from multilayer_canopy.MLLeafBoundaryLayerMod import LeafBoundaryLayer           # noqa: F401
+from multilayer_canopy.MLLeafBoundaryLayerMod import LeafBoundaryLayer, LeafBoundaryLayerBoth  # noqa: F401
 from multilayer_canopy.MLLeafHeatCapacityMod import LeafHeatCapacity             # noqa: F401
 from multilayer_canopy.MLLeafPhotosynthesisMod import LeafPhotosynthesis         # noqa: F401
 from multilayer_canopy.MLLongwaveRadiationMod import LongwaveRadiation           # noqa: F401
@@ -105,6 +105,43 @@ def _copy_bef_state(
             h2ocan_bef_profile = inst.h2ocan_bef_profile.at[p, _sl].set(inst.h2ocan_profile[p, _sl]),
             tleaf_bef_leaf     = inst.tleaf_bef_leaf.at[p, _sl, :].set(inst.tleaf_leaf[p, _sl, :]),
             lwp_bef_leaf       = inst.lwp_bef_leaf.at[p, _sl, :].set(inst.lwp_leaf[p, _sl, :]),
+        )
+    return inst
+
+
+# ---------------------------------------------------------------------------
+# JIT-compiled helper: save current forcing as *_bef for next CLM timestep
+# ---------------------------------------------------------------------------
+
+@partial(jax.jit, static_argnums=(0,))
+def _save_bef_forcing(
+    filter_mlcan: tuple,
+    mlcanopy_inst: mlcanopy_type,
+) -> mlcanopy_type:
+    """Copy ``*_cur_forcing`` fields to their ``*_bef_forcing`` counterparts.
+
+    Fuses 8 separate scatter operations (uref, tref, qref, pref, co2ref,
+    swskyb, swskyd, lwsky) into one JIT-compiled XLA program — reducing
+    Python→GPU dispatch from 8+ roundtrips to 1.
+
+    ``filter_mlcan`` is static so the patch-index loop is unrolled at trace
+    time; recompilation only occurs when the active-patch set changes
+    (never for a fixed site).
+
+    Mirrors Fortran lines 332-343 of ``MLCanopyFluxes``.
+    """
+    inst = mlcanopy_inst
+    for p in filter_mlcan:
+        inst = inst._replace(
+            uref_bef_forcing   = inst.uref_bef_forcing.at[p].set(inst.uref_cur_forcing[p]),
+            tref_bef_forcing   = inst.tref_bef_forcing.at[p].set(inst.tref_cur_forcing[p]),
+            qref_bef_forcing   = inst.qref_bef_forcing.at[p].set(inst.qref_cur_forcing[p]),
+            pref_bef_forcing   = inst.pref_bef_forcing.at[p].set(inst.pref_cur_forcing[p]),
+            co2ref_bef_forcing = inst.co2ref_bef_forcing.at[p].set(inst.co2ref_cur_forcing[p]),
+            lwsky_bef_forcing  = inst.lwsky_bef_forcing.at[p].set(inst.lwsky_cur_forcing[p]),
+            # Copy full band slice for swskyb/swskyd (ivis + inir) in one op
+            swskyb_bef_forcing = inst.swskyb_bef_forcing.at[p, :].set(inst.swskyb_cur_forcing[p, :]),
+            swskyd_bef_forcing = inst.swskyd_bef_forcing.at[p, :].set(inst.swskyd_cur_forcing[p, :]),
         )
     return inst
 
@@ -385,13 +422,15 @@ def MLCanopyFluxes(
         sai = sai.at[p].set(sai_val)
 
         _ncan = grid.ncan if _diff_mode else int(mlcanopy_inst.ncan_canopy[p])
-        for ic in range(1, _ncan + 1):
-            dlai_val = mlcanopy_inst.dlai_frac_profile[p, ic] * lai_val
-            dsai_val = mlcanopy_inst.dsai_frac_profile[p, ic] * sai_val
-            dpai_val = dlai_val + dsai_val
-            dlai = dlai.at[p, ic].set(dlai_val)
-            dsai = dsai.at[p, ic].set(dsai_val)
-            dpai = dpai.at[p, ic].set(dpai_val)
+        # Vectorized slice assignment replaces a per-layer Python for-loop.
+        # 3 slice scatter ops instead of 3×ncan scalar scatters → smaller
+        # XLA trace and better kernel fusion inside lax.scan.
+        _sl_lai = slice(1, _ncan + 1)
+        _dlai_sl = mlcanopy_inst.dlai_frac_profile[p, _sl_lai] * lai_val
+        _dsai_sl = mlcanopy_inst.dsai_frac_profile[p, _sl_lai] * sai_val
+        dlai = dlai.at[p, _sl_lai].set(_dlai_sl)
+        dsai = dsai.at[p, _sl_lai].set(_dsai_sl)
+        dpai = dpai.at[p, _sl_lai].set(_dlai_sl + _dsai_sl)
 
         # PAI conservation check — Fortran lines 239-242
         if not _diff_mode:
@@ -551,8 +590,8 @@ def MLCanopyFluxes(
             # nstep_ml is 0 in diff mode; _HF2008_diff ignores it entirely.
             # In non-diff mode it carries the current sub-step index (warning only).
             inst = CanopyTurbulence(nstep_ml, num_mlcan, filter_mlcan, inst, grid=grid)
-            inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isun, inst)
-            inst = LeafBoundaryLayer(num_mlcan, filter_mlcan, isha, inst)
+            # Both sun and shade in one fused GPU dispatch (2× fewer round-trips)
+            inst = LeafBoundaryLayerBoth(num_mlcan, filter_mlcan, inst)
             inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isun, inst, grid=grid,
                                       _o2ref_py=_o2ref_py_val)
             inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isha, inst, grid=grid,
@@ -648,37 +687,9 @@ def MLCanopyFluxes(
 
     # ------------------------------------------------------------------
     # Save current forcing as *_bef for next CLM timestep — Fortran lines 332-343
+    # JIT-compiled helper fuses 8 scatter ops into one XLA dispatch.
     # ------------------------------------------------------------------
-    uref_bef   = mlcanopy_inst.uref_bef_forcing
-    tref_bef   = mlcanopy_inst.tref_bef_forcing
-    qref_bef   = mlcanopy_inst.qref_bef_forcing
-    pref_bef   = mlcanopy_inst.pref_bef_forcing
-    co2ref_bef = mlcanopy_inst.co2ref_bef_forcing
-    swskyb_bef = mlcanopy_inst.swskyb_bef_forcing
-    swskyd_bef = mlcanopy_inst.swskyd_bef_forcing
-    lwsky_bef  = mlcanopy_inst.lwsky_bef_forcing
-
-    for p in filter_mlcan:
-        uref_bef   = uref_bef.at[p].set(mlcanopy_inst.uref_cur_forcing[p])
-        tref_bef   = tref_bef.at[p].set(mlcanopy_inst.tref_cur_forcing[p])
-        qref_bef   = qref_bef.at[p].set(mlcanopy_inst.qref_cur_forcing[p])
-        pref_bef   = pref_bef.at[p].set(mlcanopy_inst.pref_cur_forcing[p])
-        co2ref_bef = co2ref_bef.at[p].set(mlcanopy_inst.co2ref_cur_forcing[p])
-        for ib in (ivis, inir):
-            swskyb_bef = swskyb_bef.at[p, ib].set(mlcanopy_inst.swskyb_cur_forcing[p, ib])
-            swskyd_bef = swskyd_bef.at[p, ib].set(mlcanopy_inst.swskyd_cur_forcing[p, ib])
-        lwsky_bef = lwsky_bef.at[p].set(mlcanopy_inst.lwsky_cur_forcing[p])
-
-    mlcanopy_inst = mlcanopy_inst._replace(
-        uref_bef_forcing   = uref_bef,
-        tref_bef_forcing   = tref_bef,
-        qref_bef_forcing   = qref_bef,
-        pref_bef_forcing   = pref_bef,
-        co2ref_bef_forcing = co2ref_bef,
-        swskyb_bef_forcing = swskyb_bef,
-        swskyd_bef_forcing = swskyd_bef,
-        lwsky_bef_forcing  = lwsky_bef,
-    )
+    mlcanopy_inst = _save_bef_forcing(filter_mlcan, mlcanopy_inst)
 
     # ------------------------------------------------------------------
     # Canopy-level diagnostics — Fortran line 346

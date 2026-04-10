@@ -2319,83 +2319,108 @@ def LeafPhotosynthesis(
             _psi50_pft2 = MLpftcon.psi50_gs[pft]
             _shape_pft2 = MLpftcon.shape_gs[pft]
 
-        # --- Second loop: per-layer JAX operations (unified diff/non-diff) ---
-        gspot_arr = mlcanopy_inst.gspot_leaf
-        gs_arr    = mlcanopy_inst.gs_leaf
-        ci_arr    = mlcanopy_inst.ci_leaf
-        ac_arr    = mlcanopy_inst.ac_leaf
-        aj_arr    = mlcanopy_inst.aj_leaf
-        ap_arr    = mlcanopy_inst.ap_leaf
-        agross_arr = mlcanopy_inst.agross_leaf
-        anet_arr  = mlcanopy_inst.anet_leaf
-        cs_arr    = mlcanopy_inst.cs_leaf
-        hs_arr    = mlcanopy_inst.hs_leaf
-        vpd_arr   = mlcanopy_inst.vpd_leaf
+        # --- Second loop: vectorized over layers (replaces per-ic Python loop) ---
+        # All operations are element-wise; gspot_type and is_c3 are static Python
+        # ints/bools so their if/else branches are resolved at trace time.
+        # Replaces 46 × ~10 scalar XLA ops with ~10 slice XLA ops — reduces
+        # trace depth and improves kernel fusion inside lax.scan.
+        _sl2 = slice(1, _ncan_p + 1)
+        _gs_sl     = _gs_p2[_sl2]
+        _dpai_sl   = _dpai_p2[_sl2]
+        _gbc_sl    = _gbc_p2[_sl2]
+        _gbv_sl    = _gbv_p2[_sl2]
+        _eair_sl   = _eair_p2[_sl2]
+        _lesat_sl  = _lesat_p2[_sl2]
+        _vcmax_sl  = _vcmax_p2[_sl2]
+        _je_sl     = _je_p2[_sl2]
+        _kp_sl     = _kp_p2[_sl2]
+        _rd_sl     = _rd_p2[_sl2]
+        _kc_sl     = _kc_p2[_sl2]
+        _ko_sl     = _ko_p2[_sl2]
+        _cp_sl     = _cp_p2[_sl2]
+        _cair_sl   = _cair_p2[_sl2]
+        _apar_sl   = _apar_p2[_sl2]
+        _ceair_sl  = _ceair_p2[_sl2]
+        active_sl  = _dpai_sl > 0.0
 
-        for ic in range(1, _ncan_p + 1):
-            gs_ic   = _gs_p2[ic]
-            dpai_ic = _dpai_p2[ic]
-            active  = dpai_ic > 0.0  # JAX bool — used only in jnp.where
+        # Water-stress factor (gspot_type is a static Python int)
+        if gspot_type == 0:
+            fpsi = jnp.ones_like(_gs_sl)
+        elif gspot_type == 1:
+            _lwp_sl = _lwp_p2[_sl2]
+            fpsi = 1.0 / (1.0 + (_lwp_sl / _psi50_pft2) ** _shape_pft2)
+        else:
+            fpsi = jnp.ones_like(_gs_sl)
 
-            gspot_arr = gspot_arr.at[p, ic, il].set(gs_ic)
+        gs_new_sl = jnp.maximum(_gs_sl * fpsi, _gsmin_pft2)
 
-            # Water-stress factor
-            if gspot_type == 0:       # static branch
-                fpsi = 1.0
-            elif gspot_type == 1:
-                lwp_ic = _lwp_p2[ic]
-                fpsi = 1.0 / (1.0 + (lwp_ic / _psi50_pft2) ** _shape_pft2)
-            else:
-                fpsi = 1.0
+        # Safe gleaf: prevent divide-by-zero for inactive layers
+        _gs_safe = jnp.maximum(gs_new_sl, 1.0e-30)
+        gleaf_sl = 1.0 / (1.0 / _gbc_sl + dh2o_to_dco2 / _gs_safe)
 
-            gs_new = jnp.maximum(gs_ic * fpsi, _gsmin_pft2)
+        # Photosynthesis recompute (is_c3 is a static Python bool)
+        if is_c3:
+            b0_sl  = _kc_sl * (1.0 + _o2ref_p2 / _ko_sl)
+            bq_sl  = -(_cair_sl + b0_sl) - (_vcmax_sl - _rd_sl) / gleaf_sl
+            cq_sl  = _vcmax_sl * (_cair_sl - _cp_sl) - _rd_sl * (_cair_sl + b0_sl)
+            r1_sl, r2_sl = quadratic(1.0 / gleaf_sl, bq_sl, cq_sl)
+            ac_sl  = jnp.minimum(r1_sl, r2_sl) + _rd_sl
+            b0j_sl = 2.0 * _cp_sl
+            bqj_sl = -(_cair_sl + b0j_sl) - (_je_sl / 4.0 - _rd_sl) / gleaf_sl
+            cqj_sl = (_je_sl / 4.0) * (_cair_sl - _cp_sl) - _rd_sl * (_cair_sl + b0j_sl)
+            r1j_sl, r2j_sl = quadratic(1.0 / gleaf_sl, bqj_sl, cqj_sl)
+            aj_sl  = jnp.minimum(r1j_sl, r2j_sl) + _rd_sl
+            ap_sl  = jnp.zeros_like(ac_sl)
+        else:
+            ac_sl  = _vcmax_sl
+            aj_sl  = qe_c4 * _apar_sl
+            ap_sl  = _kp_sl * (_cair_sl * gleaf_sl + _rd_sl) / (gleaf_sl + _kp_sl)
 
-            # Recompute photosynthesis for new gs (JAX arithmetic)
-            gleaf = 1.0 / (1.0 / _gbc_p2[ic] + dh2o_to_dco2 / gs_new)
-            if is_c3:    # static Python branch
-                a0 = _vcmax_p2[ic]; b0 = _kc_p2[ic] * (1.0 + _o2ref_p2 / _ko_p2[ic])
-                bq = -(_cair_p2[ic] + b0) - (a0 - _rd_p2[ic]) / gleaf
-                cq = a0 * (_cair_p2[ic] - _cp_p2[ic]) - _rd_p2[ic] * (_cair_p2[ic] + b0)
-                r1, r2 = quadratic(1.0 / gleaf, bq, cq)
-                ac_v = jnp.minimum(r1, r2) + _rd_p2[ic]
-                a0j = _je_p2[ic] / 4.0; b0j = 2.0 * _cp_p2[ic]
-                bqj = -(_cair_p2[ic] + b0j) - (a0j - _rd_p2[ic]) / gleaf
-                cqj = a0j * (_cair_p2[ic] - _cp_p2[ic]) - _rd_p2[ic] * (_cair_p2[ic] + b0j)
-                r1j, r2j = quadratic(1.0 / gleaf, bqj, cqj)
-                aj_v = jnp.minimum(r1j, r2j) + _rd_p2[ic]
-                ap_v = jnp.asarray(0.0)
-            else:
-                ac_v = _vcmax_p2[ic]
-                aj_v = qe_c4 * _apar_p2[ic]
-                ap_v = _kp_p2[ic] * (_cair_p2[ic] * gleaf + _rd_p2[ic]) / (gleaf + _kp_p2[ic])
+        agross_sl = _RealizedRate(_c3psn_val, ac_sl, aj_sl, ap_sl)
+        anet_sl   = agross_sl - _rd_sl
+        cs_sl     = jnp.maximum(_cair_sl - anet_sl / _gbc_sl, 1.0)
+        ci_sl     = _cair_sl - anet_sl / gleaf_sl
 
-            agross_v = _RealizedRate(_c3psn_val, ac_v, aj_v, ap_v)
-            anet_v   = agross_v - _rd_p2[ic]
-            cs_v     = jnp.maximum(_cair_p2[ic] - anet_v / _gbc_p2[ic], 1.0)
-            ci_v     = _cair_p2[ic] - anet_v / gleaf
+        hs_sl     = ((_gbv_sl * _eair_sl + gs_new_sl * _lesat_sl)
+                     / ((_gbv_sl + gs_new_sl) * _lesat_sl))
+        vpd_sl    = jnp.maximum(_lesat_sl - hs_sl * _lesat_sl, 0.1)
 
-            # hs and vpd
-            hs_v  = ((_gbv_p2[ic] * _eair_p2[ic] + gs_new * _lesat_p2[ic])
-                     / ((_gbv_p2[ic] + gs_new) * _lesat_p2[ic]))
-            vpd_v = jnp.maximum(_lesat_p2[ic] - hs_v * _lesat_p2[ic], 0.1)
-
-            # Mask inactive layers
-            gs_arr  = gs_arr.at[p, ic, il].set(jnp.where(active, gs_new, gs_ic))
-            ci_arr  = ci_arr.at[p, ic, il].set(jnp.where(active, ci_v, ci_arr[p, ic, il]))
-            ac_arr  = ac_arr.at[p, ic, il].set(jnp.where(active, ac_v, ac_arr[p, ic, il]))
-            aj_arr  = aj_arr.at[p, ic, il].set(jnp.where(active, aj_v, aj_arr[p, ic, il]))
-            ap_arr  = ap_arr.at[p, ic, il].set(jnp.where(active, ap_v, ap_arr[p, ic, il]))
-            agross_arr = agross_arr.at[p, ic, il].set(jnp.where(active, agross_v, agross_arr[p, ic, il]))
-            anet_arr = anet_arr.at[p, ic, il].set(jnp.where(active, anet_v, anet_arr[p, ic, il]))
-            cs_arr  = cs_arr.at[p, ic, il].set(jnp.where(active, cs_v, cs_arr[p, ic, il]))
-            hs_arr  = hs_arr.at[p, ic, il].set(jnp.where(active, hs_v, 0.0))
-            vpd_arr = vpd_arr.at[p, ic, il].set(jnp.where(active, vpd_v, 0.0))
+        # Mask inactive layers and write all outputs back in one _replace()
+        _z = jnp.zeros_like(active_sl, dtype=jnp.float64)
+        gspot_arr  = mlcanopy_inst.gspot_leaf.at[p, _sl2, il].set(_gs_sl)
+        gs_arr     = mlcanopy_inst.gs_leaf.at[p, _sl2, il].set(
+                         jnp.where(active_sl, gs_new_sl, _gs_sl))
+        ci_arr     = mlcanopy_inst.ci_leaf.at[p, _sl2, il].set(
+                         jnp.where(active_sl, ci_sl,     mlcanopy_inst.ci_leaf[p, _sl2, il]))
+        ac_arr     = mlcanopy_inst.ac_leaf.at[p, _sl2, il].set(
+                         jnp.where(active_sl, ac_sl,     mlcanopy_inst.ac_leaf[p, _sl2, il]))
+        aj_arr     = mlcanopy_inst.aj_leaf.at[p, _sl2, il].set(
+                         jnp.where(active_sl, aj_sl,     mlcanopy_inst.aj_leaf[p, _sl2, il]))
+        ap_arr     = mlcanopy_inst.ap_leaf.at[p, _sl2, il].set(
+                         jnp.where(active_sl, ap_sl,     mlcanopy_inst.ap_leaf[p, _sl2, il]))
+        agross_arr = mlcanopy_inst.agross_leaf.at[p, _sl2, il].set(
+                         jnp.where(active_sl, agross_sl, mlcanopy_inst.agross_leaf[p, _sl2, il]))
+        anet_arr   = mlcanopy_inst.anet_leaf.at[p, _sl2, il].set(
+                         jnp.where(active_sl, anet_sl,   mlcanopy_inst.anet_leaf[p, _sl2, il]))
+        cs_arr     = mlcanopy_inst.cs_leaf.at[p, _sl2, il].set(
+                         jnp.where(active_sl, cs_sl,     mlcanopy_inst.cs_leaf[p, _sl2, il]))
+        hs_arr     = mlcanopy_inst.hs_leaf.at[p, _sl2, il].set(
+                         jnp.where(active_sl, hs_sl,     _z))
+        vpd_arr    = mlcanopy_inst.vpd_leaf.at[p, _sl2, il].set(
+                         jnp.where(active_sl, vpd_sl,    _z))
 
         mlcanopy_inst = mlcanopy_inst._replace(
-            gspot_leaf=gspot_arr, gs_leaf=gs_arr, ci_leaf=ci_arr,
-            ac_leaf=ac_arr, aj_leaf=aj_arr, ap_leaf=ap_arr,
-            agross_leaf=agross_arr, anet_leaf=anet_arr, cs_leaf=cs_arr,
-            hs_leaf=hs_arr, vpd_leaf=vpd_arr,
+            gspot_leaf  = gspot_arr,
+            gs_leaf     = gs_arr,
+            ci_leaf     = ci_arr,
+            ac_leaf     = ac_arr,
+            aj_leaf     = aj_arr,
+            ap_leaf     = ap_arr,
+            agross_leaf = agross_arr,
+            anet_leaf   = anet_arr,
+            cs_leaf     = cs_arr,
+            hs_leaf     = hs_arr,
+            vpd_leaf    = vpd_arr,
         )
 
     return mlcanopy_inst

@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-04-10 — GPU performance optimizations (session 24)
+
+### Changes implemented (all committed to `differentiable-physics`)
+
+**1. JAX Persistent Compilation Cache** — eliminates 290s recompile on subsequent runs
+- Added `JAX_COMPILATION_CACHE_DIR` + `JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=10` to
+  all SLURM scripts: `run_laxscan_benchmark.sh`, `run_multisite_benchmark.sh`,
+  `run_fd_grad_check.sh`, `run_optimize_params.sh`, `run_param_sensitivity.sh`
+- Added programmatic cache config to `src/offline_executable/main.py` (uses same env var if set)
+- Cache dir: `/burg-archive/home/al4385/.cache/jax_compile_cache`
+
+**2. Vectorized LAI/SAI/PAI layer loop** (`MLCanopyFluxesMod.py`)
+- Replaced `for ic in range(1, _ncan+1): dlai.at[p,ic].set(...)` (3×ncan=138 scalar scatter ops)
+  with 3 slice scatter ops: `dlai.at[p, _sl].set(frac * lai_val)`
+- Reduces XLA trace depth inside lax.scan; improves kernel fusion
+
+**3. JIT-compiled forcing-save helper** (`MLCanopyFluxesMod.py`)
+- Added `_save_bef_forcing(filter_mlcan, inst)` JIT function (fuses 8 scatter ops → 1 XLA dispatch)
+- Replaced the verbose post-loop forcing update with a single `_save_bef_forcing(...)` call
+
+**4. Batched sun+shade LeafBoundaryLayer** (`MLLeafBoundaryLayerMod.py`)
+- Added `_gb_layers_both`: outer vmap over sun/shade dim of the existing `_gb_layers` layer-vmap
+- Added `LeafBoundaryLayerBoth`: processes isun and isha in one GPU kernel dispatch
+- Updated `MLCanopyFluxesMod.py` call site: 2 sequential `LeafBoundaryLayer` calls →
+  1 `LeafBoundaryLayerBoth` call (halves boundary-layer dispatch count per RK stage)
+
+**5. Vectorized second loop in LeafPhotosynthesis** (`MLLeafPhotosynthesisMod.py`)
+- Replaced `for ic in range(1, _ncan_p+1)` scalar loop (46×~10 ops) with slice operations
+- All water-stress + photosynthesis-recompute ops are now element-wise over `_sl = slice(1, n+1)`
+- `is_c3` and `gspot_type` are Python statics → resolved at trace time (no `jnp.where` overhead)
+- Reduces second-loop XLA ops from ~460 scalar to ~10 slice ops per `il`
+
+**6. AOT compilation script** (`diags/aot_compile.py`, `bashscripts/run_aot_compile.sh`)
+- Strategy 1: JIT warm-up to populate persistent cache; reports whether cache hit on 2nd call
+- Strategy 2 (--export flag): `jax.export` serialization to `.mlirbc` artifact (JAX ≥ 0.4.25)
+- Run with `sbatch bashscripts/run_aot_compile.sh` to pre-warm the cache on A100
+
+### Expected impact
+| Change | Impact |
+|---|---|
+| Persistent cache | Eliminate 290s compile on every run after first |
+| LAI/SAI vectorization | ~138 fewer scalar XLA ops per sub-step |
+| Forcing save JIT | 8 → 1 Python→GPU dispatch per CLM timestep |
+| LeafBoundaryLayer both | 2 → 1 GPU dispatch per RK stage |
+| LeafPhotosynthesis 2nd loop | ~460 → ~10 XLA scalar ops per il per sub-step |
+
+### Next steps
+- Run `sbatch bashscripts/run_aot_compile.sh` to populate the persistent cache
+- Re-run `benchmark_laxscan.py` to measure improvement from vectorization changes
+- Confirm full-physics vmap results from job 7328915 for paper Section 4
+
+---
+
 ## 2026-04-09 — lax.scan benchmark results (jobs 7329052 + 7329441, A100 GPU)
 
 ### Benchmark: lax.scan diff mode vs Python loop non-diff mode
