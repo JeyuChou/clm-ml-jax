@@ -17,6 +17,12 @@ Backup job 7345152 (4h, A40) runs remaining params.
 
 ---
 
+## 2026-04-11 — Multisite vmap N=16 result (job 7342743, session 29)
+
+N=16: **1.86× speedup, 350.0 ms/site/step** (A100). Continuing monotonic improvement. N=32 computing.
+
+---
+
 ## 2026-04-10 — Multisite vmap N=1–8 results (session 28)
 
 ### Multisite benchmark (job 7342743, A100)
@@ -27,8 +33,9 @@ Backup job 7345152 (4h, A40) runs remaining params.
 | 2 | 1484.3 | 1.025 | 1.312 | **1.28×** | 512.3 ms |
 | 4 | 1448.4 | 1.780 | 2.626 | **1.48×** | 444.9 ms |
 | 8 | 1423.6 | 2.992 | 5.229 | **1.75×** | 374.0 ms |
+| 16 | 1603.4 | 5.600 | 10.421 | **1.86×** | 350.0 ms |
 
-Speedup growing monotonically with N. ms/site improving (722 → 512 → 445 → 374). N=16 computing.
+Speedup growing monotonically with N. ms/site improving (722 → 512 → 445 → 374 → 350). N=32 computing.
 
 ---
 
