@@ -19,10 +19,13 @@ RK4 gradient check XLA compilation exceeded 2-hour job limit:
 
 | Job ID | What | Status |
 |---|---|---|
-| 7344537 | laxscan benchmark (4h) | PENDING (Priority) |
-| 7342743 | multisite vmap benchmark | RUNNING (g191) |
+| **7344785** | fd_grad_check (5 params, A40 GPU g188, any-GPU) | RUNNING |
+| 7344537 | laxscan benchmark (4h, A100 g194) | RUNNING — Euler grad compiling |
+| 7342743 | multisite vmap benchmark (A100 g191) | RUNNING — N=1 measuring |
 | 7344539 | plot_benchmarks | PENDING (Dependency) |
-| 7343825 | fd_grad_check (5 params) | PENDING (Resources) |
+| 7343825 | fd_grad_check (A100 constraint) | CANCELLED (superseded by 7344785) |
+
+7344785 submitted without `--constraint=a100` to get faster scheduling; running on NVIDIA A40 (46GB).
 
 ### Euler laxscan results (job 7344537, consistent with 7342742)
 ```
