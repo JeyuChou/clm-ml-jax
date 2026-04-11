@@ -9,7 +9,15 @@
 | 1 | 1175.6 | 0.722 | 0.662 | 0.92× | 722.0 ms |
 | 2 | 1484.3 | 1.025 | 1.312 | **1.28×** | 512.3 ms |
 
-Crossover at N=2. N=4 compile starting. Speedup expected to grow with N.
+Crossover at N=2. N=4 done — 1.48×. N=8 vmap compiling.
+
+| N | vmap_1st_s | vmap_ss_s | seq_ss_s | speedup | ms/site/step |
+|---|---|---|---|---|---|
+| 1 | 1175.6 | 0.722 | 0.662 | 0.92× | 722.0 ms |
+| 2 | 1484.3 | 1.025 | 1.312 | **1.28×** | 512.3 ms |
+| 4 | 1448.4 | 1.780 | 2.626 | **1.48×** | 444.9 ms |
+
+Speedup growing with N. ms/site improving (722 → 512 → 445).
 
 ---
 
