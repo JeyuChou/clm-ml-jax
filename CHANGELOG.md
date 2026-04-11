@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-04-10 — FD grad check: alpha_sw + alpha_tref PASS (job 7344785, session 28)
+
+### FD comparison table (partial — job 7344785 timed out after alpha_tref)
+
+| Parameter | JAX value | FD value | Rel err | Status |
+|---|---|---|---|---|
+| alpha_sw    | 1.070136e+01 | 1.070136e+01 | ~0 (exact 7 sig figs) | **PASS** |
+| alpha_tref  | -4.869162e+01 | -4.868532e+01 | 1.3e-4 | **PASS** (4 sig figs) |
+| alpha_g1    | — | — | — | INACT (gs_type=2, WUE) — skip |
+| alpha_iota  | — | — | — | pending backup job 7345152 |
+| alpha_vcmax | — | — | — | pending backup job 7345152 |
+
+alpha_sw: JAX=FD=1.070136e+01 exact. alpha_tref: JAX=-48.6916, FD=-48.6853 (4 sig figs — FD has inherent O(EPS²) error for thermally-sensitive param).
+Backup job 7345152 (4h, A40) runs remaining params.
+
+---
+
 ## 2026-04-10 — Multisite vmap N=1–8 results (session 28)
 
 ### Multisite benchmark (job 7342743, A100)
