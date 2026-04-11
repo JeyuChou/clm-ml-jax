@@ -12,16 +12,18 @@ Phase 1 (this implementation): vcmaxpft only, single timestep, synthetic observa
 Phase 2 (future): multi-timestep optimization against real AmeriFlux observations.
 See parameter_optimization_experiment.md for the full experiment design.
 
-Differentiable path for vcmaxpft:
-  alpha_vcmax * MLpftcon.vcmaxpft[pft]    (module-global mutation during trace)
-  → CanopyNitrogenProfile: vcmax25top = MLpftcon.vcmaxpft[pft]  (JAX gather, no float())
+Differentiable path for vcmaxpft (session 27 fix):
+  vcmaxpft_jax = alpha_vcmax * _orig_pftcon.vcmaxpft   (explicit JAX arg)
+  → MLCanopyFluxes(vcmaxpft_jax=vcmaxpft_jax)
+  → CanopyNitrogenProfile: vcmax25top = vcmaxpft_jax[pft]  (JAX gather, traced)
   → vcmax25_leaf (per-layer JAX array)
   → LeafPhotosynthesis kernel (vcmax25_ic as JAX input)
   → agross_leaf → GPP loss
 
-NOT YET differentiable (FD or re-run needed):
-  iota_SPA: extracted with float(_iota_np[pft]) in LeafPhotosynthesis factory
-  g1_MED: same issue
+Differentiable path for iota_SPA (session 25 fix):
+  _set_pftcon(_orig._replace(iota_SPA=alpha_iota * _orig.iota_SPA))
+  → LeafPhotosynthesis: _iota_jnp = jnp.asarray(MLpftcon.iota_SPA) at call time
+  → _bisect_gs_ift (IFT) → gs_opt → GPP loss
 
 Usage (from project root):
     cd src && python ../diags/optimize_params.py [--synthetic] [--n-steps 200]
