@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-04-10 — Critical bug fix: MLpftcon injection pattern (session 26, part 2)
+
+### Root cause discovered
+
+**ALL stomatal/vcmax parameter gradient checks were silently broken.**
+
+The injection pattern `MLpftcon.field = alpha * original.field` fails because:
+1. `MLpftcon_type` is a `typing.NamedTuple` (immutable) — `AttributeError: can't set attribute`
+2. `MLpftconMod.MLpftcon = original._replace(field=alpha * original.field)` replaces the
+   MODULE-LEVEL variable, but each physics module that did `from MLpftconMod import MLpftcon`
+   at import time holds a DIRECT REFERENCE to the original instance — the module-level
+   variable replacement does NOT propagate to those local bindings.
+
+Verified with explicit test: after `_pmod.MLpftcon = new_inst`, `_NitroMod.MLpftcon` still
+points to the original. So `vcmax25top = MLpftcon.vcmaxpft[pft]` in CanopyNitrogenProfile
+returned the original value regardless of alpha → gradient was 0 (constant function).
+
+### Fix: update ALL physics module local references
+
+Correct pattern (implemented in all three diags):
+```python
+def _set_pftcon(new_inst):
+    MLpftconMod.MLpftcon          = new_inst   # update module variable
+    MLLeafPhotosynthesisMod.MLpftcon  = new_inst   # update local binding (g1, iota, gsmin)
+    MLCanopyNitrogenProfileMod.MLpftcon = new_inst  # update local binding (vcmaxpft, clump)
+
+def _restore_pftcon():
+    # restore all three back to _orig_pftcon
+```
+
+### Files fixed (commit 1aad306)
+
+- `diags/fd_grad_check.py`: `_set_pftcon`/`_restore_pftcon` helpers; all 3 forward functions
+- `diags/param_sensitivity.py`: same; also upgraded iota_SPA from FD-only to JAX grad
+- `diags/optimize_params.py`: `_run_with_vcmax_scale` now uses `_set_pftcon`
+
+### Jobs resubmitted
+
+| Job ID | What | Status |
+|---|---|---|
+| 7343434 | fd_grad_check (5 params: sw, tref, g1, iota, vcmax) | PENDING |
+
+Cancelled 7343159 (had broken injection pattern).
+
+---
+
 ## 2026-04-10 — Gradient audit + vcmaxpft added to grad check (session 26)
 
 ### Differentiability status audit
