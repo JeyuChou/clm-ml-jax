@@ -384,26 +384,27 @@ def plot_results(results: dict, alpha_true: float | None = None, out_path=None):
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
-def main():
-    parser = argparse.ArgumentParser(description="CLM-ML-JAX parameter optimization")
-    parser.add_argument("--synthetic", action="store_true", default=True,
-                        help="Use synthetic observations (identifiability test)")
-    parser.add_argument("--vcmax-true", type=float, default=125.0,
-                        help="True vcmaxpft value for synthetic case (default: 125.0)")
-    parser.add_argument("--n-steps", type=int, default=200,
-                        help="Maximum optimizer steps (default: 200)")
-    parser.add_argument("--lr-max", type=float, default=0.01,
-                        help="Peak learning rate (default: 0.01)")
-    parser.add_argument("--w-gpp", type=float, default=0.5,
-                        help="GPP loss weight (default: 0.5)")
-    parser.add_argument("--w-le", type=float, default=0.5,
-                        help="LE loss weight (default: 0.5)")
-    parser.add_argument("--lam-reg", type=float, default=0.05,
-                        help="L2 regularization strength (default: 0.05)")
-    args = parser.parse_args()
+def main(args=None):
+    if args is None:
+        parser = argparse.ArgumentParser(description="CLM-ML-JAX parameter optimization")
+        parser.add_argument("--synthetic", action="store_true", default=True,
+                            help="Use synthetic observations (identifiability test)")
+        parser.add_argument("--vcmax-true", type=float, default=125.0,
+                            help="True vcmaxpft value for synthetic case (default: 125.0)")
+        parser.add_argument("--n-steps", type=int, default=200,
+                            help="Maximum optimizer steps (default: 200)")
+        parser.add_argument("--lr-max", type=float, default=0.01,
+                            help="Peak learning rate (default: 0.01)")
+        parser.add_argument("--w-gpp", type=float, default=0.5,
+                            help="GPP loss weight (default: 0.5)")
+        parser.add_argument("--w-le", type=float, default=0.5,
+                            help="LE loss weight (default: 0.5)")
+        parser.add_argument("--lam-reg", type=float, default=0.05,
+                            help="L2 regularization strength (default: 0.05)")
+        args = parser.parse_args()
 
     # ── Generate observations ─────────────────────────────────────────────────
-    if args.synthetic:
+    if getattr(args, "synthetic", True):
         obs_info = generate_synthetic_obs(vcmax_true=args.vcmax_true)
     else:
         raise NotImplementedError(
@@ -711,10 +712,6 @@ def main_joint(args):
     print(f"Results saved: {out_json}")
 
 
-if __name__ == "__main__":
-    main()
-
-
 def _parse_and_dispatch():
     """Extended CLI that supports both single-param and joint optimization."""
     parser = argparse.ArgumentParser(description="CLM-ML-JAX parameter optimization")
@@ -733,4 +730,8 @@ def _parse_and_dispatch():
     if args.joint:
         main_joint(args)
     else:
-        main()
+        main(args)
+
+
+if __name__ == "__main__":
+    _parse_and_dispatch()
