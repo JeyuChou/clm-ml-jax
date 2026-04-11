@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-04-10 — Differentiability fix: g0, g1_MED, iota_SPA, gsmin_SPA (session 25)
+
+### Problem
+
+`d(GPP)/d(g1_MED)` and `d(GPP)/d(iota_SPA)` were structurally broken.
+The stomatal conductance parameters (`g0_MED`, `g1_MED`, `g0_BB`, `g1_BB`,
+`iota_SPA`, `gsmin_SPA`) were converted to Python floats via `float(_np[pft])`
+before being closed over in the lru_cache'd kernel factory functions. This broke
+the autodiff tape — JAX saw them as constants, not differentiable parameters.
+
+### Fix (`src/multilayer_canopy/MLLeafPhotosynthesisMod.py`, commit `0305f82`)
+
+Moved all stomatal parameters from closed-over factory arguments to **runtime
+JAX broadcast scalars** (`in_axes=None` in vmap), following the existing pattern
+used for `vcmaxse_rt`/`vcmaxc_rt` in the acclim kernels.
+
+- `_make_leaf_photo_kernel`: removed `g0_val`/`g1_val` from `lru_cache` key; added
+  `g0_rt`/`g1_rt` as runtime kernel args. vmap `in_axes` updated to `(0,)*11 + (None, None)`.
+- Same for `_make_leaf_photo_kernel_acclim` + `_get_vmapped_photo_kernel_acclim`.
+- `_make_leaf_photo_kernel_wue`: removed `iota_pft`/`gsmin_pft` from cache key;
+  added `iota_rt`/`gsmin_rt` as runtime args. vmap `in_axes` updated to include 2 more Nones.
+- Same for `_make_leaf_photo_kernel_wue_acclim` + `_get_vmapped_photo_kernel_wue_acclim`.
+- `LeafPhotosynthesis` call sites: `_g1_MED_jnp = jnp.asarray(MLpftcon.g1_MED)` instead
+  of `np.asarray` + `float()`. JAX scalars passed as broadcast args to vmapped kernels.
+
+### Gradient paths enabled
+
+- `d(GPP)/d(g1_MED)`: `alpha_tref → T_leaf → LeafPhotosynthesis → _ci_solver_scan → g1_rt → gs → ci → GPP`
+- `d(GPP)/d(iota_SPA)`: via IFT in `_bisect_gs_ift → _StomataEfficiencyJax(iota=iota_rt) → GPP`
+
+### Status
+
+Code committed and pushed. No benchmark jobs needed to verify — will add a
+`d(GPP)/d(g1_MED)` and `d(GPP)/d(iota_SPA)` check to `diags/fd_grad_check.py`.
+
+### Previously broken (not yet verified)
+
+- `d(GPP)/d(g1_MED)` — now should return finite non-zero value
+- `d(GPP)/d(iota_SPA)` — now should return finite non-zero value via IFT
+
+---
+
 ## 2026-04-10 — Benchmark jobs submitted + plotting infrastructure (session 24)
 
 ### Jobs submitted to measure post-optimization performance

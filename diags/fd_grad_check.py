@@ -3,19 +3,18 @@ Experiment 2: Finite-difference gradient check.
 
 Verifies that jax.grad produces accurate gradients through the full
 CLM-ml-jax column by comparing against central finite differences for
-two parameters with clear, non-trivial pathways to canopy GPP:
+parameters with clear, non-trivial pathways to canopy GPP:
 
-  - alpha_sw:     global scale factor on swskyb_forcing & swskyd_forcing
-                  (solar radiation → PAR → electron transport → GPP)
-  - alpha_vcmax25: global scale factor on vcmax25_profile & vcmax25_leaf
-                  (Rubisco capacity → carboxylation-limited photosynthesis)
+  - alpha_sw:      global scale factor on swskyb_forcing & swskyd_forcing
+                   (solar radiation → PAR → electron transport → GPP)
+  - alpha_tref:    global scale factor on forc_t_downscaled_col
+                   (temperature → enzyme kinetics → Vcmax(T)/Jmax(T) → GPP)
+  - alpha_g1_MED:  global scale factor on g1_MED (Medlyn stomatal slope)
+                   (g1 → Ci solver → gs → GPP; only active when gs_type==0)
+  - alpha_iota:    global scale factor on iota_SPA (WUE efficiency parameter)
+                   (iota → _bisect_gs_ift via IFT → gs_opt → GPP; gs_type==2)
 
 Output scalar: gppveg_canopy[p]  (total canopy GPP, umol CO2/m2/s)
-
-Note: at high-light conditions the canopy may be light-limited (Aj < Ac),
-in which case alpha_vcmax25 has a small but non-zero gradient (via the
-co-limitation blending in the Farquhar model).  alpha_sw always has a
-large gradient because it directly controls PAR → J.
 
 Usage (from project root):
     cd src && python ../diags/fd_grad_check.py
@@ -38,11 +37,12 @@ if str(_PROJECT_ROOT) not in sys.path:
 FIGURES_DIR = Path(__file__).parent / "figures"
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── Shared init ───────────────────────────────────────────────────────────────
+# ── Shared init ────────────────────────────���──────────────────────────────────
 from diags.expt_init import (
     mlcanopy_inst, grid, _mlcf_kwargs, jax, jnp, MLCanopyFluxes,
     atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp,
 )
+from multilayer_canopy.MLpftconMod import MLpftcon
 
 import numpy as np
 import matplotlib
@@ -93,10 +93,55 @@ def forward_gpp_tref(alpha: jnp.ndarray) -> jnp.ndarray:
     return compute_gpp(inst, _p, grid.ncan)
 
 
+# Save original stomatal parameter arrays for restore after each call
+_orig_g1_MED  = MLpftcon.g1_MED
+_orig_g0_MED  = MLpftcon.g0_MED
+_orig_iota    = MLpftcon.iota_SPA
+_orig_gsmin   = MLpftcon.gsmin_SPA
+
+
+def forward_gpp_g1_MED(alpha: jnp.ndarray) -> jnp.ndarray:
+    """Forward pass: scale g1_MED[all PFTs] by alpha, return GPP.
+
+    g1_MED is the Medlyn stomatal slope.  Active when gs_type == 0 (Medlyn).
+    Gradient path: g1_MED → gs (quadratic solve in kernel) → Ci → GPP.
+    """
+    MLpftcon.g1_MED = alpha * _orig_g1_MED
+    inst = MLCanopyFluxes(
+        mlcanopy_inst=mlcanopy_inst,
+        atm2lnd_inst=atm2lnd_inst,
+        wateratm2lndbulk_inst=wateratm2lndbulk_inst,
+        **_mlcf_kwargs_no_atm,
+    )
+    MLpftcon.g1_MED = _orig_g1_MED   # restore (happens after JAX trace captures dep)
+    return compute_gpp(inst, _p, grid.ncan)
+
+
+def forward_gpp_iota(alpha: jnp.ndarray) -> jnp.ndarray:
+    """Forward pass: scale iota_SPA[all PFTs] by alpha, return GPP.
+
+    iota_SPA is the WUE efficiency parameter.  Active when gs_type == 2 (WUE).
+    Gradient path: iota → _bisect_gs_ift (IFT) → gs_opt → Ci → GPP.
+    """
+    MLpftcon.iota_SPA = alpha * _orig_iota
+    inst = MLCanopyFluxes(
+        mlcanopy_inst=mlcanopy_inst,
+        atm2lnd_inst=atm2lnd_inst,
+        wateratm2lndbulk_inst=wateratm2lndbulk_inst,
+        **_mlcf_kwargs_no_atm,
+    )
+    MLpftcon.iota_SPA = _orig_iota   # restore
+    return compute_gpp(inst, _p, grid.ncan)
+
+
 # ── Print baseline values ────────────────────────────────────────────────────
+from multilayer_canopy.MLclm_varctl import gs_type as _gs_type
 print("\n=== Baseline outputs ===", flush=True)
 baseline_gpp = float(forward_gpp_sw(jnp.float64(1.0)))
 print(f"  GPP proxy (baseline) = {baseline_gpp:.4f} (agross_leaf weighted sum)", flush=True)
+_gs_name = {0: "Medlyn (gs_type=0)", 1: "Ball-Berry (gs_type=1)", 2: "WUE (gs_type=2)"}.get(_gs_type, f"unknown (gs_type={_gs_type})")
+print(f"  Stomatal model: {_gs_name}", flush=True)
+print(f"  NOTE: dGPP/d(alpha_g1) active only for gs_type==0; dGPP/d(alpha_iota) active only for gs_type==2", flush=True)
 
 # ── Compute JAX gradients ─────────────────────────────────────────────────────
 print("\n=== Computing JAX gradients ===", flush=True)
@@ -109,6 +154,16 @@ print(f"  dGPP/d(alpha_sw)   [JAX] = {grad_sw_jax:.6e}  ({time.time()-t0:.1f}s)"
 t0 = time.time()
 grad_tref_jax = float(jax.jit(jax.grad(forward_gpp_tref))(jnp.float64(1.0)))
 print(f"  dGPP/d(alpha_tref) [JAX] = {grad_tref_jax:.6e}  ({time.time()-t0:.1f}s)",
+      flush=True)
+
+t0 = time.time()
+grad_g1_jax = float(jax.jit(jax.grad(forward_gpp_g1_MED))(jnp.float64(1.0)))
+print(f"  dGPP/d(alpha_g1)   [JAX] = {grad_g1_jax:.6e}  ({time.time()-t0:.1f}s)",
+      flush=True)
+
+t0 = time.time()
+grad_iota_jax = float(jax.jit(jax.grad(forward_gpp_iota))(jnp.float64(1.0)))
+print(f"  dGPP/d(alpha_iota) [JAX] = {grad_iota_jax:.6e}  ({time.time()-t0:.1f}s)",
       flush=True)
 
 # ── Compute finite-difference gradients ───────────────────────────────────────
@@ -129,21 +184,43 @@ grad_tref_fd = (f_plus - f_minus) / (2 * EPS)
 print(f"  dGPP/d(alpha_tref) [FD]  = {grad_tref_fd:.6e}  ({time.time()-t0:.1f}s)",
       flush=True)
 
+t0 = time.time()
+f_plus  = float(forward_gpp_g1_MED(jnp.float64(1.0 + EPS)))
+f_minus = float(forward_gpp_g1_MED(jnp.float64(1.0 - EPS)))
+grad_g1_fd = (f_plus - f_minus) / (2 * EPS)
+print(f"  dGPP/d(alpha_g1)   [FD]  = {grad_g1_fd:.6e}  ({time.time()-t0:.1f}s)",
+      flush=True)
+
+t0 = time.time()
+f_plus  = float(forward_gpp_iota(jnp.float64(1.0 + EPS)))
+f_minus = float(forward_gpp_iota(jnp.float64(1.0 - EPS)))
+grad_iota_fd = (f_plus - f_minus) / (2 * EPS)
+print(f"  dGPP/d(alpha_iota) [FD]  = {grad_iota_fd:.6e}  ({time.time()-t0:.1f}s)",
+      flush=True)
+
 # ── Report ────────────────────────────────────────────────────────────────────
 print("\n=== Gradient accuracy summary ===")
-print(f"{'Parameter':<22}  {'JAX grad':>14}  {'FD grad':>14}  {'Rel error':>12}  {'Pass?':>6}")
-print("-" * 76)
+print(f"{'Parameter':<24}  {'JAX grad':>14}  {'FD grad':>14}  {'Rel error':>12}  {'Pass?':>6}")
+print("-" * 80)
 
 results = []
 for name, jax_val, fd_val in [
-    ("dGPP/d(alpha_sw)",   grad_sw_jax,   grad_sw_fd),
-    ("dGPP/d(alpha_tref)", grad_tref_jax, grad_tref_fd),
+    ("dGPP/d(alpha_sw)",    grad_sw_jax,   grad_sw_fd),
+    ("dGPP/d(alpha_tref)",  grad_tref_jax, grad_tref_fd),
+    ("dGPP/d(alpha_g1)",    grad_g1_jax,   grad_g1_fd),
+    ("dGPP/d(alpha_iota)",  grad_iota_jax, grad_iota_fd),
 ]:
-    rel_err = abs(jax_val - fd_val) / (abs(fd_val) + 1e-30)
-    passed  = rel_err < 0.01  # 1% tolerance
+    both_tiny = abs(jax_val) < 1e-6 and abs(fd_val) < 1e-6
+    if both_tiny:
+        rel_err = 0.0
+        passed  = True
+        status  = "INACT"   # parameter inactive for current gs_type
+    else:
+        rel_err = abs(jax_val - fd_val) / (abs(fd_val) + 1e-30)
+        passed  = rel_err < 0.01  # 1% tolerance
+        status  = "PASS" if passed else "FAIL"
     results.append((name, jax_val, fd_val, rel_err, passed))
-    status = "PASS" if passed else "FAIL"
-    print(f"  {name:<18}  {jax_val:>14.4e}  {fd_val:>14.4e}  {rel_err:>12.2e}  {status:>6}")
+    print(f"  {name:<20}  {jax_val:>14.4e}  {fd_val:>14.4e}  {rel_err:>12.2e}  {status:>6}")
 
 all_pass = all(r[4] for r in results)
 print(f"\n{'ALL PASS' if all_pass else 'SOME FAILURES'} — "
