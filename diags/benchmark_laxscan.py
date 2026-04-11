@@ -18,7 +18,7 @@ Usage (from project root):
     CLM_ML_NO_CHECKPOINT=1 python diags/benchmark_laxscan.py
 """
 from __future__ import annotations
-import os, sys, time
+import csv, os, sys, time
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -165,11 +165,38 @@ def _section(title, rk_type, dtime_ml, nrk):
 
 
 # ── Run benchmarks ────────────────────────────────────────────────────────────
-# Euler result already known (207× speedup) — run again for grad check, then RK4.
+_csv_rows = []
+
 print("\n=== Benchmark: Euler (1 sub-step) — grad check ===", flush=True)
-_section("EULER — 1 sub-step, 0 RK stages", rk_type=10, dtime_ml=float(_ctl.dtime_ml), nrk=0)
+_euler = _section("EULER — 1 sub-step, 0 RK stages", rk_type=10, dtime_ml=float(_ctl.dtime_ml), nrk=0)
+_csv_rows.append({
+    "mode": "Euler", "rk_type": 10, "n_substeps": 1, "n_rk_stages": 0,
+    "diff_compile_s": round(_euler[0], 3),
+    "diff_ss_ms":     round(_euler[1] * 1000, 2),
+    "nondiff_ss_ms":  round(_euler[2] * 1000, 2),
+    "speedup":        round(_euler[3], 1),
+})
 
 print("\n=== Benchmark: Full RK4 (6 sub-steps × 4 RK stages) ===", flush=True)
-_section("FULL RK4 — 6 sub-steps × 4 RK stages", rk_type=41, dtime_ml=300.0, nrk=4)
+_rk4 = _section("FULL RK4 — 6 sub-steps × 4 RK stages", rk_type=41, dtime_ml=300.0, nrk=4)
+_csv_rows.append({
+    "mode": "RK4", "rk_type": 41, "n_substeps": 6, "n_rk_stages": 4,
+    "diff_compile_s": round(_rk4[0], 3),
+    "diff_ss_ms":     round(_rk4[1] * 1000, 2),
+    "nondiff_ss_ms":  round(_rk4[2] * 1000, 2),
+    "speedup":        round(_rk4[3], 1),
+})
+
+# ── Save CSV ──────────────────────────────────────────────────────────────────
+_figures_dir = Path(__file__).resolve().parent / "figures"
+_figures_dir.mkdir(parents=True, exist_ok=True)
+_csv_path = _figures_dir / "laxscan_benchmark.csv"
+_fields = ["mode", "rk_type", "n_substeps", "n_rk_stages",
+           "diff_compile_s", "diff_ss_ms", "nondiff_ss_ms", "speedup"]
+with open(_csv_path, "w", newline="") as _f:
+    _w = csv.DictWriter(_f, fieldnames=_fields)
+    _w.writeheader()
+    _w.writerows(_csv_rows)
+print(f"\nResults saved: {_csv_path}", flush=True)
 
 print("\n=== benchmark_laxscan.py complete ===", flush=True)

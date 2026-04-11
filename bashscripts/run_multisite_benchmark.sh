@@ -40,20 +40,14 @@ echo "JAX cache dir: $JAX_COMPILATION_CACHE_DIR"
 cd /burg-archive/home/al4385/clm-ml-jax
 
 # ── Run benchmark: full RK4 physics, GPU + CPU, N = 1,2,4,8,16,32 ────────────
+# Runs GPU and CPU in the same python invocation so the JIT-compiled model is
+# shared; saves a single multisite_benchmark.csv covering both backends.
 echo ""
-echo "=== Multi-site vmap benchmark — FULL RK4 (GPU) ==="
+echo "=== Multi-site vmap benchmark — FULL RK4 (GPU + CPU), N=1..32 ==="
 CLM_ML_NO_CHECKPOINT=1 python diags/benchmark_multisite.py \
     --n-sites 1,2,4,8,16,32 \
     --repeats 3 \
-    --backend gpu \
-    --full-physics
-
-echo ""
-echo "=== Multi-site vmap benchmark — FULL RK4 (CPU) ==="
-CLM_ML_NO_CHECKPOINT=1 python diags/benchmark_multisite.py \
-    --n-sites 1,2,4,8 \
-    --repeats 2 \
-    --backend cpu \
+    --backend both \
     --full-physics
 
 echo ""
