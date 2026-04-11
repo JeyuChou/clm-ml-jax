@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-04-10 — Critical bug fix: CanopyNitrogenProfile @jax.jit caches vcmaxpft as constant (session 27)
+
+### Root cause discovered (deeper than session 26 fix)
+
+`CanopyNitrogenProfile` is decorated with `@partial(jax.jit, static_argnums=(0, 1))`.  
+At first trace, `MLpftcon.vcmaxpft` is captured as an **XLA compile-time constant** — not
+a runtime JAX variable.  Subsequent calls (including FD ±eps) use the CACHED compiled
+XLA computation with the original values baked in.  Module-global mutation via
+`_set_pftcon` cannot override the JIT cache.
+
+**Evidence:** FD test gave `f(1+eps) == f(1-eps) == 30.918758` for all eps — function
+was literally constant in alpha_vcmax.  This was NOT just a "zero gradient" — the
+output was numerically identical because the XLA function ignored the module-global update.
+
+### Fix: add `vcmaxpft_jax=None` as explicit JAX argument
+
+**`MLCanopyNitrogenProfileMod.py`:**
+- Added `vcmaxpft_jax=None` as arg 4 (non-static, part of dynamic pytree)
+- When provided: `_vcmaxpft = vcmaxpft_jax` (JAX-traced)
+- When None: `_vcmaxpft = MLpftcon.vcmaxpft` (module global — default/non-diff path)
+- `vcmax25top = _vcmaxpft[pft]` — uses explicit arg or module global
+
+**`MLCanopyFluxesMod.py`:**
+- Added `vcmaxpft_jax=None` to `MLCanopyFluxes` signature
+- Passed through to `CanopyNitrogenProfile(num_mlcan, filter_mlcan, inst, vcmaxpft_jax)`
+
+**`diags/fd_grad_check.py`:**
+- `forward_gpp_vcmaxpft` now passes `vcmaxpft_jax=alpha * _orig.vcmaxpft` directly
+- No `_set_pftcon`/`_restore_pftcon` needed
+
+**`diags/param_sensitivity.py`:**
+- `_run_inst` now accepts `vcmaxpft_jax=None`
+- `_gpp_vcmax`/`_le_vcmax` pass `vcmaxpft_jax=alpha * _orig.vcmaxpft`
+
+**`diags/optimize_params.py`:**
+- `_run_with_vcmax_scale` passes `vcmaxpft_jax=alpha_vcmax * _orig.vcmaxpft`
+
+All existing callers (driver, benchmarks) use `vcmaxpft_jax=None` (default) — no behavior change.
+
+### Why pytree arg avoids the JIT cache hit
+
+`vcmaxpft_jax=None` → pytree: `(mlcanopy_inst, None)` → one cache entry (constant inside)  
+`vcmaxpft_jax=<jax_array>` → pytree: `(mlcanopy_inst, ShapedArray)` → NEW cache entry → fresh trace
+Fresh trace means `_vcmaxpft` is a JAX-traced array, `vcmax25top = _vcmaxpft[pft]` is a
+dynamic gather, and gradient flows through the full nitrogen profile path.
+
+### Gradient path confirmed
+
+`alpha → vcmaxpft_jax → _vcmaxpft[pft] → vcmax25top → kn(vcmax25top) → nscale → vcmax25_leaf → LeafPhotosynthesis kernel → ac → agross → GPP`
+
+### CPU test submitted (background task byv5r8guh)
+
+Verifies `f(1+eps) ≠ f(1-eps)` and FD≠0 for vcmaxpft with the new code.
+
+---
+
 ## 2026-04-10 — Critical bug fix: MLpftcon injection pattern (session 26, part 2)
 
 ### Root cause discovered

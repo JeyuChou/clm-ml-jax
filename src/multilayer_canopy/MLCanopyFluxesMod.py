@@ -169,6 +169,7 @@ def MLCanopyFluxes(
     waterdiagnosticbulk_inst: Any,
     grid: 'GridInfo | None' = None,
     _o2ref_py: 'float | None' = None,
+    vcmaxpft_jax=None,
 ) -> mlcanopy_type:
     """
     Compute all multilayer canopy fluxes for one CLM timestep.
@@ -574,7 +575,7 @@ def MLCanopyFluxes(
         # Solar radiation — Fortran line 290
         inst = SolarRadiation(bounds, num_mlcan, filter_mlcan, inst, grid=grid)
         # Nitrogen profile — Fortran line 293
-        inst = CanopyNitrogenProfile(num_mlcan, filter_mlcan, inst)
+        inst = CanopyNitrogenProfile(num_mlcan, filter_mlcan, inst, vcmaxpft_jax)
         # Runge-Kutta inner loop — Fortran lines 310-328
         for _irk in range(1, nrk_steps + 2):
             inst = CanopyWettedFraction(num_mlcan, filter_mlcan, inst)

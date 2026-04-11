@@ -89,18 +89,20 @@ def _restore_pftcon():
 
 # ── Forward function with injected vcmaxpft ───────────────────────────────────
 def _run_with_vcmax_scale(alpha_vcmax: jnp.ndarray):
-    """Run MLCanopyFluxes with vcmaxpft scaled by alpha_vcmax."""
-    _set_pftcon(_orig_pftcon._replace(vcmaxpft=alpha_vcmax * _orig_pftcon.vcmaxpft))
-    try:
-        inst = MLCanopyFluxes(
-            mlcanopy_inst=mlcanopy_inst,
-            atm2lnd_inst=atm2lnd_inst,
-            wateratm2lndbulk_inst=wateratm2lndbulk_inst,
-            **_mlcf_kwargs_no_atm,
-        )
-        return inst
-    finally:
-        _restore_pftcon()
+    """Run MLCanopyFluxes with vcmaxpft scaled by alpha_vcmax.
+
+    Passes vcmaxpft as an explicit JAX arg so jax.grad traces through it.
+    (Module-global mutation cannot penetrate the @jax.jit cache on
+    CanopyNitrogenProfile.)
+    """
+    vcmaxpft_jax = alpha_vcmax * _orig_pftcon.vcmaxpft
+    return MLCanopyFluxes(
+        mlcanopy_inst=mlcanopy_inst,
+        atm2lnd_inst=atm2lnd_inst,
+        wateratm2lndbulk_inst=wateratm2lndbulk_inst,
+        vcmaxpft_jax=vcmaxpft_jax,
+        **_mlcf_kwargs_no_atm,
+    )
 
 
 def forward_gpp(alpha_vcmax: jnp.ndarray) -> jnp.ndarray:

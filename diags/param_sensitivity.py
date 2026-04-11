@@ -92,12 +92,13 @@ def _restore_pftcon():
 
 # ── Forward functions ──────────────────────────────────────────────────────────
 
-def _run_inst(modified_atm=None, modified_mlcanopy=None):
+def _run_inst(modified_atm=None, modified_mlcanopy=None, vcmaxpft_jax=None):
     """Run MLCanopyFluxes with optionally modified instances."""
     return MLCanopyFluxes(
         mlcanopy_inst=modified_mlcanopy or mlcanopy_inst,
         atm2lnd_inst=modified_atm or atm2lnd_inst,
         wateratm2lndbulk_inst=wateratm2lndbulk_inst,
+        vcmaxpft_jax=vcmaxpft_jax,
         **_mlcf_kwargs_no_atm,
     )
 
@@ -134,28 +135,20 @@ def _le_tref(alpha: jnp.ndarray) -> jnp.ndarray:
     return compute_le(inst, _p, _ncan)
 
 
-# alpha_vcmax25 — via module-global mutation ────────────────────────────────────
-# MLCanopyNitrogenProfileMod reads MLpftcon.vcmaxpft[pft] via JAX dynamic gather.
-# IMPORTANT: `from MLpftconMod import MLpftcon` at module import time creates a
-# local binding — replacing only MLpftconMod.MLpftcon is not enough.
-# We must also update _nitro_mod.MLpftcon (and _leaf_mod.MLpftcon) so physics
-# code sees the new value.  Use _set_pftcon/_restore_pftcon helpers above.
+# alpha_vcmax25 — via explicit JAX argument ────────────────────────────────────
+# CanopyNitrogenProfile is @jax.jit-cached; MLpftcon.vcmaxpft is baked in as an
+# XLA constant at first trace.  Module-global mutation (_set_pftcon) cannot
+# override the cached value.  Pass vcmaxpft_jax explicitly so JAX traces through it.
 def _gpp_vcmax(alpha: jnp.ndarray) -> jnp.ndarray:
-    _set_pftcon(_orig_pftcon._replace(vcmaxpft=alpha * _orig_pftcon.vcmaxpft))
-    try:
-        inst = _run_inst()
-        return compute_gpp(inst, _p, _ncan)
-    finally:
-        _restore_pftcon()
+    vcmaxpft_jax = alpha * _orig_pftcon.vcmaxpft
+    inst = _run_inst(vcmaxpft_jax=vcmaxpft_jax)
+    return compute_gpp(inst, _p, _ncan)
 
 
 def _le_vcmax(alpha: jnp.ndarray) -> jnp.ndarray:
-    _set_pftcon(_orig_pftcon._replace(vcmaxpft=alpha * _orig_pftcon.vcmaxpft))
-    try:
-        inst = _run_inst()
-        return compute_le(inst, _p, _ncan)
-    finally:
-        _restore_pftcon()
+    vcmaxpft_jax = alpha * _orig_pftcon.vcmaxpft
+    inst = _run_inst(vcmaxpft_jax=vcmaxpft_jax)
+    return compute_le(inst, _p, _ncan)
 
 
 # ── Baseline ──────────────────────────────────────────────────────────────────

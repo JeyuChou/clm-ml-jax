@@ -44,6 +44,7 @@ def CanopyNitrogenProfile(
     num_filter: int,
     filter_patch: Sequence[int],
     mlcanopy_inst: mlcanopy_type,
+    vcmaxpft_jax=None,
 ) -> mlcanopy_type:
     """
     Calculate the canopy profile of nitrogen and photosynthetic capacity.
@@ -121,11 +122,18 @@ def CanopyNitrogenProfile(
             ``jmax25_leaf``, ``rd25_leaf``, ``kp25_leaf``,
             ``vcmax25_profile``, ``jmax25_profile``, ``rd25_profile``,
             and ``kp25_profile`` are updated.
+        vcmaxpft_jax: Optional JAX array override for ``MLpftcon.vcmaxpft``
+            (shape matching the PFT dimension).  When provided, this is used
+            instead of the module-global ``MLpftcon.vcmaxpft`` so that JAX
+            autodiff can trace gradients through vcmaxpft.  When ``None``
+            (default), the module-global value is used (standard non-diff path).
 
     Returns:
         Updated :class:`mlcanopy_type`.
     """
     c3psn = pftcon.c3psn
+    # Use explicit JAX arg when provided (differentiable path); else module global.
+    _vcmaxpft = MLpftcon.vcmaxpft if vcmaxpft_jax is None else vcmaxpft_jax
 
     vcmax25_leaf    = mlcanopy_inst.vcmax25_leaf
     jmax25_leaf     = mlcanopy_inst.jmax25_leaf
@@ -144,7 +152,7 @@ def CanopyNitrogenProfile(
         is_c3 = jnp.round(c3psn[pft]) == 1        # Fortran implicit round of 0/1 flag
 
         # Canopy-top photosynthetic parameters — Fortran lines 80-96
-        vcmax25top = MLpftcon.vcmaxpft[pft]        # JAX scalar via dynamic gather
+        vcmax25top = _vcmaxpft[pft]        # JAX scalar via dynamic gather
 
         if acclim_type == 0:                       # static branch — evaluated at trace time
             j2v = jmax25_to_vcmax25_noacclim

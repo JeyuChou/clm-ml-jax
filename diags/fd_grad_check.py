@@ -163,15 +163,19 @@ def forward_gpp_vcmaxpft(alpha: jnp.ndarray) -> jnp.ndarray:
     vcmaxpft is the maximum carboxylation rate at 25°C.
     Gradient path: vcmaxpft → vcmax25top (NitrogenProfile) → vcmax25_leaf →
                    vcmax_leaf (T-response in kernel) → ac (Rubisco) → agross → GPP.
+    Note: vcmaxpft_jax is passed directly as a JAX arg to MLCanopyFluxes so that
+    jax.grad can trace through it.  Module-global mutation (_set_pftcon) is NOT
+    used here because CanopyNitrogenProfile is @jax.jit-cached and bakes in
+    MLpftcon.vcmaxpft as a compile-time constant.
     """
-    _set_pftcon(_orig_pftcon._replace(vcmaxpft=alpha * _orig_pftcon.vcmaxpft))
+    vcmaxpft_jax = alpha * _orig_pftcon.vcmaxpft
     inst = MLCanopyFluxes(
         mlcanopy_inst=mlcanopy_inst,
         atm2lnd_inst=atm2lnd_inst,
         wateratm2lndbulk_inst=wateratm2lndbulk_inst,
+        vcmaxpft_jax=vcmaxpft_jax,
         **_mlcf_kwargs_no_atm,
     )
-    _restore_pftcon()
     return compute_gpp(inst, _p, grid.ncan)
 
 
