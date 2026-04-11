@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-04-10 — Laxscan Euler gradient PASS on A100 GPU (session 28)
+
+### lax.scan Euler gradient verified on A100 (job 7344537)
+
+```
+dGPP/d(alpha_tref) = -4.8692e+01   finite=True   Status: OK
+grad() compile time: 1202s
+```
+
+Matches CPU result (-48.69, rel err 1.66e-9). **GPU Euler lax.scan gradient confirmed.**
+
+RK4 section now running:
+- RK4 diff (lax.scan): 0.294s compile (cached!), 37.1 ms/step
+- RK4 non-diff running, then RK4 gradient compile (~103 min estimated)
+
+---
+
 ## 2026-04-10 — fd_grad_check time limit fix + backup job (session 28)
 
 ### run_fd_grad_check.sh: extended time limit to 4h
