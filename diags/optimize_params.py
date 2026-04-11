@@ -486,12 +486,18 @@ def _run_joint(log_params: jnp.ndarray):
     return inst
 
 
+def forward_joint(log_params: jnp.ndarray):
+    """Return (gpp, le) from a single model run — avoids running MLCanopyFluxes twice."""
+    inst = _run_joint(log_params)
+    return compute_gpp(inst, _p, _ncan), compute_le(inst, _p, _ncan)
+
+
 def forward_joint_gpp(log_params: jnp.ndarray) -> jnp.ndarray:
-    return compute_gpp(_run_joint(log_params), _p, _ncan)
+    return forward_joint(log_params)[0]
 
 
 def forward_joint_le(log_params: jnp.ndarray) -> jnp.ndarray:
-    return compute_le(_run_joint(log_params), _p, _ncan)
+    return forward_joint(log_params)[1]
 
 
 def generate_synthetic_obs_joint(vcmax_true: float = 125.0,
@@ -516,8 +522,9 @@ def generate_synthetic_obs_joint(vcmax_true: float = 125.0,
     print(f"  log_params_true     = [{float(log_params_true[0]):.3f}, {float(log_params_true[1]):.3f}]",
           flush=True)
 
-    gpp_obs = float(forward_joint_gpp(log_params_true))
-    le_obs  = float(forward_joint_le(log_params_true))
+    gpp_obs_jax, le_obs_jax = forward_joint(log_params_true)
+    gpp_obs = float(gpp_obs_jax)
+    le_obs  = float(le_obs_jax)
     print(f"  Synthetic GPP_obs = {gpp_obs:.4f}")
     print(f"  Synthetic LE_obs  = {le_obs:.4f}", flush=True)
     return {
@@ -544,8 +551,7 @@ def make_joint_loss_fn(gpp_obs: float, le_obs: float,
     _le_obs  = jnp.float64(le_obs)
 
     def joint_loss(log_params: jnp.ndarray) -> jnp.ndarray:
-        gpp_model = forward_joint_gpp(log_params)
-        le_model  = forward_joint_le(log_params)
+        gpp_model, le_model = forward_joint(log_params)
         loss_gpp  = w_gpp * ((gpp_model - _gpp_obs) / (_gpp_obs + 1e-8)) ** 2
         loss_le   = w_le  * ((le_model  - _le_obs)  / (_le_obs  + 1e-8)) ** 2
         reg       = lam_reg * jnp.sum(log_params ** 2)
