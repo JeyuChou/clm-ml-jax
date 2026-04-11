@@ -21,6 +21,31 @@ Speedup growing with N. ms/site improving (722 → 512 → 445).
 
 ---
 
+## 2026-04-10 — fd_grad_check GPU: alpha_vcmax confirmed — ALL 5 JAX grads DONE (session 28)
+
+### alpha_vcmax JAX gradient on A40 GPU (job 7344785)
+
+```
+dGPP/d(alpha_vcmax)[JAX] = 1.414393e+01   compile: 770.6s
+```
+
+Matches CPU exactly (14.14, rel err 1.8e-8). **PASS**
+vcmaxpft_jax direct arg approach bypasses @jax.jit cache — gradient flows correctly.
+
+**All 5 JAX gradients obtained on GPU (A40, job 7344785):**
+
+| Parameter | JAX value | compile (s) | Status |
+|---|---|---|---|
+| alpha_sw    | 1.070136e+01 | 780.0 | PASS (finite, non-zero) |
+| alpha_tref  | -4.869162e+01 | 1225.4 | PASS (matches CPU -48.69) |
+| alpha_g1    | 0.000000e+00 | 283.1 | INACT (gs_type=2, WUE) |
+| alpha_iota  | -2.135854e+00 | 745.8 | PASS (IFT, correct sign) |
+| alpha_vcmax | 1.414393e+01 | 770.6 | PASS (matches CPU 14.14) |
+
+FD comparison table computing now (should appear in next ~10 min).
+
+---
+
 ## 2026-04-10 — fd_grad_check GPU: alpha_iota confirmed (session 28)
 
 ### alpha_iota JAX gradient on A40 GPU (job 7344785)
