@@ -3,7 +3,7 @@
 #SBATCH --output=logs/%j_fd_grad_check.out
 #SBATCH --error=logs/%j_fd_grad_check.err
 #SBATCH --partition=short
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G

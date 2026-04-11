@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-04-10 — fd_grad_check time limit fix + backup job (session 28)
+
+### run_fd_grad_check.sh: extended time limit to 4h
+
+- Original 2h limit was dangerously close to estimated runtime (~115 min for 5 GPU grad compiles)
+- Extended to `--time=04:00:00` in `bashscripts/run_fd_grad_check.sh`
+- Submitted backup job **7345152** with `--dependency=afternotok:7344785` (4h, any GPU)
+  — only runs if job 7344785 (current, 2h limit) times out
+
+| Job ID | What | Status |
+|---|---|---|
+| **7344785** | fd_grad_check (A40 g188, 2h limit) | RUNNING — baseline Euler JIT compiling |
+| **7345152** | fd_grad_check backup (4h, any GPU) | PENDING (afternotok:7344785) |
+| **7344537** | laxscan benchmark (4h, A100 g194) | RUNNING — Euler grad compiling |
+| **7342743** | multisite vmap benchmark | RUNNING — N=1 done (0.92×), N=2 compiling |
+| **7344539** | plot_benchmarks | PENDING (Dependency) |
+
+---
+
 ## 2026-04-10 — Job management + CLI fixes (session 27, continued)
 
 ### optimize_params.py CLI dispatch fix
