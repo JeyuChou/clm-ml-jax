@@ -8,8 +8,8 @@
 |---|---|---|---|---|
 | alpha_sw    | 1.070136e+01 | 1.070136e+01 | ~0 (exact 7 sig figs) | **PASS** |
 | alpha_tref  | -4.869162e+01 | -4.868532e+01 | 1.3e-4 | **PASS** (4 sig figs) |
-| alpha_g1    | — | — | — | INACT (gs_type=2, WUE) — skip |
-| alpha_iota  | — | — | — | pending backup job 7345152 |
+| alpha_g1    | 0.000000e+00 | 0.000000e+00 | — | **INACT/PASS** (both 0, gs_type=2 WUE) |
+| alpha_iota  | — | — | — | computing now in job 7344785 |
 | alpha_vcmax | — | — | — | pending backup job 7345152 |
 
 alpha_sw: JAX=FD=1.070136e+01 exact. alpha_tref: JAX=-48.6916, FD=-48.6853 (4 sig figs — FD has inherent O(EPS²) error for thermally-sensitive param).
