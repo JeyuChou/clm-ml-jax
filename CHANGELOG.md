@@ -13,6 +13,19 @@ Crossover at N=2. N=4 compile starting. Speedup expected to grow with N.
 
 ---
 
+## 2026-04-10 — fd_grad_check GPU: alpha_sw + alpha_tref + alpha_g1 confirmed (session 28)
+
+### alpha_g1 JAX gradient on A40 GPU (job 7344785)
+
+```
+dGPP/d(alpha_g1)   [JAX] = 0.000000e+00   compile: 283.1s
+```
+
+INACT as expected — gs_type=2 (WUE), Medlyn branch not traced → 0. Zero-path compile fast.
+alpha_iota now tracing (WUE active, IFT gradient path). alpha_vcmax queued.
+
+---
+
 ## 2026-04-10 — fd_grad_check GPU: alpha_sw + alpha_tref confirmed (session 28)
 
 ### alpha_tref JAX gradient on A40 GPU (job 7344785)
