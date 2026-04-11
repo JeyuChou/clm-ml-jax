@@ -50,9 +50,24 @@ dynamic gather, and gradient flows through the full nitrogen profile path.
 
 `alpha → vcmaxpft_jax → _vcmaxpft[pft] → vcmax25top → kn(vcmax25top) → nscale → vcmax25_leaf → LeafPhotosynthesis kernel → ac → agross → GPP`
 
-### CPU test submitted (background task byv5r8guh)
+### CPU test PASSED (task byv5r8guh)
 
-Verifies `f(1+eps) ≠ f(1-eps)` and FD≠0 for vcmaxpft with the new code.
+```
+f(1+eps)=30.920172  f(1-eps)=30.917343
+FD  dGPP/d(alpha_vcmax) = 1.414393e+01   (nonzero ✓)
+JAX dGPP/d(alpha_vcmax) = 1.414393e+01
+Relative error = 1.802e-08  →  PASS
+```
+
+Gradient path confirmed end-to-end on CPU.
+
+### GPU job resubmitted
+
+| Job ID | What | Status |
+|---|---|---|
+| 7343825 | fd_grad_check (5 params: sw, tref, g1, iota, vcmax) | PENDING (new fixed code) |
+
+Cancelled job 7343434 (submitted with broken vcmaxpft injection code).
 
 ---
 
