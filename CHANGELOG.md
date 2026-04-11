@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-04-10 — fd_grad_check GPU results in progress (session 28)
+
+### alpha_sw JAX gradient on A40 GPU (job 7344785)
+
+```
+dGPP/d(alpha_sw) [JAX] = 1.070136e+01   compile: 780s
+```
+
+Finite, non-zero. Compile 780s (faster than A100 1232s — no lax.scan overhead in fd_grad_check).
+alpha_tref JAX grad now compiling. Revised timeline: all 5 done ~23:40 (within 2h limit).
+
+---
+
 ## 2026-04-10 — RK4 lax.scan benchmark confirmed on A100 (session 28)
 
 ### RK4 benchmark results (job 7344537, A100)
