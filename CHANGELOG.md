@@ -13,7 +13,20 @@ Crossover at N=2. N=4 compile starting. Speedup expected to grow with N.
 
 ---
 
-## 2026-04-10 — fd_grad_check GPU results in progress (session 28)
+## 2026-04-10 — fd_grad_check GPU: alpha_sw + alpha_tref confirmed (session 28)
+
+### alpha_tref JAX gradient on A40 GPU (job 7344785)
+
+```
+dGPP/d(alpha_tref) [JAX] = -4.869162e+01   compile: 1225.4s
+```
+
+Matches CPU (-48.69, rel err 1.66e-9) and A100 laxscan result (-4.8692e+01). **PASS**
+alpha_g1 now tracing (expect 0.0, INACT for gs_type=2). alpha_iota and alpha_vcmax queued.
+
+---
+
+## 2026-04-10 — fd_grad_check GPU: alpha_sw confirmed (session 28)
 
 ### alpha_sw JAX gradient on A40 GPU (job 7344785)
 
