@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-04-10 — Gradient audit + vcmaxpft added to grad check (session 26)
+
+### Differentiability status audit
+
+**Verified PASS (from prior sessions):**
+- `dGPP/d(alpha_sw)`:   rel error 3.68e-7  — PASS (job 7315181)
+- `dGPP/d(alpha_tref)`: rel error 1.66e-9  — PASS (CPU; IFT fix for Obukhov)
+
+**Code-fixed, GPU verification submitted (job 7343159):**
+- `dGPP/d(alpha_g1_MED)`:  fixed session 25; expected INACT (gs_type=2 default)
+- `dGPP/d(alpha_iota_SPA)`: fixed session 25 (IFT via _bisect_gs_ift); expected PASS
+- `dGPP/d(alpha_vcmaxpft)`: newly added this session; expected PASS
+
+### vcmaxpft gradient path confirmed differentiable
+
+`MLpftcon.vcmaxpft` is a JAX `jnp.full` array. The gradient path is:
+```
+alpha * MLpftcon.vcmaxpft[pft]   (module-attr mutation at trace time)
+→ vcmax25top  (MLCanopyNitrogenProfileMod.py:147)
+→ vcmax25_leaf (set in mlcanopy_inst by CanopyNitrogenProfile, called at MLCanopyFluxesMod.py:577)
+→ _vcmax25_p (JAX slice, passed to vmapped photo kernel)
+→ vcmax_leaf (T-response)  → ac (Rubisco)  → agross → GPP
+```
+Also: `kn = jnp.exp(0.00963 * vcmax25top - 2.43)` when kn_val < 0 — differentiable (jnp.exp).
+
+### Code changes
+
+- `diags/fd_grad_check.py` (commit aba7fdd): added `forward_gpp_vcmaxpft(alpha)` — 5th
+  gradient check parameter. Saved `_orig_vcmaxpft = MLpftcon.vcmaxpft`; mutates module attr
+  at trace time and restores after. Reports as PASS/FAIL/INACT in summary table.
+
+### Jobs submitted
+
+| Job ID | What | Status |
+|---|---|---|
+| **7343159** | fd_grad_check (5 params: sw, tref, g1, iota, vcmax) | PENDING (Priority) |
+
+### Architecture audit: float() calls are NOT on gradient paths
+
+Audited all `float(mlcanopy_inst.*)` and `float(MLpftcon.*)` calls in physics modules:
+- `MLCanopyTurbulenceMod.py` lines 831-842: in `_ObuFunc` callback (secant iteration).
+  Used only via `_obu_fixed_iter` whose output is `stop_gradient`'d in diff mode.
+  Gradient flows through `_ObuFuncPure_jax` (JAX-traced) via IFT, not through `_ObuFunc`.
+- `MLLeafPhotosynthesisMod.py` lines 465-491: in `_CiSolverCallbackPure` (old CI solver).
+  Not called in diff mode — vmapped kernels handle all computation (gs_type 0/1/2 all use vmap).
+- All other `float()` calls are in diagnostic/non-diff paths, driver code, or setup code.
+
+**No remaining float() calls on active gradient paths.**
+
+---
+
 ## 2026-04-10 — Differentiability fix: g0, g1_MED, iota_SPA, gsmin_SPA (session 25)
 
 ### Problem
