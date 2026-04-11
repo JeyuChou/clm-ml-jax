@@ -844,8 +844,6 @@ def _make_leaf_photo_kernel(
     jmaxse: float,
     jmaxc: float,
     rdc: float,
-    g0_val: float,
-    g1_val: float,
     o2ref_p: float,
 ):
     """
@@ -888,6 +886,8 @@ def _make_leaf_photo_kernel(
         gbc_ic,
         gbv_ic,
         cair_ic,
+        g0_rt,   # broadcast scalar: stomatal min conductance (JAX runtime arg — differentiable)
+        g1_rt,   # broadcast scalar: stomatal slope parameter (JAX runtime arg — differentiable)
     ):
         """Per-layer photosynthesis + stomatal conductance kernel."""
         active = dpai_ic > 0.0
@@ -953,7 +953,7 @@ def _make_leaf_photo_kernel(
             kc_ic=kc_val,       ko_ic=ko_val, cp_ic=cp_val,
             o2ref_p=o2ref_p,    cair_ic=cair_ic, apar_ic=apar_ic,
             gbc_ic=gbc_ic,      gbv_ic=gbv_ic,
-            g0_p=g0_val,        g1_p=g1_val,
+            g0_p=g0_rt,         g1_p=g1_rt,
             ceair_ic=ceair_val, lesat_ic=lesat_val,
             c3psn_pft_val=c3psn_pft_val,
             dpai_ic=1.0,              # always 1.0: inactive layers masked by jnp.where(active,...) below
@@ -983,24 +983,24 @@ def _make_leaf_photo_kernel(
 
         if gs_type == 1:         # Ball-Berry — static Python branch
             _term    = _anet / _cs
-            _bq2     = gbv_ic - g0_val - g1_val * _term
+            _bq2     = gbv_ic - g0_rt - g1_rt * _term
             _lesat_safe = jnp.maximum(lesat_val, _eps_k)
-            _cq2     = -gbv_ic * (g0_val + g1_val * _term * ceair_val / _lesat_safe)
+            _cq2     = -gbv_ic * (g0_rt + g1_rt * _term * ceair_val / _lesat_safe)
             _r1, _r2 = quadratic(1.0, _bq2, _cq2)
             _gs_pos  = jnp.maximum(_r1, _r2)
-            _gs      = jnp.where(_anet > 0.0, _gs_pos, jnp.asarray(g0_val))
+            _gs      = jnp.where(_anet > 0.0, _gs_pos, g0_rt)
         else:                    # Medlyn (gs_type == 0) — static Python branch
             _vpdt    = jnp.maximum(lesat_val - ceair_val, vpd_min_MED) * 0.001
             _term    = dh2o_to_dco2 * _anet / _cs
             _gbv_vpdt = jnp.maximum(gbv_ic * _vpdt, _eps_k)
-            _bq2     = -(2.0 * (g0_val + _term)
-                         + (g1_val * _term) ** 2 / _gbv_vpdt)
-            _cq2     = (g0_val * g0_val
-                        + (2.0 * g0_val
-                           + _term * (1.0 - g1_val * g1_val / _vpdt)) * _term)
+            _bq2     = -(2.0 * (g0_rt + _term)
+                         + (g1_rt * _term) ** 2 / _gbv_vpdt)
+            _cq2     = (g0_rt * g0_rt
+                        + (2.0 * g0_rt
+                           + _term * (1.0 - g1_rt * g1_rt / _vpdt)) * _term)
             _r1, _r2 = quadratic(1.0, _bq2, _cq2)
             _gs_pos  = jnp.maximum(_r1, _r2)
-            _gs      = jnp.where(_anet > 0.0, _gs_pos, jnp.asarray(g0_val))
+            _gs      = jnp.where(_anet > 0.0, _gs_pos, g0_rt)
 
         # --- Mask outputs for empty layers — Fortran lines 247-257 ---
         zero = jnp.zeros(())
@@ -1042,23 +1042,23 @@ def _get_vmapped_photo_kernel(
     jmaxse: float,
     jmaxc: float,
     rdc: float,
-    g0_val: float,
-    g1_val: float,
     o2ref_p: float,
 ):
     """Return a JIT-compiled vmapped leaf-photosynthesis kernel (gs_type 0/1).
 
     Results are cached by parameter values so the same XLA compilation is
-    reused across all sub-steps for a fixed site.  All arguments must be
-    Python scalars (not JAX arrays) so they are hashable for ``lru_cache``.
+    reused across all sub-steps for a fixed site.  g0_val and g1_val are
+    NOT in the cache key — they are broadcast runtime args (in_axes=None)
+    so gradients flow through them for d(GPP)/d(g0) and d(GPP)/d(g1).
     """
     kernel = _make_leaf_photo_kernel(
         is_c3=is_c3, c3psn_pft_val=c3psn_pft_val,
         vcmaxha=vcmaxha, vcmaxhd=vcmaxhd, vcmaxse=vcmaxse, vcmaxc=vcmaxc,
         jmaxha=jmaxha, jmaxhd=jmaxhd, jmaxse=jmaxse, jmaxc=jmaxc,
-        rdc=rdc, g0_val=g0_val, g1_val=g1_val, o2ref_p=o2ref_p,
+        rdc=rdc, o2ref_p=o2ref_p,
     )
-    return jax.jit(jax.vmap(kernel, in_axes=0))
+    # First 11 args are per-layer (axis 0); g0_rt/g1_rt are broadcast scalars.
+    return jax.jit(jax.vmap(kernel, in_axes=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None)))
 
 
 # ---------------------------------------------------------------------------
@@ -1076,8 +1076,6 @@ def _make_leaf_photo_kernel_acclim(
     jmaxha: float,
     jmaxhd: float,
     rdc: float,
-    g0_val: float,
-    g1_val: float,
     o2ref_p: float,
 ):
     """
@@ -1088,6 +1086,9 @@ def _make_leaf_photo_kernel_acclim(
     (broadcast via ``in_axes=None`` in vmap) so this kernel is compatible
     with ``jax.checkpoint`` where these values are JAX traced arrays, not
     Python floats.
+
+    ``g0_rt`` and ``g1_rt`` are also runtime args so gradients flow through
+    stomatal parameters (d(GPP)/d(g0), d(GPP)/d(g1)).
 
     The non-acclim params (vcmaxha, vcmaxhd, jmaxha, jmaxhd, rdc, etc.)
     remain closed-over Python floats for XLA constant folding.
@@ -1104,6 +1105,8 @@ def _make_leaf_photo_kernel_acclim(
         gbc_ic,
         gbv_ic,
         cair_ic,
+        g0_rt,        # broadcast scalar: stomatal min conductance (JAX runtime arg)
+        g1_rt,        # broadcast scalar: stomatal slope parameter (JAX runtime arg)
         vcmaxse_rt,   # broadcast scalar: JAX runtime arg
         vcmaxc_rt,    # broadcast scalar: JAX runtime arg
         jmaxse_rt,    # broadcast scalar: JAX runtime arg
@@ -1164,7 +1167,7 @@ def _make_leaf_photo_kernel_acclim(
             kc_ic=kc_val,       ko_ic=ko_val, cp_ic=cp_val,
             o2ref_p=o2ref_p,    cair_ic=cair_ic, apar_ic=apar_ic,
             gbc_ic=gbc_ic,      gbv_ic=gbv_ic,
-            g0_p=g0_val,        g1_p=g1_val,
+            g0_p=g0_rt,         g1_p=g1_rt,
             ceair_ic=ceair_val, lesat_ic=lesat_val,
             c3psn_pft_val=c3psn_pft_val,
             dpai_ic=1.0,
@@ -1193,24 +1196,24 @@ def _make_leaf_photo_kernel_acclim(
 
         if gs_type == 1:
             _term    = _anet / _cs
-            _bq2     = gbv_ic - g0_val - g1_val * _term
+            _bq2     = gbv_ic - g0_rt - g1_rt * _term
             _lesat_safe = jnp.maximum(lesat_val, _eps_k)
-            _cq2     = -gbv_ic * (g0_val + g1_val * _term * ceair_val / _lesat_safe)
+            _cq2     = -gbv_ic * (g0_rt + g1_rt * _term * ceair_val / _lesat_safe)
             _r1, _r2 = quadratic(1.0, _bq2, _cq2)
             _gs_pos  = jnp.maximum(_r1, _r2)
-            _gs      = jnp.where(_anet > 0.0, _gs_pos, jnp.asarray(g0_val))
+            _gs      = jnp.where(_anet > 0.0, _gs_pos, g0_rt)
         else:
             _vpdt    = jnp.maximum(lesat_val - ceair_val, vpd_min_MED) * 0.001
             _term    = dh2o_to_dco2 * _anet / _cs
             _gbv_vpdt = jnp.maximum(gbv_ic * _vpdt, _eps_k)
-            _bq2     = -(2.0 * (g0_val + _term)
-                         + (g1_val * _term) ** 2 / _gbv_vpdt)
-            _cq2     = (g0_val * g0_val
-                        + (2.0 * g0_val
-                           + _term * (1.0 - g1_val * g1_val / _vpdt)) * _term)
+            _bq2     = -(2.0 * (g0_rt + _term)
+                         + (g1_rt * _term) ** 2 / _gbv_vpdt)
+            _cq2     = (g0_rt * g0_rt
+                        + (2.0 * g0_rt
+                           + _term * (1.0 - g1_rt * g1_rt / _vpdt)) * _term)
             _r1, _r2 = quadratic(1.0, _bq2, _cq2)
             _gs_pos  = jnp.maximum(_r1, _r2)
-            _gs      = jnp.where(_anet > 0.0, _gs_pos, jnp.asarray(g0_val))
+            _gs      = jnp.where(_anet > 0.0, _gs_pos, g0_rt)
 
         zero = jnp.zeros(())
         return (
@@ -1247,8 +1250,6 @@ def _get_vmapped_photo_kernel_acclim(
     jmaxha: float,
     jmaxhd: float,
     rdc: float,
-    g0_val: float,
-    g1_val: float,
     o2ref_p: float,
 ):
     """Return a JIT-compiled vmapped leaf-photosynthesis kernel for acclim_type==1.
@@ -1258,18 +1259,19 @@ def _get_vmapped_photo_kernel_acclim(
     this function can be cached independently of their values, and the kernel
     remains compatible with ``jax.checkpoint`` tracing (no ``float()`` required).
 
-    All other args must be Python scalars for ``lru_cache`` hashability.
+    ``g0_rt`` and ``g1_rt`` are also runtime args (not in cache key) so
+    gradients flow through d(GPP)/d(g0) and d(GPP)/d(g1).
     """
     kernel = _make_leaf_photo_kernel_acclim(
         is_c3=is_c3, c3psn_pft_val=c3psn_pft_val,
         vcmaxha=vcmaxha, vcmaxhd=vcmaxhd,
         jmaxha=jmaxha, jmaxhd=jmaxhd,
-        rdc=rdc, g0_val=g0_val, g1_val=g1_val, o2ref_p=o2ref_p,
+        rdc=rdc, o2ref_p=o2ref_p,
     )
-    # First 11 args are per-layer (in_axes=0); last 4 are broadcast scalars.
+    # First 11 args are per-layer (in_axes=0); g0_rt, g1_rt + 4 acclim scalars are broadcast.
     return jax.jit(jax.vmap(
         kernel,
-        in_axes=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None, None, None),
+        in_axes=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None, None, None, None, None),
     ))
 
 
@@ -1586,8 +1588,6 @@ def _make_leaf_photo_kernel_wue(
     vcmaxha, vcmaxhd, vcmaxse, vcmaxc,
     jmaxha, jmaxhd, jmaxse, jmaxc,
     rdc,
-    iota_pft,
-    gsmin_pft,
 ):
     """Factory returning a per-layer WUE photosynthesis kernel for jax.vmap.
 
@@ -1595,12 +1595,16 @@ def _make_leaf_photo_kernel_wue(
     explicit broadcast (``in_axes=None``) arguments to ``jax.vmap`` so that
     per-sub-step changes in atmospheric pressure do not invalidate the
     JIT-compiled kernel cache.
+
+    ``iota_rt`` and ``gsmin_rt`` are also runtime args (not in cache key) so
+    gradients flow through d(GPP)/d(iota) and d(GPP)/d(gsmin) via the IFT.
     """
 
     def kernel(
         dpai_ic, tleaf_ic, vcmax25_ic, jmax25_ic, rd25_ic, kp25_ic,
         eair_ic, apar_ic, gbc_ic, gbv_ic, cair_ic,
         o2ref_p, pref_p,
+        iota_rt, gsmin_rt,   # broadcast scalars: WUE params (JAX runtime args — differentiable)
     ):
         active = dpai_ic > 0.0
 
@@ -1656,10 +1660,10 @@ def _make_leaf_photo_kernel_wue(
             apar_ic=apar_ic, c3psn_pft_val=c3psn_pft_val,
         )
         se_kwargs = dict(
-            iota=iota_pft, pref_p=pref_p, eair_ic=eair_ic,
+            iota=iota_rt, pref_p=pref_p, eair_ic=eair_ic,
             gbv_ic=gbv_ic, lesat_ic=lesat_val, **ci_kwargs,
         )
-        gs_opt = _bisect_gs_ift(gsmin_pft, 2.0, se_kwargs)
+        gs_opt = _bisect_gs_ift(gsmin_rt, 2.0, se_kwargs)
 
         # Final photosynthesis at gs_opt
         ci_f, ac_f, aj_f, ap_f, agross_f, anet_f, cs_f = (
@@ -1702,27 +1706,27 @@ def _get_vmapped_photo_kernel_wue(
     vcmaxha, vcmaxhd, vcmaxse, vcmaxc,
     jmaxha, jmaxhd, jmaxse, jmaxc,
     rdc,
-    iota_pft,
-    gsmin_pft,
 ):
     """Return a JIT-compiled vmapped WUE leaf-photosynthesis kernel.
 
     ``o2ref_p`` and ``pref_p`` are passed via ``in_axes=None`` (broadcast)
     at vmap call time, so per-sub-step pressure variations do not trigger
-    recompilation.  All other arguments are PFT constants that are fixed
-    for a given simulation and used as the lru_cache key.
+    recompilation.
+
+    ``iota_rt`` and ``gsmin_rt`` are NOT in the cache key — they are
+    broadcast runtime args so gradients flow through d(GPP)/d(iota) and
+    d(GPP)/d(gsmin) via the IFT path.
     """
     kernel = _make_leaf_photo_kernel_wue(
         is_c3=is_c3, c3psn_pft_val=c3psn_pft_val,
         vcmaxha=vcmaxha, vcmaxhd=vcmaxhd, vcmaxse=vcmaxse, vcmaxc=vcmaxc,
         jmaxha=jmaxha, jmaxhd=jmaxhd, jmaxse=jmaxse, jmaxc=jmaxc,
-        rdc=rdc, iota_pft=iota_pft, gsmin_pft=gsmin_pft,
+        rdc=rdc,
     )
-    # in_axes: first 11 args are per-layer (axis 0); o2ref_p and pref_p
-    # are patch-level scalars broadcast over all layers (axis None).
+    # in_axes: 11 per-layer (axis 0); o2ref_p, pref_p, iota_rt, gsmin_rt broadcast.
     return jax.jit(jax.vmap(
         kernel,
-        in_axes=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None),
+        in_axes=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None, None, None),
     ))
 
 
@@ -1734,17 +1738,17 @@ def _make_leaf_photo_kernel_wue_acclim(
     vcmaxha, vcmaxhd,
     jmaxha, jmaxhd,
     rdc,
-    iota_pft,
-    gsmin_pft,
 ):
     """Like _make_leaf_photo_kernel_wue but accepts vcmaxse/vcmaxc/jmaxse/jmaxc
     as runtime scalar arguments for jax.checkpoint compatibility (acclim_type==1).
+    iota_rt and gsmin_rt are also runtime args so gradients flow through them.
     """
 
     def kernel(
         dpai_ic, tleaf_ic, vcmax25_ic, jmax25_ic, rd25_ic, kp25_ic,
         eair_ic, apar_ic, gbc_ic, gbv_ic, cair_ic,
         o2ref_p, pref_p,
+        iota_rt, gsmin_rt,   # broadcast scalars: WUE params (JAX runtime args)
         vcmaxse_rt, vcmaxc_rt, jmaxse_rt, jmaxc_rt,
     ):
         active = dpai_ic > 0.0
@@ -1796,10 +1800,10 @@ def _make_leaf_photo_kernel_wue_acclim(
             apar_ic=apar_ic, c3psn_pft_val=c3psn_pft_val,
         )
         se_kwargs = dict(
-            iota=iota_pft, pref_p=pref_p, eair_ic=eair_ic,
+            iota=iota_rt, pref_p=pref_p, eair_ic=eair_ic,
             gbv_ic=gbv_ic, lesat_ic=lesat_val, **ci_kwargs,
         )
-        gs_opt = _bisect_gs_ift(gsmin_pft, 2.0, se_kwargs)
+        gs_opt = _bisect_gs_ift(gsmin_rt, 2.0, se_kwargs)
 
         ci_f, ac_f, aj_f, ap_f, agross_f, anet_f, cs_f = (
             _CiFuncGsJax(gs_opt, **ci_kwargs))
@@ -1840,25 +1844,26 @@ def _get_vmapped_photo_kernel_wue_acclim(
     vcmaxha, vcmaxhd,
     jmaxha, jmaxhd,
     rdc,
-    iota_pft,
-    gsmin_pft,
 ):
     """Like _get_vmapped_photo_kernel_wue but for acclim_type==1.
 
     vcmaxse, vcmaxc, jmaxse, jmaxc are NOT closed-over; they are passed as
     runtime broadcast scalars (in_axes=None) so the kernel is compatible
     with jax.checkpoint tracing (no float() required on JAX traced values).
+
+    iota_rt and gsmin_rt are also runtime args (not in cache key) so
+    gradients flow through d(GPP)/d(iota) and d(GPP)/d(gsmin).
     """
     kernel = _make_leaf_photo_kernel_wue_acclim(
         is_c3=is_c3, c3psn_pft_val=c3psn_pft_val,
         vcmaxha=vcmaxha, vcmaxhd=vcmaxhd,
         jmaxha=jmaxha, jmaxhd=jmaxhd,
-        rdc=rdc, iota_pft=iota_pft, gsmin_pft=gsmin_pft,
+        rdc=rdc,
     )
-    # in_axes: 11 per-layer + o2ref_p + pref_p + 4 acclim scalars
+    # in_axes: 11 per-layer + o2ref_p + pref_p + iota_rt + gsmin_rt + 4 acclim scalars
     return jax.jit(jax.vmap(
         kernel,
-        in_axes=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None, None, None, None, None),
+        in_axes=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, None, None, None, None, None, None, None),
     ))
 
 
@@ -2058,14 +2063,16 @@ def LeafPhotosynthesis(
     # under jax.checkpoint, so all float() calls must use numpy arrays instead).
     _patch_itype_np = np.asarray(patch.itype)
     _c3psn_np       = np.asarray(c3psn_pft)
-    # MLpftcon arrays used with float() — pre-convert to numpy to avoid
-    # ConcretizationTypeError under jax.checkpoint tracing.
-    _g0_MED_np  = np.asarray(MLpftcon.g0_MED)
-    _g1_MED_np  = np.asarray(MLpftcon.g1_MED)
-    _g0_BB_np   = np.asarray(MLpftcon.g0_BB)
-    _g1_BB_np   = np.asarray(MLpftcon.g1_BB)
-    _iota_np    = np.asarray(MLpftcon.iota_SPA)
-    _gsmin_np   = np.asarray(MLpftcon.gsmin_SPA)
+    # Stomatal parameters as JAX arrays for differentiability.
+    # pft is a concrete Python int (derived from numpy), so jnp indexing gives
+    # a JAX scalar that is differentiable — gradient flows through g1, iota, etc.
+    # These are NOT converted to float() so they remain on the JAX tape.
+    _g0_MED_jnp = jnp.asarray(MLpftcon.g0_MED)
+    _g1_MED_jnp = jnp.asarray(MLpftcon.g1_MED)
+    _g0_BB_jnp  = jnp.asarray(MLpftcon.g0_BB)
+    _g1_BB_jnp  = jnp.asarray(MLpftcon.g1_BB)
+    _iota_jnp   = jnp.asarray(MLpftcon.iota_SPA)
+    _gsmin_jnp  = jnp.asarray(MLpftcon.gsmin_SPA)
     _o2ref_np   = np.asarray(MLpftcon.o2ref_pftcon) if hasattr(MLpftcon, 'o2ref_pftcon') else None
 
     # ------------------------------------------------------------------
@@ -2119,22 +2126,22 @@ def LeafPhotosynthesis(
             jmaxc  = _fth25(jmaxhd, jmaxse)     # JAX scalar, passed as runtime arg
 
         # --- Stomatal model parameters — same for all ic ---
-        # Use pre-materialised numpy arrays (_g0_MED_np etc.) to get concrete
-        # Python floats even when called inside jax.checkpoint (JAX array
-        # indexing returns abstract tracers under checkpoint tracing).
+        # Use jnp-indexed JAX arrays so gradients flow through g0/g1/iota.
+        # pft is a concrete Python int (not a tracer), so jnp[pft] gives a
+        # JAX scalar that stays on the autodiff tape.
         if gs_type == 0:
-            g0_val = float(_g0_MED_np[pft])
-            g1_val = float(_g1_MED_np[pft])
+            g0_val = _g0_MED_jnp[pft]   # JAX scalar — differentiable
+            g1_val = _g1_MED_jnp[pft]   # JAX scalar — differentiable
         elif gs_type == 1:
-            g0_val = float(_g0_BB_np[pft])
-            g1_val = float(_g1_BB_np[pft])
+            g0_val = _g0_BB_jnp[pft]    # JAX scalar — differentiable
+            g1_val = _g1_BB_jnp[pft]    # JAX scalar — differentiable
         else:
-            g0_val = -999.0;  g1_val = -999.0
+            g0_val = jnp.asarray(-999.0);  g1_val = jnp.asarray(-999.0)
 
         # Per-pft constants for gs_type==2
         if gs_type == 2:
-            _iota_pft   = float(_iota_np[pft])
-            _gsmin_pft  = float(_gsmin_np[pft])
+            _iota_pft  = _iota_jnp[pft]    # JAX scalar — differentiable via IFT
+            _gsmin_pft = _gsmin_jnp[pft]   # JAX scalar — differentiable
 
         # --- Pre-extract constant input slices (JAX arrays, no D→H syncs) ---
         _dpai_p    = mlcanopy_inst.dpai_profile[p]
@@ -2177,7 +2184,6 @@ def LeafPhotosynthesis(
                     jmaxha=jmaxha,         jmaxhd=jmaxhd,
                     jmaxse=jmaxse,         jmaxc=jmaxc,
                     rdc=rdc,
-                    g0_val=g0_val,         g1_val=g1_val,
                     o2ref_p=_o2ref_cache_key,
                 )
                 layer_out = vmapped(
@@ -2185,6 +2191,7 @@ def LeafPhotosynthesis(
                     _jmax25_p[_sl], _rd25_p[_sl], _kp25_p[_sl],
                     _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
                     _gbv_p[_sl], _cair_p[_sl],
+                    g0_val, g1_val,   # JAX scalar broadcast — gradients flow here
                 )
             else:
                 # acclim_type == 1: vcmaxse/vcmaxc/jmaxse/jmaxc are JAX scalars
@@ -2193,7 +2200,6 @@ def LeafPhotosynthesis(
                     vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
                     jmaxha=jmaxha,         jmaxhd=jmaxhd,
                     rdc=rdc,
-                    g0_val=g0_val,         g1_val=g1_val,
                     o2ref_p=_o2ref_cache_key,
                 )
                 layer_out = vmapped(
@@ -2201,6 +2207,7 @@ def LeafPhotosynthesis(
                     _jmax25_p[_sl], _rd25_p[_sl], _kp25_p[_sl],
                     _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
                     _gbv_p[_sl], _cair_p[_sl],
+                    g0_val, g1_val,   # JAX scalar broadcast — gradients flow here
                     vcmaxse, vcmaxc, jmaxse, jmaxc,
                 )
             # Write vmap JAX output directly (18-tuple) — skip numpy round-trip
@@ -2237,7 +2244,6 @@ def LeafPhotosynthesis(
                     jmaxha=jmaxha,         jmaxhd=jmaxhd,
                     jmaxse=jmaxse,         jmaxc=jmaxc,
                     rdc=rdc,
-                    iota_pft=_iota_pft,    gsmin_pft=_gsmin_pft,
                 )
                 layer_out = vmapped(
                     _dpai_p[_sl], _tleaf_p[_sl], _vcmax25_p[_sl],
@@ -2245,6 +2251,7 @@ def LeafPhotosynthesis(
                     _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
                     _gbv_p[_sl], _cair_p[_sl],
                     _o2ref_p, _pref_p,
+                    _iota_pft, _gsmin_pft,   # JAX scalar broadcast — gradients flow via IFT
                 )
             else:
                 # acclim_type == 1: vcmaxse/vcmaxc/jmaxse/jmaxc are JAX scalars
@@ -2253,7 +2260,6 @@ def LeafPhotosynthesis(
                     vcmaxha=vcmaxha,       vcmaxhd=vcmaxhd,
                     jmaxha=jmaxha,         jmaxhd=jmaxhd,
                     rdc=rdc,
-                    iota_pft=_iota_pft,    gsmin_pft=_gsmin_pft,
                 )
                 layer_out = vmapped(
                     _dpai_p[_sl], _tleaf_p[_sl], _vcmax25_p[_sl],
@@ -2261,6 +2267,7 @@ def LeafPhotosynthesis(
                     _eair_p[_sl], _apar_p[_sl], _gbc_p[_sl],
                     _gbv_p[_sl], _cair_p[_sl],
                     _o2ref_p, _pref_p,
+                    _iota_pft, _gsmin_pft,   # JAX scalar broadcast — gradients flow via IFT
                     vcmaxse, vcmaxc, jmaxse, jmaxc,
                 )
             _out_names = [
@@ -2293,7 +2300,7 @@ def LeafPhotosynthesis(
         pft = int(_patch_itype_np[p])                  # use pre-materialised numpy copy
         _c3psn_val = float(_c3psn_np[pft])             # use pre-materialised numpy copy
         is_c3     = round(_c3psn_val) == 1
-        _gsmin_pft2 = MLpftcon.gsmin_SPA[pft]
+        _gsmin_pft2 = _gsmin_jnp[pft]                 # JAX scalar — differentiable floor
 
         # Pre-extract slices for second loop (JAX arrays, no D→H syncs)
         _gs_p2    = mlcanopy_inst.gs_leaf[p, :, il]
