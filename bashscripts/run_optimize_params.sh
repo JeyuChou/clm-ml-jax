@@ -52,7 +52,12 @@ echo ""
 echo "=== Phase 1: vcmaxpft identifiability test (synthetic CHATS7 obs) ==="
 cd /burg-archive/home/al4385/clm-ml-jax/src
 CLM_ML_NO_CHECKPOINT=1 python ../diags/optimize_params.py \
-    --synthetic --vcmax-true 125.0 --n-steps 100
+    --vcmax-true 125.0 --n-steps 100
+
+echo ""
+echo "=== Phase 2: joint vcmaxpft + iota_SPA identifiability test ==="
+CLM_ML_NO_CHECKPOINT=1 python ../diags/optimize_params.py \
+    --joint --vcmax-true 125.0 --n-steps 200
 
 echo ""
 echo "=== run_optimize_params.sh complete ==="
