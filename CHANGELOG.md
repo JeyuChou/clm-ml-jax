@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-04-10 — Multisite vmap N=1,2 results (session 28)
+
+### Multisite benchmark (job 7342743, A100)
+
+| N | vmap_1st_s | vmap_ss_s | seq_ss_s | speedup | ms/site/step |
+|---|---|---|---|---|---|
+| 1 | 1175.6 | 0.722 | 0.662 | 0.92× | 722.0 ms |
+| 2 | 1484.3 | 1.025 | 1.312 | **1.28×** | 512.3 ms |
+
+Crossover at N=2. N=4 compile starting. Speedup expected to grow with N.
+
+---
+
 ## 2026-04-10 — fd_grad_check GPU results in progress (session 28)
 
 ### alpha_sw JAX gradient on A40 GPU (job 7344785)
