@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-04-10 — RK4 lax.scan benchmark confirmed on A100 (session 28)
+
+### RK4 benchmark results (job 7344537, A100)
+
+```
+RK4  diff (lax.scan):  37.1 ms/step   compile: 0.294s (cached)
+RK4  non-diff:      30390.6 ms/step   →  818× speedup
+  diff_mode  loss = -2903.8322  (matches non-diff ✓)
+  diff loss finite: True
+RK4 gradient check: compiling now (~103 min, done ~00:26)
+```
+
+**Summary of lax.scan speedups confirmed on A100 GPU (job 7344537):**
+| Mode | diff (lax.scan) | non-diff | Speedup |
+|---|---|---|---|
+| Euler (1 sub-step) | 38.1 ms | 2941 ms | **77×** |
+| RK4 (6 sub-steps × 4 stages) | 37.1 ms | 30391 ms | **818×** |
+
+---
+
 ## 2026-04-10 — Laxscan Euler gradient PASS on A100 GPU (session 28)
 
 ### lax.scan Euler gradient verified on A100 (job 7344537)
