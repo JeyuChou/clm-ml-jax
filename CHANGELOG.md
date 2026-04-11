@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-04-10 — Job management + CLI fixes (session 27, continued)
+
+### optimize_params.py CLI dispatch fix
+
+- `--joint` flag was unreachable: `if __name__ == "__main__"` called `main()` directly
+- Fixed: routes through `_parse_and_dispatch()` which checks `--joint`
+- `main()` now accepts pre-parsed `args` to avoid double-`argparse` conflict
+- `run_optimize_params.sh` updated to add Phase 2 joint optimization run
+
+### laxscan benchmark resubmitted (4-hour limit)
+
+RK4 gradient check XLA compilation exceeded 2-hour job limit:
+- Euler scan body: 1 physics step → compile 1232s ✓ (PASS: dGPP/d(alpha_tref) = -48.69)
+- RK4 scan body: 5 unrolled physics steps → estimated 5× longer compile (~103 min)
+- Job 7342742 cancelled at 53 min to avoid timeout; resubmitted as **7344537** (4h limit)
+- plot-benchmarks resubmitted as **7344539** (depends on 7344537 + 7342743)
+
+| Job ID | What | Status |
+|---|---|---|
+| 7344537 | laxscan benchmark (4h) | PENDING (Priority) |
+| 7342743 | multisite vmap benchmark | RUNNING (g191) |
+| 7344539 | plot_benchmarks | PENDING (Dependency) |
+| 7343825 | fd_grad_check (5 params) | PENDING (Resources) |
+
+### Euler laxscan result confirmed (from 7342742 before cancel)
+```
+Euler  diff (lax.scan):  36.3 ms/step
+Euler  non-diff:       2909.7 ms/step  →  80× speedup
+RK4    diff (lax.scan):  36.9 ms/step
+RK4    non-diff:      29467.5 ms/step  → 798× speedup
+dGPP/d(alpha_tref) Euler [lax.scan]: -48.69  finite=True  PASS
+```
+
+---
+
 ## 2026-04-10 — iota_SPA gradient verified on CPU (session 27)
 
 **CPU test: PASS**
