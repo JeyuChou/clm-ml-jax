@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-04-10 — Joint vcmaxpft + iota_SPA optimization implemented (session 27)
+
+### `diags/optimize_params.py` — new joint optimization section (~200 lines added)
+
+Key additions:
+- `_run_joint(log_params)`: runs model with both `vcmaxpft_jax` (JIT-bypass) and `_set_pftcon` (iota_SPA)
+- `forward_joint_gpp`, `forward_joint_le`: scalar loss functions over 2D `log_params`
+- `generate_synthetic_obs_joint(vcmax_true, iota_true)`: creates synthetic GPP+LE obs for testing
+- `make_joint_loss_fn(gpp_obs, le_obs, w_gpp, w_le, lam_reg)`: weighted MSE + L2 reg
+- `run_joint_optimization(loss_fn, n_steps, ...)`: Adam optimizer with cosine LR schedule
+- `main_joint(args)`: saves results as JSON with loss curve + parameter trajectories
+- `_parse_and_dispatch()`: extended CLI with `--joint` flag and `--iota-true` arg
+
+Usage: `python diags/optimize_params.py --joint --vcmax-true 1.2 --iota-true 0.9`
+
+Parameter coupling: vcmaxpft controls GPP amplitude (via vcmax25top → Rubisco capacity);
+iota_SPA controls WUE stomatal conductance (via _bisect_gs_ift IFT). Joint optimization
+recovers both from synthetic obs.
+
+### GPU job 7343825 still pending (5-param gradient check)
+
+All code verified on CPU. GPU confirmation pending.
+
+---
+
 ## 2026-04-10 — Critical bug fix: CanopyNitrogenProfile @jax.jit caches vcmaxpft as constant (session 27)
 
 ### Root cause discovered (deeper than session 26 fix)

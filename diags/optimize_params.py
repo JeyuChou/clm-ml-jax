@@ -457,5 +457,274 @@ def main():
     plot_results(results, alpha_true=obs_info.get("alpha_true"))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Joint optimization: vcmaxpft + iota_SPA simultaneously
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _run_joint(log_params: jnp.ndarray):
+    """Run MLCanopyFluxes with both vcmaxpft and iota_SPA scaled.
+
+    log_params[0] = log(alpha_vcmax): vcmaxpft scale factor (log space)
+    log_params[1] = log(alpha_iota):  iota_SPA scale factor (log space)
+
+    vcmaxpft uses vcmaxpft_jax (explicit JAX arg — JIT-cache safe).
+    iota_SPA uses _set_pftcon (module-global mutation — works because
+    LeafPhotosynthesis is not @jax.jit and re-reads MLpftcon each call).
+    """
+    alpha_vcmax  = jnp.exp(log_params[0])
+    alpha_iota   = jnp.exp(log_params[1])
+    vcmaxpft_jax = alpha_vcmax * _orig_pftcon.vcmaxpft
+    _set_pftcon(_orig_pftcon._replace(iota_SPA=alpha_iota * _orig_pftcon.iota_SPA))
+    inst = MLCanopyFluxes(
+        mlcanopy_inst=mlcanopy_inst,
+        atm2lnd_inst=atm2lnd_inst,
+        wateratm2lndbulk_inst=wateratm2lndbulk_inst,
+        vcmaxpft_jax=vcmaxpft_jax,
+        **_mlcf_kwargs_no_atm,
+    )
+    _restore_pftcon()
+    return inst
+
+
+def forward_joint_gpp(log_params: jnp.ndarray) -> jnp.ndarray:
+    return compute_gpp(_run_joint(log_params), _p, _ncan)
+
+
+def forward_joint_le(log_params: jnp.ndarray) -> jnp.ndarray:
+    return compute_le(_run_joint(log_params), _p, _ncan)
+
+
+def generate_synthetic_obs_joint(vcmax_true: float = 125.0,
+                                  iota_true: float | None = None) -> dict:
+    """Generate synthetic GPP+LE observations using both vcmaxpft and iota_SPA.
+
+    Default: vcmax_true=125 μmol m⁻² s⁻¹,
+             iota_true=2× the CHATS7 default (testing identifiability).
+    """
+    pft_default_vcmax = float(_pftcon_mod.MLpftcon.vcmaxpft[7])
+    pft_default_iota  = float(_pftcon_mod.MLpftcon.iota_SPA[7])
+    if iota_true is None:
+        iota_true = 2.0 * pft_default_iota  # 2× default as "true" target
+
+    log_params_true = jnp.array([
+        float(jnp.log(jnp.float64(vcmax_true / pft_default_vcmax))),
+        float(jnp.log(jnp.float64(iota_true  / pft_default_iota))),
+    ])
+    print(f"\n=== Synthetic observations (joint) ===")
+    print(f"  Default vcmaxpft[7] = {pft_default_vcmax:.2f}  True = {vcmax_true:.2f} μmol m⁻² s⁻¹")
+    print(f"  Default iota_SPA[7] = {pft_default_iota:.2f}  True = {iota_true:.2f} μmol CO₂/mol H₂O")
+    print(f"  log_params_true     = [{float(log_params_true[0]):.3f}, {float(log_params_true[1]):.3f}]",
+          flush=True)
+
+    gpp_obs = float(forward_joint_gpp(log_params_true))
+    le_obs  = float(forward_joint_le(log_params_true))
+    print(f"  Synthetic GPP_obs = {gpp_obs:.4f}")
+    print(f"  Synthetic LE_obs  = {le_obs:.4f}", flush=True)
+    return {
+        "gpp_obs": gpp_obs, "le_obs": le_obs,
+        "log_params_true": log_params_true,
+        "vcmax_true": vcmax_true, "iota_true": iota_true,
+        "vcmax_default": pft_default_vcmax, "iota_default": pft_default_iota,
+    }
+
+
+def make_joint_loss_fn(gpp_obs: float, le_obs: float,
+                        w_gpp: float = 0.5, w_le: float = 0.5,
+                        lam_reg: float = 0.01) -> callable:
+    """Build joint loss function for (vcmaxpft, iota_SPA) optimization.
+
+    Loss = w_gpp * (GPP_model - GPP_obs)^2 / GPP_obs^2
+         + w_le  * (LE_model  - LE_obs)^2  / LE_obs^2
+         + lam_reg * sum(log_params^2)
+
+    Args:
+        log_params: shape (2,) — [log(alpha_vcmax), log(alpha_iota)]
+    """
+    _gpp_obs = jnp.float64(gpp_obs)
+    _le_obs  = jnp.float64(le_obs)
+
+    def joint_loss(log_params: jnp.ndarray) -> jnp.ndarray:
+        gpp_model = forward_joint_gpp(log_params)
+        le_model  = forward_joint_le(log_params)
+        loss_gpp  = w_gpp * ((gpp_model - _gpp_obs) / (_gpp_obs + 1e-8)) ** 2
+        loss_le   = w_le  * ((le_model  - _le_obs)  / (_le_obs  + 1e-8)) ** 2
+        reg       = lam_reg * jnp.sum(log_params ** 2)
+        return loss_gpp + loss_le + reg
+
+    return joint_loss
+
+
+def run_joint_optimization(
+    loss_fn: callable,
+    n_steps: int = 200,
+    lr_max: float = 0.01,
+    lr_min: float = 0.001,
+    cosine_period: int = 50,
+    patience: int = 20,
+    tol_rel: float = 1e-4,
+    log_params_true=None,
+) -> dict:
+    """Run Adam optimization over log_params = [log_alpha_vcmax, log_alpha_iota]."""
+    print(f"\n=== Joint optimization loop ({n_steps} max steps) ===", flush=True)
+
+    log_params = jnp.zeros(2, dtype=jnp.float64)   # alpha=1 for both params
+    opt_state  = adam_init(log_params, lr=lr_max)
+    val_and_grad = jax.jit(jax.value_and_grad(loss_fn))
+
+    print("  Compiling JIT val_and_grad...", flush=True)
+    t0 = time.time()
+    _loss_init, _grad_init = val_and_grad(log_params)
+    g0, g1 = float(_grad_init[0]), float(_grad_init[1])
+    print(f"  Done in {time.time()-t0:.1f}s.  loss={float(_loss_init):.4f}  "
+          f"grad=[{g0:.3e}, {g1:.3e}]", flush=True)
+
+    history = {"step": [], "loss": [], "log_alpha_vcmax": [], "log_alpha_iota": [],
+               "alpha_vcmax": [], "alpha_iota": [], "lr": []}
+    best_loss = float("inf")
+    no_improve_count = 0
+    converged = False
+
+    default_vcmax = float(_pftcon_mod.MLpftcon.vcmaxpft[7])
+    default_iota  = float(_pftcon_mod.MLpftcon.iota_SPA[7])
+
+    for step in range(n_steps):
+        lr = cosine_lr(step, lr_max=lr_max, lr_min=lr_min, period=cosine_period)
+        opt_state["lr"] = lr
+
+        t0 = time.time()
+        loss_val, grad_val = val_and_grad(log_params)
+        elapsed = time.time() - t0
+
+        log_params, opt_state = adam_step(log_params, grad_val, opt_state)
+
+        loss_f        = float(loss_val)
+        alpha_vcmax_f = float(jnp.exp(log_params[0]))
+        alpha_iota_f  = float(jnp.exp(log_params[1]))
+
+        history["step"].append(step)
+        history["loss"].append(loss_f)
+        history["log_alpha_vcmax"].append(float(log_params[0]))
+        history["log_alpha_iota"].append(float(log_params[1]))
+        history["alpha_vcmax"].append(alpha_vcmax_f)
+        history["alpha_iota"].append(alpha_iota_f)
+        history["lr"].append(lr)
+
+        if loss_f < best_loss * (1.0 - tol_rel):
+            best_loss = loss_f
+            no_improve_count = 0
+        else:
+            no_improve_count += 1
+
+        if step % 10 == 0 or step < 5:
+            vcmax_cur = alpha_vcmax_f * default_vcmax
+            iota_cur  = alpha_iota_f  * default_iota
+            true_str = ""
+            if log_params_true is not None:
+                vcmax_true = float(jnp.exp(log_params_true[0])) * default_vcmax
+                iota_true  = float(jnp.exp(log_params_true[1])) * default_iota
+                err_v = abs(vcmax_cur - vcmax_true) / vcmax_true * 100
+                err_i = abs(iota_cur  - iota_true)  / iota_true  * 100
+                true_str = f"  err_v={err_v:.1f}% err_i={err_i:.1f}%"
+            print(f"  step {step:4d}  loss={loss_f:.5f}  vcmax={vcmax_cur:.2f}  "
+                  f"iota={iota_cur:.1f}  lr={lr:.4f}{true_str}  ({elapsed:.1f}s/step)",
+                  flush=True)
+
+        if no_improve_count >= patience:
+            print(f"  Early stopping at step {step}: no improvement for {patience} steps",
+                  flush=True)
+            converged = True
+            break
+
+        grad_finite = all(np.isfinite(float(g)) for g in [grad_val[0], grad_val[1]])
+        if not grad_finite or max(abs(float(grad_val[0])), abs(float(grad_val[1]))) > 1e6:
+            print(f"  ABORT: gradient explosion at step {step}", flush=True)
+            break
+
+    final_vcmax = float(jnp.exp(log_params[0])) * default_vcmax
+    final_iota  = float(jnp.exp(log_params[1])) * default_iota
+    print(f"\n=== Joint optimization complete ===")
+    print(f"  Optimized vcmax25   = {final_vcmax:.2f}  (default {default_vcmax:.2f}) μmol m⁻² s⁻¹")
+    print(f"  Optimized iota      = {final_iota:.2f}  (default {default_iota:.2f}) μmol CO₂/mol H₂O")
+    print(f"  Final loss          = {history['loss'][-1]:.5f}")
+
+    return {
+        "log_params_final": log_params,
+        "vcmax25_final": final_vcmax,
+        "iota_final": final_iota,
+        "vcmax25_default": default_vcmax,
+        "iota_default": default_iota,
+        "loss_final": history["loss"][-1],
+        "history": history,
+        "converged": converged,
+        "n_steps_run": len(history["step"]),
+    }
+
+
+def main_joint(args):
+    """Run joint vcmaxpft + iota_SPA optimization."""
+    obs_info = generate_synthetic_obs_joint(
+        vcmax_true=args.vcmax_true,
+        iota_true=getattr(args, "iota_true", None),
+    )
+
+    loss_fn = make_joint_loss_fn(
+        gpp_obs=obs_info["gpp_obs"],
+        le_obs=obs_info["le_obs"],
+        w_gpp=args.w_gpp,
+        w_le=args.w_le,
+        lam_reg=getattr(args, "lam_reg_joint", 0.01),
+    )
+
+    results = run_joint_optimization(
+        loss_fn=loss_fn,
+        n_steps=args.n_steps,
+        lr_max=args.lr_max,
+        lr_min=args.lr_max / 10.0,
+        log_params_true=obs_info["log_params_true"],
+    )
+    results["obs_info"] = obs_info
+
+    out_json = FIGURES_DIR / "optimization_joint_results.json"
+    save_results = {}
+    for k, v in results.items():
+        if k == "history":
+            save_results[k] = {kk: [float(x) for x in vv]
+                               for kk, vv in v.items()}
+        elif k == "log_params_final":
+            save_results[k] = [float(v[0]), float(v[1])]
+        elif hasattr(v, "__float__"):
+            save_results[k] = float(v)
+        elif isinstance(v, bool):
+            save_results[k] = v
+        elif isinstance(v, int):
+            save_results[k] = v
+        else:
+            save_results[k] = str(v)
+    with open(out_json, "w") as f:
+        json.dump(save_results, f, indent=2)
+    print(f"Results saved: {out_json}")
+
+
 if __name__ == "__main__":
     main()
+
+
+def _parse_and_dispatch():
+    """Extended CLI that supports both single-param and joint optimization."""
+    parser = argparse.ArgumentParser(description="CLM-ML-JAX parameter optimization")
+    parser.add_argument("--joint", action="store_true",
+                        help="Run joint vcmaxpft+iota_SPA optimization")
+    parser.add_argument("--vcmax-true", type=float, default=125.0)
+    parser.add_argument("--iota-true", type=float, default=None,
+                        help="True iota_SPA for joint synthetic case (default: 2× CHATS7 default)")
+    parser.add_argument("--n-steps", type=int, default=200)
+    parser.add_argument("--lr-max", type=float, default=0.01)
+    parser.add_argument("--w-gpp", type=float, default=0.5)
+    parser.add_argument("--w-le", type=float, default=0.5)
+    parser.add_argument("--lam-reg", type=float, default=0.05)
+    parser.add_argument("--lam-reg-joint", type=float, default=0.01)
+    args = parser.parse_args()
+    if args.joint:
+        main_joint(args)
+    else:
+        main()
