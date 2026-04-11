@@ -57,7 +57,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-import multilayer_canopy.MLpftconMod as _pftcon_mod
+import multilayer_canopy.MLpftconMod              as _pftcon_mod
+import multilayer_canopy.MLLeafPhotosynthesisMod  as _leaf_mod
+import multilayer_canopy.MLCanopyNitrogenProfileMod as _nitro_mod
 from multilayer_canopy.MLclm_varpar import isun, isha
 
 _p    = grid.p
@@ -66,19 +68,29 @@ _ncan = grid.ncan
 _mlcf_kwargs_no_atm = {k: v for k, v in _mlcf_kwargs.items()
                        if k not in ("atm2lnd_inst", "wateratm2lndbulk_inst")}
 
+# ── MLpftcon injection helpers ────────────────────────────────────────────────
+# Physics modules bind `MLpftcon` at import time (from MLpftconMod import MLpftcon).
+# Replacing only MLpftconMod.MLpftcon does NOT update those local bindings.
+# We must also update each physics module's local reference explicitly.
+_orig_pftcon = _pftcon_mod.MLpftcon
+
+
+def _set_pftcon(new_inst):
+    _pftcon_mod.MLpftcon = new_inst
+    _leaf_mod.MLpftcon   = new_inst
+    _nitro_mod.MLpftcon  = new_inst
+
+
+def _restore_pftcon():
+    _pftcon_mod.MLpftcon = _orig_pftcon
+    _leaf_mod.MLpftcon   = _orig_pftcon
+    _nitro_mod.MLpftcon  = _orig_pftcon
+
 
 # ── Forward function with injected vcmaxpft ───────────────────────────────────
 def _run_with_vcmax_scale(alpha_vcmax: jnp.ndarray):
-    """Run MLCanopyFluxes with vcmaxpft scaled by alpha_vcmax.
-
-    Module-global mutation of MLpftconMod.MLpftcon injects the traced alpha
-    into the JAX computation graph via MLpftcon.vcmaxpft[pft] (dynamic gather
-    in CanopyNitrogenProfileMod.py — no np.asarray in the critical path).
-    """
-    original = _pftcon_mod.MLpftcon
-    _pftcon_mod.MLpftcon = original._replace(
-        vcmaxpft=alpha_vcmax * original.vcmaxpft
-    )
+    """Run MLCanopyFluxes with vcmaxpft scaled by alpha_vcmax."""
+    _set_pftcon(_orig_pftcon._replace(vcmaxpft=alpha_vcmax * _orig_pftcon.vcmaxpft))
     try:
         inst = MLCanopyFluxes(
             mlcanopy_inst=mlcanopy_inst,
@@ -88,7 +100,7 @@ def _run_with_vcmax_scale(alpha_vcmax: jnp.ndarray):
         )
         return inst
     finally:
-        _pftcon_mod.MLpftcon = original
+        _restore_pftcon()
 
 
 def forward_gpp(alpha_vcmax: jnp.ndarray) -> jnp.ndarray:

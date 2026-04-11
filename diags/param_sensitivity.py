@@ -56,7 +56,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # ── MLpftconMod module-level singleton (for vcmax25 sensitivity) ──────────────
-import multilayer_canopy.MLpftconMod as _pftcon_mod
+# NamedTuple fields are immutable.  The correct injection pattern is:
+#   1. Create a new instance with `._replace(param=alpha * original.param)`
+#   2. Update EVERY physics module that has `from MLpftconMod import MLpftcon`
+#      because those local bindings were captured at import time and won't see
+#      a change to `MLpftconMod.MLpftcon` alone.
+import multilayer_canopy.MLpftconMod              as _pftcon_mod
+import multilayer_canopy.MLLeafPhotosynthesisMod  as _leaf_mod
+import multilayer_canopy.MLCanopyNitrogenProfileMod as _nitro_mod
 
 from multilayer_canopy.MLclm_varpar import isun, isha
 
@@ -66,6 +73,21 @@ _ncan = grid.ncan
 # ── Build kwargs without atm2lnd so we can inject scaled versions ─────────────
 _mlcf_kwargs_no_atm = {k: v for k, v in _mlcf_kwargs.items()
                        if k not in ("atm2lnd_inst", "wateratm2lndbulk_inst")}
+
+_orig_pftcon = _pftcon_mod.MLpftcon   # original MLpftcon_type instance
+
+
+def _set_pftcon(new_inst):
+    """Update MLpftcon in all physics module namespaces at once."""
+    _pftcon_mod.MLpftcon = new_inst
+    _leaf_mod.MLpftcon   = new_inst
+    _nitro_mod.MLpftcon  = new_inst
+
+
+def _restore_pftcon():
+    _pftcon_mod.MLpftcon = _orig_pftcon
+    _leaf_mod.MLpftcon   = _orig_pftcon
+    _nitro_mod.MLpftcon  = _orig_pftcon
 
 
 # ── Forward functions ──────────────────────────────────────────────────────────
@@ -113,35 +135,27 @@ def _le_tref(alpha: jnp.ndarray) -> jnp.ndarray:
 
 
 # alpha_vcmax25 — via module-global mutation ────────────────────────────────────
-# MLCanopyNitrogenProfileMod reads MLpftcon.vcmaxpft[pft] via JAX dynamic gather
-# (no np.asarray). Temporarily replacing the module-level singleton injects the
-# traced alpha into the XLA computation graph.
-#
-# Note: jax.jit compiles this function with alpha as a traced input, so the
-# module-global mutation happens at trace time and the compiled graph correctly
-# includes alpha * vcmaxpft as a parameterised computation.
+# MLCanopyNitrogenProfileMod reads MLpftcon.vcmaxpft[pft] via JAX dynamic gather.
+# IMPORTANT: `from MLpftconMod import MLpftcon` at module import time creates a
+# local binding — replacing only MLpftconMod.MLpftcon is not enough.
+# We must also update _nitro_mod.MLpftcon (and _leaf_mod.MLpftcon) so physics
+# code sees the new value.  Use _set_pftcon/_restore_pftcon helpers above.
 def _gpp_vcmax(alpha: jnp.ndarray) -> jnp.ndarray:
-    original = _pftcon_mod.MLpftcon
-    _pftcon_mod.MLpftcon = original._replace(
-        vcmaxpft=alpha * original.vcmaxpft
-    )
+    _set_pftcon(_orig_pftcon._replace(vcmaxpft=alpha * _orig_pftcon.vcmaxpft))
     try:
         inst = _run_inst()
         return compute_gpp(inst, _p, _ncan)
     finally:
-        _pftcon_mod.MLpftcon = original
+        _restore_pftcon()
 
 
 def _le_vcmax(alpha: jnp.ndarray) -> jnp.ndarray:
-    original = _pftcon_mod.MLpftcon
-    _pftcon_mod.MLpftcon = original._replace(
-        vcmaxpft=alpha * original.vcmaxpft
-    )
+    _set_pftcon(_orig_pftcon._replace(vcmaxpft=alpha * _orig_pftcon.vcmaxpft))
     try:
         inst = _run_inst()
         return compute_le(inst, _p, _ncan)
     finally:
-        _pftcon_mod.MLpftcon = original
+        _restore_pftcon()
 
 
 # ── Baseline ──────────────────────────────────────────────────────────────────
@@ -181,41 +195,38 @@ for name, grad_gpp_fn, grad_le_fn in params_jax:
           flush=True)
 
 
-# ── FD sensitivity for alpha_iota (cannot use JAX grad — see docstring) ────────
-print("\n=== Finite-difference sensitivity for alpha_iota ===", flush=True)
-print("  (iota_SPA embedded as Python float in compiled kernels — FD only)", flush=True)
+# ── JAX grad sensitivity for alpha_iota (fixed in session 25) ─────────────────
+# iota_SPA is now a JAX runtime broadcast arg in the WUE kernels (in_axes=None).
+# Use the same _set_pftcon/_restore_pftcon pattern as vcmax.
+print("\n=== Computing JAX grad sensitivity for alpha_iota ===", flush=True)
 
 EPS_FD = 1e-4
 
-def _eval_with_iota_scale(alpha_iota: float):
-    """Run model with iota_SPA scaled by alpha_iota.
 
-    Replaces the module global iota_SPA values for the duration of the call.
-    Forces JIT recompilation (new concrete values — different from the JIT-cached
-    float constants). Use sparingly — only for FD sensitivity, not optimization.
-    """
-    import multilayer_canopy.MLpftconMod as _pm
-    original = _pm.MLpftcon
-    _pm.MLpftcon = original._replace(iota_SPA=alpha_iota * original.iota_SPA)
+def _gpp_iota(alpha: jnp.ndarray) -> jnp.ndarray:
+    _set_pftcon(_orig_pftcon._replace(iota_SPA=alpha * _orig_pftcon.iota_SPA))
     try:
-        # Note: _run_inst uses the module global MLpftcon, so this captures
-        # the scaled iota. However, iota is extracted via float() in the kernel
-        # factory, so this produces a NEW Python float — JAX cannot trace it.
-        # The result is a concrete (non-traced) computation.
         inst = _run_inst()
-        gpp_val = float(compute_gpp(inst, _p, _ncan))
-        le_val  = float(compute_le(inst, _p, _ncan))
-        return gpp_val, le_val
+        return compute_gpp(inst, _p, _ncan)
     finally:
-        _pm.MLpftcon = original
+        _restore_pftcon()
+
+
+def _le_iota(alpha: jnp.ndarray) -> jnp.ndarray:
+    _set_pftcon(_orig_pftcon._replace(iota_SPA=alpha * _orig_pftcon.iota_SPA))
+    try:
+        inst = _run_inst()
+        return compute_le(inst, _p, _ncan)
+    finally:
+        _restore_pftcon()
+
 
 t0 = time.time()
-gpp_plus,  le_plus  = _eval_with_iota_scale(1.0 + EPS_FD)
-gpp_minus, le_minus = _eval_with_iota_scale(1.0 - EPS_FD)
-dgpp_iota = (gpp_plus - gpp_minus) / (2.0 * EPS_FD)
-dle_iota  = (le_plus  - le_minus)  / (2.0 * EPS_FD)
+_iota_alpha = jnp.float64(1.0)
+dgpp_iota = float(jax.jit(jax.grad(_gpp_iota))(_iota_alpha))
+dle_iota  = float(jax.jit(jax.grad(_le_iota))(_iota_alpha))
 elapsed_iota = time.time() - t0
-print(f"  alpha_iota           dGPP={dgpp_iota:>12.4e}  dLE={dle_iota:>12.4e}  ({elapsed_iota:.1f}s, FD)",
+print(f"  alpha_iota           dGPP={dgpp_iota:>12.4e}  dLE={dle_iota:>12.4e}  ({elapsed_iota:.1f}s, JAX grad)",
       flush=True)
 
 

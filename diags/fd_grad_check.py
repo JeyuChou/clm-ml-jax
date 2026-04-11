@@ -44,7 +44,9 @@ from diags.expt_init import (
     mlcanopy_inst, grid, _mlcf_kwargs, jax, jnp, MLCanopyFluxes,
     atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp,
 )
-from multilayer_canopy.MLpftconMod import MLpftcon
+import multilayer_canopy.MLpftconMod              as _MLpftconMod
+import multilayer_canopy.MLLeafPhotosynthesisMod  as _LeafMod
+import multilayer_canopy.MLCanopyNitrogenProfileMod as _NitroMod
 
 import numpy as np
 import matplotlib
@@ -56,6 +58,32 @@ _p = grid.p
 # Build kwargs without atm2lnd_inst so we can pass it as a traced arg
 _mlcf_kwargs_no_atm = {k: v for k, v in _mlcf_kwargs.items()
                        if k not in ("atm2lnd_inst", "wateratm2lndbulk_inst")}
+
+# ── MLpftcon module injection helpers ─────────────────────────────────────────
+# NamedTuples are immutable — we cannot set `MLpftcon.g1_MED = ...`.
+# We must replace the module-level variable AND update all already-imported
+# physics module references so they see the new instance.
+# Each physics module does `from MLpftconMod import MLpftcon` at import time,
+# binding the NAME to the original object.  Replacing `MLpftconMod.MLpftcon`
+# alone does NOT update those local bindings.  We must also update:
+#   _LeafMod.MLpftcon  — for g1_MED / g0_MED / iota_SPA / gsmin_SPA
+#   _NitroMod.MLpftcon — for vcmaxpft / clump_fac
+
+_orig_pftcon = _MLpftconMod.MLpftcon   # original MLpftcon_type instance
+
+
+def _set_pftcon(new_inst):
+    """Replace MLpftcon in all relevant module namespaces."""
+    _MLpftconMod.MLpftcon = new_inst
+    _LeafMod.MLpftcon     = new_inst
+    _NitroMod.MLpftcon    = new_inst
+
+
+def _restore_pftcon():
+    """Restore MLpftcon to original in all relevant module namespaces."""
+    _MLpftconMod.MLpftcon = _orig_pftcon
+    _LeafMod.MLpftcon     = _orig_pftcon
+    _NitroMod.MLpftcon    = _orig_pftcon
 
 
 # ── GPP scalar forward functions ─────────────────────────────────────────────
@@ -95,28 +123,20 @@ def forward_gpp_tref(alpha: jnp.ndarray) -> jnp.ndarray:
     return compute_gpp(inst, _p, grid.ncan)
 
 
-# Save original parameter arrays for restore after each call
-_orig_g1_MED   = MLpftcon.g1_MED
-_orig_g0_MED   = MLpftcon.g0_MED
-_orig_iota     = MLpftcon.iota_SPA
-_orig_gsmin    = MLpftcon.gsmin_SPA
-_orig_vcmaxpft = MLpftcon.vcmaxpft
-
-
 def forward_gpp_g1_MED(alpha: jnp.ndarray) -> jnp.ndarray:
     """Forward pass: scale g1_MED[all PFTs] by alpha, return GPP.
 
     g1_MED is the Medlyn stomatal slope.  Active when gs_type == 0 (Medlyn).
     Gradient path: g1_MED → gs (quadratic solve in kernel) → Ci → GPP.
     """
-    MLpftcon.g1_MED = alpha * _orig_g1_MED
+    _set_pftcon(_orig_pftcon._replace(g1_MED=alpha * _orig_pftcon.g1_MED))
     inst = MLCanopyFluxes(
         mlcanopy_inst=mlcanopy_inst,
         atm2lnd_inst=atm2lnd_inst,
         wateratm2lndbulk_inst=wateratm2lndbulk_inst,
         **_mlcf_kwargs_no_atm,
     )
-    MLpftcon.g1_MED = _orig_g1_MED   # restore (happens after JAX trace captures dep)
+    _restore_pftcon()
     return compute_gpp(inst, _p, grid.ncan)
 
 
@@ -126,14 +146,14 @@ def forward_gpp_iota(alpha: jnp.ndarray) -> jnp.ndarray:
     iota_SPA is the WUE efficiency parameter.  Active when gs_type == 2 (WUE).
     Gradient path: iota → _bisect_gs_ift (IFT) → gs_opt → Ci → GPP.
     """
-    MLpftcon.iota_SPA = alpha * _orig_iota
+    _set_pftcon(_orig_pftcon._replace(iota_SPA=alpha * _orig_pftcon.iota_SPA))
     inst = MLCanopyFluxes(
         mlcanopy_inst=mlcanopy_inst,
         atm2lnd_inst=atm2lnd_inst,
         wateratm2lndbulk_inst=wateratm2lndbulk_inst,
         **_mlcf_kwargs_no_atm,
     )
-    MLpftcon.iota_SPA = _orig_iota   # restore
+    _restore_pftcon()
     return compute_gpp(inst, _p, grid.ncan)
 
 
@@ -144,14 +164,14 @@ def forward_gpp_vcmaxpft(alpha: jnp.ndarray) -> jnp.ndarray:
     Gradient path: vcmaxpft → vcmax25top (NitrogenProfile) → vcmax25_leaf →
                    vcmax_leaf (T-response in kernel) → ac (Rubisco) → agross → GPP.
     """
-    MLpftcon.vcmaxpft = alpha * _orig_vcmaxpft
+    _set_pftcon(_orig_pftcon._replace(vcmaxpft=alpha * _orig_pftcon.vcmaxpft))
     inst = MLCanopyFluxes(
         mlcanopy_inst=mlcanopy_inst,
         atm2lnd_inst=atm2lnd_inst,
         wateratm2lndbulk_inst=wateratm2lndbulk_inst,
         **_mlcf_kwargs_no_atm,
     )
-    MLpftcon.vcmaxpft = _orig_vcmaxpft   # restore
+    _restore_pftcon()
     return compute_gpp(inst, _p, grid.ncan)
 
 
