@@ -24,14 +24,16 @@ RK4 gradient check XLA compilation exceeded 2-hour job limit:
 | 7344539 | plot_benchmarks | PENDING (Dependency) |
 | 7343825 | fd_grad_check (5 params) | PENDING (Resources) |
 
-### Euler laxscan result confirmed (from 7342742 before cancel)
+### Euler laxscan results (job 7344537, consistent with 7342742)
 ```
-Euler  diff (lax.scan):  36.3 ms/step
-Euler  non-diff:       2909.7 ms/step  →  80× speedup
-RK4    diff (lax.scan):  36.9 ms/step
-RK4    non-diff:      29467.5 ms/step  → 798× speedup
-dGPP/d(alpha_tref) Euler [lax.scan]: -48.69  finite=True  PASS
+Euler  diff (lax.scan):  38.1 ms/step  compile: 251.6s
+Euler  non-diff:       2941.4 ms/step  →  77× speedup
+  diff_mode  loss = -2903.8322  (matches non-diff ✓)
+  diff loss finite: True
+Euler gradient check: compiling now (~20 min, same as 7342742)
 ```
+Note: JAX compile cache not hitting for Euler forward (251s vs expected ~0s).
+RK4 forward was cached (0.293s in 7342742). Euler and RK4 are different cache keys.
 
 ---
 
