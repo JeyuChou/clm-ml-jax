@@ -21,6 +21,20 @@ Speedup growing with N. ms/site improving (722 → 512 → 445).
 
 ---
 
+## 2026-04-10 — fd_grad_check GPU: alpha_iota confirmed (session 28)
+
+### alpha_iota JAX gradient on A40 GPU (job 7344785)
+
+```
+dGPP/d(alpha_iota) [JAX] = -2.135854e+00   compile: 745.8s
+```
+
+Finite, non-zero, physically correct sign (higher iota → lower gs → lower GPP → negative).
+IFT gradient via _bisect_gs_ift worked. alpha_vcmax now tracing (final JAX grad).
+CPU: rel err 1.05e-6 PASS (session 27). GPU FD comparison pending end of job.
+
+---
+
 ## 2026-04-10 — fd_grad_check GPU: alpha_sw + alpha_tref + alpha_g1 confirmed (session 28)
 
 ### alpha_g1 JAX gradient on A40 GPU (job 7344785)
