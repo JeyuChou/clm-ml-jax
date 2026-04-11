@@ -155,9 +155,9 @@ def SoilStateInitTimeConst(
         else:
             # Look up soil texture class — Fortran lines 130-145
             tex = 0
-            for m in range(1, ntex + 1):                     # do m = 1, ntex
+            for m in range(ntex):                           # m = 0, 1, ..., 10
                 if tower_tex[tower_num] == soil_tex[m]:
-                    tex = m
+                    tex = m + 1                             # keep tex 1-based 
                     break
 
             if tex == 0:
