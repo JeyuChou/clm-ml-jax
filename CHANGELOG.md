@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-04-10 — iota_SPA gradient verified on CPU (session 27)
+
+**CPU test: PASS**
+```
+FD  dGPP/d(alpha_iota) = -2.135857e+00
+JAX dGPP/d(alpha_iota) = -2.135854e+00
+Relative error = 1.045e-06  →  PASS
+```
+
+iota[7] = 375.0 (CHATS7 PFT 7 default).  
+Gradient path: `alpha_iota → _iota_jnp = jnp.asarray(MLpftcon.iota_SPA) → _iota_pft[pft] →`
+`iota_rt (vmap in_axes=None) → _StomataEfficiencyJax → _bisect_gs_ift (IFT) → gs_opt → GPP`.
+
+All 4 active parameters now CPU-verified:
+| Parameter | CPU result | Status |
+|---|---|---|
+| alpha_sw    | rel err 3.68e-7 | PASS |
+| alpha_tref  | rel err 1.66e-9 | PASS |
+| alpha_iota  | rel err 1.05e-6 | PASS ← new |
+| alpha_vcmax | rel err 1.80e-8 | PASS |
+| alpha_g1_MED | N/A | INACT (gs_type=2) |
+
+GPU confirmation via job 7343825 (still pending Resources).
+
+---
+
 ## 2026-04-10 — Joint vcmaxpft + iota_SPA optimization implemented (session 27)
 
 ### `diags/optimize_params.py` — new joint optimization section (~200 lines added)
