@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-04-10 — Benchmark jobs submitted + plotting infrastructure (session 24)
+
+### Jobs submitted to measure post-optimization performance
+
+| Job ID | Script | What it measures | Wall |
+|---|---|---|---|
+| **7342742** | `run_laxscan_benchmark.sh` | diff (lax.scan) vs non-diff (Python loop), Euler + RK4 — ms/step, compile time, grad check | 2h |
+| **7342743** | `run_multisite_benchmark.sh` | GPU vs CPU, N=1,2,4,8,16,32, full RK4 — ms/site/step, vmap speedup | 6h |
+| **7342744** | `run_plot_benchmarks.sh` | Generates `benchmark_summary.png` — runs only after 7342742 + 7342743 succeed | 10m |
+
+Jobs 7342742/7342743 PENDING (Resources/Priority) as of 2026-04-10.
+Job 7342744 has `--dependency=afterok:7342742:7342743`.
+
+**Previous baseline** (jobs 7329052 + 7329441, pre-optimization):
+- Euler diff: 37.2 ms/step  |  non-diff: 6,095 ms  |  speedup: 164×
+- RK4   diff: 37.8 ms/step  |  non-diff: 117,164 ms |  speedup: 3101×
+- Compile time: ~290s (Euler), ~2h+ (RK4)
+
+**Expected "after"**: same steady-state ms (kernel unchanged), lower compile time
+from persistent cache + smaller XLA trace from vectorization; non-diff notably
+faster from reduced dispatch count.
+
+### New benchmark infrastructure
+
+- `diags/benchmark_laxscan.py`: now saves `diags/figures/laxscan_benchmark.csv`
+  (diff_ss_ms, nondiff_ss_ms, speedup, compile_s for Euler + RK4)
+- `diags/benchmark_multisite.py` (`run_multisite_benchmark.sh`): updated to run
+  `--backend both` with N=1..32 for GPU and CPU (was GPU N=1..32 + CPU N=1..8)
+- `diags/plot_benchmarks.py`: 3-panel comprehensive figure
+  - Panel A: lax.scan speedup bar chart (Euler + RK4, diff vs non-diff)
+  - Panel B: ms/site/step vs N (log–log), GPU + CPU, Fortran reference line
+  - Panel C: GPU vs CPU throughput at N=1, 16, 32 (sites/second, speedup labels)
+  - Output: `diags/figures/benchmark_summary.png` (300 dpi)
+- `bashscripts/run_plot_benchmarks.sh`: CPU-only SLURM job for plot generation
+
+### Results to check when jobs complete
+- `logs/7342742_laxscan_benchmark.out` — post-opt timing + grad check status
+- `logs/7342743_multisite_benchmark.out` — GPU/CPU N-site scaling table
+- `diags/figures/laxscan_benchmark.csv` + `multisite_benchmark.csv`
+- `diags/figures/benchmark_summary.png` — comprehensive plot
+
+---
+
 ## 2026-04-10 — Gradient explosion fix: Obukhov-length IFT (session 24)
 
 ### Root cause of `dGPP/d(alpha_tref) = 9.95e+144`
