@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-04-14 — Paper update: all 5 GPP gradients + Jacobian fix + vmap N=32 (session 31)
+
+### JAXES.tex updates applied
+
+**Table 2 (Gradient Correctness):** Expanded from 2 rows to 5 rows, removing the
+"pending" entry for alpha_tref:
+- alpha_sw: JAX=+1.070e+01, FD=+1.070e+01, rel err 3.7e-7, PASS
+- alpha_tref: JAX=-4.869e+01, FD=-4.869e+01, rel err 1.3e-4, PASS
+- alpha_g1: JAX=0, FD=0, INACT (WUE stomatal model)
+- alpha_iota: JAX=-2.136e+00, FD=-2.136e+00, rel err 1.1e-6, PASS
+- alpha_vcmax: JAX=+1.414e+01, FD=+1.414e+01, rel err 1.8e-8, PASS
+
+Added explanation of vcmaxpft_jax fix in Table 2 text.
+
+**Experiment 3 (Jacobian):** Updated outputs from H_top/LE_top to canopy-sum H and LE
+(shleaf_leaf / lhleaf_leaf proxies). Updated parameter set to remove LAI (replaced with
+iota_SPA and g1_MED). Updated Jacobian zero-column explanation (g1 inactive in WUE mode,
+not Vcmax25 which is now non-zero via vcmaxpft_jax fix). Updated figure caption.
+
+**Limitations — vmap:** Updated from "preliminary 3.5× at N=32" to confirmed
+"1.89× at N=32, 354 ms/site (A40)". Added note that GPU advantage materialises at N≥50.
+
+**JAXES.bib:** Added 14 new references:
+ledimet1986, talagrand1987, raoult2016adjules, farquhar1980, medlyn2011, harman2007rsl,
+patton2011chats, gelbrecht2023diff, wang2023climaland, noahpy2026,
+pietrini2024bridging, ranasinghe2025llmfortran
+
+### Pending (awaiting job 7403949 results)
+- LE and H gradient pass/fail for all 5 params → will add LE/H columns to Table 2
+- Fixed Jacobian Vcmax25 non-zero column confirmation
+- dpai sensitivity column check
+
+---
+
 ## 2026-04-14 — LE/H grad check + Jacobian Vcmax25 fix (job 7403949, session 30)
 
 ### Differentiability audit results (from prior jobs)
