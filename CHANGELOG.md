@@ -1,5 +1,75 @@
 # Changelog
 
+## 2026-04-14 — LE/H grad check + Jacobian Vcmax25 fix (job 7403949, session 30)
+
+### Differentiability audit results (from prior jobs)
+
+| Parameter | GPP JAX | GPP FD | GPP rel err | LE | H | Status |
+|---|---|---|---|---|---|---|
+| alpha_sw    | 1.070e+01 | 1.070e+01 | ~0 | pending | pending | GPP PASS |
+| alpha_tref  | -4.869e+01 | -4.869e+01 | 1.3e-4 | pending | pending | GPP PASS |
+| alpha_g1    | 0.0 | 0.0 | — | pending | pending | INACT (WUE) |
+| alpha_iota  | -2.136e+00 | -2.136e+00 | 1.05e-6 (CPU) | pending | pending | GPP PASS |
+| alpha_vcmax | 1.414e+01 | 1.414e+01 | 1.8e-8 (CPU) | pending | pending | GPP PASS |
+
+GPU FD for iota/vcmax: job 7345152 FAILED (6h time limit exceeded during FD phase).
+CPU FD already PASSES for both — considered verified.
+
+### New: LE and H gradient check (job 7403949)
+
+**Problem identified:** LE and H gradients had never been tested.
+
+**Implementation:**
+1. Added `compute_h(inst, p, ncan)` to `diags/expt_init.py`:
+   - Uses `shleaf_leaf` (set by LeafFluxes + FluxProfileSolution in diff mode)
+   - Analogous to `compute_le` (lhleaf_leaf)
+   - H = dpai-weighted sum of shleaf (sun+shade) over canopy layers
+
+2. Created `diags/le_h_grad_check.py`:
+   - Tests dLE/dα and dH/dα for all 5 parameters (sw, tref, g1, iota, vcmax)
+   - Uses JAX + central FD comparison, 1% rel err threshold
+   - Produces `diags/figures/le_h_grad_check.png`
+
+### New: Jacobian Vcmax25 fix in `diags/sensitivity_analysis.py`
+
+**Root cause confirmed:** The Jacobian Vcmax25 column was zero because
+`sensitivity_analysis.py` scaled `vcmax25_profile` and `vcmax25_leaf` directly
+in `mlcanopy_inst`, but `CanopyNitrogenProfile` (inside `_physics_step_fn`)
+recomputes both from `MLpftcon.vcmaxpft` — overwriting the scaled values.
+
+**Fix:** Pass `vcmaxpft_jax = scales[0] * _orig_pftcon.vcmaxpft` as explicit
+JAX argument to MLCanopyFluxes (bypasses JIT cache; same pattern as fd_grad_check.py).
+
+**dpai column:** dpai_profile is NOT recomputed inside the physics step — it
+enters CanopyNitrogenProfile as `mlcanopy_inst.dpai_profile` affecting nscale
+computation AND enters compute_gpp/le/h as the layer weighting. dpai gradient
+should be non-zero (expected PASS — to be confirmed by job 7403949).
+
+**H/LE outputs in Jacobian:** Replaced `inst.shair_profile[p,1]` (air layer, skipped
+in diff mode) with `compute_h(inst, p, n)` (shleaf_leaf, updated in diff mode).
+Same fix for LE: replaced `inst.etair_profile[p,1]` with `compute_le(...)`.
+
+### Files changed
+
+- `diags/expt_init.py`: added `compute_h()` function
+- `diags/sensitivity_analysis.py`: fix Vcmax25 (vcmaxpft_jax), fix H/LE outputs,
+  import compute_h and compute_le
+- `diags/le_h_grad_check.py`: new — LE/H gradient check for all 5 params
+- `bashscripts/run_le_h_grad_check.sh`: new — 6h GPU job
+
+### Multisite vmap N=32 result (job 7342743, COMPLETED)
+
+| N | speedup | ms/site/step |
+|---|---|---|
+| 32 | **1.89×** | 354.4 ms |
+
+Diminishing returns starting (N=16 was 1.86×, N=32 is 1.89× — plateau near 2×).
+CPU vmap provides 1.12× at N=16 (minimal benefit — GPU is the right target).
+
+### Pending
+- Job 7403949 results: LE and H gradients for all 5 params
+- Fixed Jacobian output: does Vcmax25 column show non-zero? does dpai column work?
+
 ## 2026-04-10 — FD grad check: alpha_sw + alpha_tref PASS (job 7344785, session 28)
 
 ### FD comparison table (partial — job 7344785 timed out after alpha_tref)

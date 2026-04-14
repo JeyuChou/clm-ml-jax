@@ -41,15 +41,19 @@ FIGURES_DIR = Path(__file__).parent / "figures"
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Shared init ───────────────────────────────────────────────────────────────
+import multilayer_canopy.MLpftconMod as _pftcon_mod
+
 from diags.expt_init import (
     mlcanopy_inst, grid, _mlcf_kwargs,
     jax, jnp, MLCanopyFluxes,
-    atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp,
+    atm2lnd_inst, wateratm2lndbulk_inst, compute_gpp, compute_le, compute_h,
 )
+
+_orig_pftcon = _pftcon_mod.MLpftcon   # original MLpftcon instance
 
 # ── Parameter names (for display) ─────────────────────────────────────────────
 PARAM_NAMES  = ["Vcmax25", "T_air", "SW_rad", "q_ref\n(humidity)", "dpai\n(leaf area)"]
-OUTPUT_NAMES = ["GPP", "H (top layer)", "LE (top layer)"]
+OUTPUT_NAMES = ["GPP", "H (canopy sum)", "LE (canopy sum)"]
 
 _p   = grid.p
 _n   = grid.ncan
@@ -63,27 +67,39 @@ def forward_multi(scales: jnp.ndarray) -> jnp.ndarray:
     """
     Args:
         scales: float64 array of shape (5,) — scale factors at baseline = 1.0
-          0: alpha_vcmax25  — scale on vcmax25_profile & vcmax25_leaf
+          0: alpha_vcmax25  — scale on vcmaxpft (passed as vcmaxpft_jax arg)
           1: alpha_tair     — scale on atm2lnd_inst.forc_t_downscaled_col
           2: alpha_sw       — scale on atm2lnd_inst.forc_solad & forc_solai
           3: alpha_qref     — scale on wateratm2lndbulk_inst.forc_q_downscaled_col
           4: alpha_dpai     — scale on mlcanopy_inst.dpai_profile
 
     Returns:
-        jnp.ndarray of shape (3,): [GPP (umol CO2/m2/s), H_toplayer (W/m2), LE_toplayer]
+        jnp.ndarray of shape (3,): [GPP (umol CO2/m2/s), H_canopy (W/m2), LE_canopy (W/m2)]
 
-    NOTE: T_air, SW_rad, q_ref are scaled via atm2lnd_inst/wateratm2lndbulk_inst
-    because MLCanopyFluxes.__init__ copies forcing fields from those instances
-    into mlcanopy_inst, overwriting any mlcanopy_inst fields. Vcmax25 and dpai
-    are scaled via mlcanopy_inst (they are not overwritten from atm2lnd_inst).
+    NOTE: Vcmax25 is passed via vcmaxpft_jax (bypasses JIT cache so gradient flows).
+    Scaling vcmax25_profile/vcmax25_leaf directly in mlcanopy_inst does NOT work
+    because CanopyNitrogenProfile (called inside _physics_step_fn) recomputes them
+    from MLpftcon.vcmaxpft, overwriting the scaled values.
+
+    T_air, SW_rad, q_ref are scaled via atm2lnd_inst/wateratm2lndbulk_inst because
+    MLCanopyFluxes.__init__ copies forcing fields from those instances into
+    mlcanopy_inst, overwriting any mlcanopy_inst forcing fields.
+
+    dpai is scaled via mlcanopy_inst — it is NOT recomputed inside the physics step.
+    It affects GPP via (a) nscale in CanopyNitrogenProfile and (b) the dpai weighting
+    in compute_gpp/compute_le/compute_h.
+
+    H and LE are computed from shleaf_leaf and lhleaf_leaf (leaf-level, weighted over
+    canopy layers) — updated inside _physics_step_fn even in diff mode.
     """
-    # Scale vegetation/structure parameters via mlcanopy_inst
+    # Scale vcmax via vcmaxpft_jax — bypasses JIT cache so gradient flows correctly.
+    vcmaxpft_jax = scales[0] * _orig_pftcon.vcmaxpft
+
+    # Scale dpai via mlcanopy_inst (not recomputed inside physics step).
     modified_ml = mlcanopy_inst._replace(
-        vcmax25_profile = scales[0] * mlcanopy_inst.vcmax25_profile,
-        vcmax25_leaf    = scales[0] * mlcanopy_inst.vcmax25_leaf,
-        dpai_profile    = scales[4] * mlcanopy_inst.dpai_profile,
+        dpai_profile = scales[4] * mlcanopy_inst.dpai_profile,
     )
-    # Scale forcing via atm2lnd_inst (actual source used by physics)
+    # Scale forcing via atm2lnd_inst (actual source used by physics).
     modified_atm = atm2lnd_inst._replace(
         forc_t_downscaled_col     = scales[1] * atm2lnd_inst.forc_t_downscaled_col,
         forc_solad_downscaled_col = scales[2] * atm2lnd_inst.forc_solad_downscaled_col,
@@ -97,14 +113,16 @@ def forward_multi(scales: jnp.ndarray) -> jnp.ndarray:
         mlcanopy_inst=modified_ml,
         atm2lnd_inst=modified_atm,
         wateratm2lndbulk_inst=modified_watm,
+        vcmaxpft_jax=vcmaxpft_jax,
         **_mlcf_kwargs_no_atm,
     )
 
-    # gppveg_canopy is NOT updated in diff mode (CanopyFluxesDiagnostics is skipped).
-    # Use agross_leaf directly — updated by LeafPhotosynthesis in _physics_step_fn.
-    GPP = compute_gpp(inst, _p, _n)                        # proportional to umol CO2/m2/s
-    H   = inst.shair_profile[_p, 1]                        # top layer W/m2
-    LE  = inst.etair_profile[_p, 1]                        # top layer mol H2O/m2/s
+    # Use leaf-level proxies (shleaf_leaf, lhleaf_leaf, agross_leaf) — all updated
+    # by _physics_step_fn in diff mode.  _CanopyFluxesDiagnostics is skipped in
+    # diff mode so gppveg_canopy, eflx_sh_tot, eflx_lh_tot are NOT updated.
+    GPP = compute_gpp(inst, _p, _n)
+    H   = compute_h(inst, _p, _n)
+    LE  = compute_le(inst, _p, _n)
 
     return jnp.array([GPP, H, LE])
 

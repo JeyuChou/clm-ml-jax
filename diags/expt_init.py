@@ -260,3 +260,26 @@ def compute_le(inst, p: int, ncan: int) -> jnp.ndarray:
     return jnp.sum(
         (lhleaf_sun * fracsun + lhleaf_sha * (1.0 - fracsun)) * dpai
     )
+
+
+def compute_h(inst, p: int, ncan: int) -> jnp.ndarray:
+    """Compute canopy sensible heat proxy from shleaf_leaf (differentiable in diff mode).
+
+    shleaf_leaf is set by LeafFluxes (MLLeafFluxesMod.py:177) and
+    FluxProfileSolution (MLFluxProfileSolutionMod.py:452) inside the RK
+    inner loop — available in diff mode even though _CanopyFluxesDiagnostics
+    is skipped.
+
+    Gradient path: shleaf = 2 * cpair * (T_leaf - T_air) * g_bh
+    T_leaf is solved by the leaf energy balance; g_bh depends on wind speed
+    and leaf boundary layer conductance. Both flow through the physics step.
+
+    Units: W m-2 (weighted sum over canopy layers, sun+shade).
+    """
+    shleaf_sun = inst.shleaf_leaf[p, 1:ncan + 1, isun]
+    shleaf_sha = inst.shleaf_leaf[p, 1:ncan + 1, isha]
+    fracsun    = inst.fracsun_profile[p, 1:ncan + 1]
+    dpai       = inst.dpai_profile[p, 1:ncan + 1]
+    return jnp.sum(
+        (shleaf_sun * fracsun + shleaf_sha * (1.0 - fracsun)) * dpai
+    )
