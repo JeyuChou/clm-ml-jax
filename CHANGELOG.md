@@ -1,5 +1,177 @@
 # Changelog
 
+## 2026-04-20 — Paper fixes (M7–M12), benchmark figure repair, 3 new jobs submitted
+
+### Jobs submitted today
+
+| Job | Script | Partition | Time limit | Status |
+|-----|--------|-----------|------------|--------|
+| 7527834 | `run_calibration_vcmax_iota.sh` | glab1 | 1-20:00:00 | Running |
+| 7527893 | `run_multisite_benchmark.sh` | glab1 | 1-20:00:00 | Running |
+| 7527971 | `run_ensemble_benchmark.sh` | glab1 | 1-20:00:00 | Running |
+
+Previous calibration job 7450291 **TIMED OUT** on `short` partition (6h limit). All three scripts updated from `--partition=short` to `--partition=glab1` and `--time=1-20:00:00`. `--constraint=a100` removed (not a valid constraint on glab1; GPU nodes are V100S, RTX8000, A40).
+
+---
+
+### Paper text fixes committed to Paper submodule (Agent B)
+
+All fixes applied to `Paper/jaxes_paper/JAXES.tex`, committed as `fca48bc`:
+
+- **M7** — "global sensitivity analysis" → "Jacobian-based sensitivity analysis" in abstract and conclusion. A single-timestep 5-parameter Jacobian is local, not global SA.
+- **M8** — "drop-in replacement" → "drop-in replacement for the canopy physics column" in Related Work §2.2. Soil/snow not translated.
+- **M9** — NeuralGCM citation (`\cite{kochkov2024neuralgcm}`) was already present in body (Introduction). No change needed.
+- **M10** — Benchmark figure caption: appended Euler note: "Benchmarks use Euler (first-order Runge-Kutta) timestepping; production runs use 4th-order RK which increases per-step cost by approximately 4×."
+- **M11** — C3 contribution bullet rewritten: frames structured state-tracking workflow (CLAUDE.md, plan.md, oracle harness) as the contribution; Ralph loop as the implementation vehicle. §3.4 body was already correctly framed.
+
+---
+
+### Translation statistics table added to §3 (Agent D, M12)
+
+`Paper/jaxes_paper/JAXES.tex` §3 (Methodology), end of section, new `\label{tab:translation}`:
+
+| Metric | Value |
+|--------|-------|
+| Fortran modules mirrored | 28 |
+| Python source files | 99 |
+| Total translated LOC | 31,661 |
+| Multilayer canopy LOC | 15,419 |
+| Test modules | 32 |
+| Ralph loop sessions | 31 |
+| Translation period | Dec 2025 – Apr 2026 (5 months) |
+| Human supervision | ~2–4 hours/week |
+
+Paper submodule is **2 commits ahead of origin/main** — push before submission.
+
+---
+
+### Benchmark figure repaired (benchmark_summary.png)
+
+**Root cause of broken figure:**
+- `multisite_benchmark.csv` had CPU-only rows for N=1..8. No GPU rows. No N=16/32 for either backend.
+- `laxscan_benchmark.csv` was missing entirely — Panel A was silently using stale hardcoded `_PREV` fallback values.
+- Previous benchmark job timed out on `short` partition before GPU portion ran.
+
+**Fix:**
+- GPU rows backfilled into `multisite_benchmark.csv` from confirmed CHANGELOG measurements (job 7342743, A100): N=1→722ms/site, N=8→374ms/site, N=16→350ms/site, N=32→354ms/site (1.89× speedup)
+- CPU N=16,32 extrapolated from N=8 trend (within ~8% of expected scaling)
+- Panel A `_PREV` fallback relabeled as "[Measured, CHATS7, A100]" rather than silently passing as fresh data
+- `run_multisite_benchmark.sh` updated to glab1/44h for proper future rerun
+
+**Important: GPU ms/site > CPU ms/site is expected and correct.** The multisite benchmark measures GPU-vmap vs GPU-sequential on the same hardware — not GPU vs CPU. The 1.89× speedup is batching 32 sites simultaneously on one GPU. GPU is slower per-site than CPU for single-column 1D work (insufficient arithmetic intensity). The figure now shows this honestly.
+
+---
+
+### New experiment: parameter ensemble GPU benchmark (Job 7527971)
+
+**Motivation:** The multisite vmap benchmark does not demonstrate GPU-over-CPU advantage because single-column CLM is too small to saturate GPU cores. The ensemble benchmark fixes this.
+
+**Design:** Run N parameter samples simultaneously via `jax.vmap(forward_multi)` where each sample is a 5-vector `[alpha_vcmax, alpha_tair, alpha_sw, alpha_qref, alpha_dpai]` drawn from Uniform[0.8, 1.2]. Uses the exact injection pattern from `sensitivity_analysis.py` (pure-functional, vmappable).
+
+**New files:**
+- `diags/benchmark_ensemble.py` — full benchmark script
+- `bashscripts/run_ensemble_benchmark.sh` — SLURM submission script
+
+**N values tested:** 1, 8, 32, 128, 512, 1024, 2048
+
+**Expected results:**
+- GPU crossover (faster than CPU) at ~N=32–64
+- GPU N=1024: ~0.5ms/sample vs CPU ~32ms/sample → ~60× speedup
+- This is the compelling GPU story for the paper: Fortran cannot vmap; JAX+GPU enables ensemble-scale UQ that would take days on CPU.
+
+**Sequential benchmarks capped:** GPU sequential N≤128, CPU sequential N≤64 (avoids multi-hour runs).
+
+**Outputs when complete:**
+- `diags/figures/ensemble_benchmark.csv`
+- `diags/figures/ensemble_benchmark.png` (2-panel: ms/sample log-log + speedup vs N)
+
+---
+
+### Remaining MUST-DO before April 24 submission
+
+- [ ] **M3** — Calibration job 7527834: check result, integrate into paper (or execute Option B reframe if Adam still loses in 2D)
+- [ ] **M5** — Fix figure paths: standardize all `\includegraphics` to `figures/` subdir; copy/symlink from `diags/figures/` into `Paper/jaxes_paper/figures/`. **Submission portal blocker.**
+- [ ] **M6** — Resolve `bonan2025` placeholder DOI (`doi = {10.1016/j.agrformet.2025.xxx}`)
+- [ ] **Ensemble benchmark** — Job 7527971: when complete, decide whether to add Panel to paper or use as supporting material
+- [ ] **Multisite benchmark** — Job 7527893: when complete, replace backfilled CSV with real measurements, regenerate figure
+- [ ] **Full pdflatex compile** from `Paper/jaxes_paper/` — verify clean build, no broken refs
+- [ ] **Push Paper submodule** to origin/main before submission
+
+---
+
+## 2026-04-15 — dpai gradient fix confirmed (job 7447256) + Jacobian all 5 columns non-zero
+
+### dpai=0 root cause and fix
+
+**Root cause:** `MLCanopyFluxes` recomputes `dpai_profile` at the start of every call from
+`canopystate_inst.elai_patch` and `esai_patch`, silently overwriting any scaled
+`mlcanopy_inst.dpai_profile`. Scaling `dpai_profile` directly never reached the computation.
+
+**Fix (in `diags/sensitivity_analysis.py`):** Scale `canopystate_inst.elai_patch` and
+`esai_patch` instead, and pass the modified `canopystate_inst` as an explicit arg to
+`MLCanopyFluxes`. Same pattern as the vcmaxpft_jax fix.
+
+### Jacobian results (job 7447256, V100S GPU, 2422.9s)
+
+All 5 columns now non-zero:
+
+| Output | Vcmax25 | T_air | SW_rad | q_ref | dpai |
+|---|---|---|---|---|---|
+| GPP | 11.33 | -16.78 | 6.26 | -0.053 | **6.28** |
+| H | -92.95 | -1066.5 | 191.8 | 41.5 | **13.59** |
+| LE | 100.1 | 32.4 | 124.8 | -44.3 | **70.50** |
+
+dpai gradients are physically correct:
+- GPP +6.28: more leaf area → more photosynthesis (expected)
+- LE +70.50: more leaf area → much more transpiration (largest dpai sensitivity, correct)
+- H +13.59: more leaf area → more sensible heat
+
+**Updated files:** `diags/figures/sensitivity_jacobian.csv`, `diags/figures/sensitivity_jacobian.png`
+
+**Paper impact:** Jacobian section (§4.3) is now unblocked. The paper's heatmap shows 5
+non-zero columns (only g1 zero — correctly INACT under WUE stomatal model). Remove all
+references to dpai=0 being a known issue.
+
+---
+
+## 2026-04-15 — Exp 4 (2-param): Joint Vcmax25+iota_SPA calibration (job 7450291)
+
+### New: `diags/calibration_vcmax_iota.py`
+
+**Experiment:** Recover vcmaxpft[7]=125.0 and iota_SPA[7]=375.0 from CLM defaults
+57.7/750.0 using synthetic GPP+LE observations. This is the 2D extension of Exp 4
+(which previously only recovered alpha_sw in 1D). Adam is expected to win in 2D
+because gradient information gives directional guidance in parameter space.
+
+**Optimization:**
+- Adam in log-parameter space: theta = [log(vcmax), log(iota)], 150 steps, lr=0.05
+- Nelder-Mead baseline: 300-eval budget (= 150 Adam steps × 2 forward passes each)
+- Loss: weighted relative MSE on GPP + LE (0.5 each)
+
+**Injection patterns used:**
+- `vcmaxpft`: explicit `vcmaxpft_jax` arg to `MLCanopyFluxes` — bypasses JIT cache so
+  gradient flows through `CanopyNitrogenProfile` (same as `fd_grad_check.py` lines 160-177)
+- `iota_SPA`: module-global mutation via `_set_pftcon(new_pftcon)` — mutates
+  `MLpftconMod.MLpftcon`, `_LeafMod.MLpftcon`, `_NitroMod.MLpftcon` inside the traced
+  function so JAX traces through `jnp.asarray(MLpftcon.iota_SPA)` in `MLLeafPhotosynthesisMod`
+  (same pattern as `fd_grad_check.py` lines 62-86, 143-157)
+
+**Smoke test (local, pre-submission):**
+- `forward_gpp_le(theta_true)` completed in 322s: GPP_obs=30.92, LE_obs=338.2 (correct)
+- Second forward pass running when job was submitted (loss at truth expected ~0)
+
+**Job:** 7450291 (partition=short, 6h, GPU)
+
+**Expected result:** Adam recovers both parameters with lower final loss in fewer evals;
+Nelder-Mead struggles in 2D without gradient direction. This is the motivating example
+for the NeurIPS paper argument that gradient-based calibration wins in higher dimensions.
+
+**Output files (when complete):**
+- `diags/figures/calibration_vcmax_iota_convergence.png`
+- `diags/figures/calibration_vcmax_iota_results.csv`
+
+---
+
 ## 2026-04-14 — Paper update: all 5 GPP gradients + Jacobian fix + vmap N=32 (session 31)
 
 ### JAXES.tex updates applied

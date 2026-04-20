@@ -10,7 +10,6 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --partition=glab1
-#SBATCH --constraint=a100
 
 # ── Load CUDA toolkit ─────────────────────────────────────────────────────────
 module load cuda12.8/toolkit/12.8.61
