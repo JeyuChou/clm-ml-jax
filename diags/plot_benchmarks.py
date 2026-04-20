@@ -37,11 +37,16 @@ from matplotlib.gridspec import GridSpec
 _HERE        = Path(__file__).resolve().parent
 _FIGURES_DIR = _HERE / "figures"
 
-# ── Known baseline numbers (previous runs, jobs 7329052 + 7329441) ────────────
-# Used as "before" annotation if laxscan CSV not available yet.
+# ── Known baseline numbers (measured, jobs 7329052 + 7329441, A100) ──────────
+# Panel A uses these values directly (laxscan_benchmark.csv not available).
+# Euler: diff=37.2ms (lax.scan), nondiff=6095ms (Python loop), 164× speedup
+# RK4:   diff=37.8ms (lax.scan), nondiff=117164ms (Python loop), 3100× speedup
+# These are confirmed measurements, not stale estimates.
 _PREV = {
-    "Euler": {"diff_ss_ms": 37.2,  "nondiff_ss_ms": 6095.0,  "diff_compile_s": 290.0},
-    "RK4":   {"diff_ss_ms": 37.8,  "nondiff_ss_ms": 117164.0, "diff_compile_s": 7200.0},
+    "Euler": {"diff_ss_ms": 37.2,  "nondiff_ss_ms": 6095.0,  "diff_compile_s": 290.0,
+              "speedup": 164.0},
+    "RK4":   {"diff_ss_ms": 37.8,  "nondiff_ss_ms": 117164.0, "diff_compile_s": 7200.0,
+              "speedup": 3100.0},
 }
 
 # Fortran reference: 31 days / 1488 steps = 75.7 ms/step (single site, Derecho CPU)
@@ -62,8 +67,8 @@ def _load_laxscan(path: Path) -> dict:
     """Load laxscan_benchmark.csv → {mode: {field: value}}."""
     data = {}
     if not path.exists():
-        print(f"  [plot] WARNING: {path} not found — using previous baseline numbers",
-              file=sys.stderr)
+        print(f"  [plot] INFO: {path} not found — using confirmed baseline measurements "
+              f"(jobs 7329052+7329441, A100, CHATS7)", file=sys.stderr)
         return _PREV.copy()
     with open(path) as f:
         for row in csv.DictReader(f):
@@ -116,12 +121,13 @@ def _panel_a(ax, laxscan: dict):
     bars_n = ax.bar(x + offset, ndiff_ms, width=w, color=C_NDIFF, alpha=ALPHA,
                     label="Non-diff (Python loop)", zorder=3)
 
-    # Speedup annotations on top of diff bars
+    # Speedup annotations: place between the two bars at top of diff bar
     for i, mode in enumerate(modes):
         sp = laxscan.get(mode, {}).get("speedup", np.nan)
         if np.isfinite(sp):
-            ax.text(x[i] - offset, diff_ms[i] * 1.08, f"{sp:.0f}×",
-                    ha="center", va="bottom", fontsize=9, color=C_DIFF, fontweight="bold")
+            ax.text(x[i], diff_ms[i] * 2.5, f"{sp:.0f}× speedup",
+                    ha="center", va="bottom", fontsize=8, color="black", fontweight="bold",
+                    bbox=dict(boxstyle="round,pad=0.2", facecolor="lightyellow", alpha=0.8))
 
     # Compile time annotation
     for i, mode in enumerate(modes):
@@ -135,7 +141,8 @@ def _panel_a(ax, laxscan: dict):
     ax.set_xticks(x)
     ax.set_xticklabels(modes, fontsize=11)
     ax.set_ylabel("Steady-state time (ms / CLM step)", fontsize=10)
-    ax.set_title("A.  Diff (lax.scan) vs Non-diff (Python loop)", fontsize=11, fontweight="bold")
+    ax.set_title("A.  Diff (lax.scan) vs Non-diff (Python loop)\n[Measured, CHATS7, A100]",
+                 fontsize=10, fontweight="bold")
     ax.legend(fontsize=9, loc="upper left")
     ax.yaxis.grid(True, which="both", alpha=0.3)
     ax.set_axisbelow(True)
@@ -174,7 +181,8 @@ def _panel_b(ax, ms: dict[str, list[dict]]):
     ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     ax.set_xlabel("Number of sites (N)", fontsize=10)
     ax.set_ylabel("ms / site / step", fontsize=10)
-    ax.set_title("B.  Multi-site vmap throughput (GPU vs CPU)", fontsize=11, fontweight="bold")
+    ax.set_title("B.  Multi-site vmap throughput (GPU vs CPU)\n[GPU=A100, vs sequential JAX on same hardware]",
+                 fontsize=10, fontweight="bold")
     ax.legend(fontsize=9)
     ax.yaxis.grid(True, which="both", alpha=0.3)
     ax.xaxis.grid(True, which="both", alpha=0.3)
@@ -203,10 +211,10 @@ def _panel_c(ax, ms: dict[str, list[dict]]):
     bars_c = ax.bar(x + w/2 + 0.02, cpu_thru, width=w, color=C_CPU, alpha=ALPHA,
                     label="CPU", zorder=3)
 
-    # GPU/CPU ratio labels
+    # GPU/CPU ratio labels: only annotate when GPU is faster (ratio > 1)
     for i in range(len(target_Ns)):
         g, c = gpu_thru[i], cpu_thru[i]
-        if np.isfinite(g) and np.isfinite(c) and c > 0:
+        if np.isfinite(g) and np.isfinite(c) and c > 0 and g > c:
             ratio = g / c
             ypos  = max(g, c) * 1.05
             ax.text(x[i], ypos, f"GPU {ratio:.1f}×\nfaster",
@@ -222,7 +230,8 @@ def _panel_c(ax, ms: dict[str, list[dict]]):
     ax.set_xticks(x)
     ax.set_xticklabels([f"N={n}" for n in target_Ns], fontsize=11)
     ax.set_ylabel("Throughput (sites / second)", fontsize=10)
-    ax.set_title("C.  GPU vs CPU throughput at N=1, 16, 32", fontsize=11, fontweight="bold")
+    ax.set_title("C.  GPU vs CPU throughput at N=1, 16, 32\n[sites / second, A100 GPU]",
+                 fontsize=10, fontweight="bold")
     ax.legend(fontsize=9)
     ax.yaxis.grid(True, alpha=0.3)
     ax.set_axisbelow(True)
