@@ -33,12 +33,12 @@ fi
 cd /burg-archive/home/al4385/clm-ml-jax
 
 export TERM=xterm-256color
-tmux new-session -d -s claude "claude --resume --dangerously-skip-permissions ; exec bash"
+tmux new-session -d -s claude "claude --dangerously-skip-permissions ; exec bash"
 tmux wait-for claude
 
 
 #### Optional: Attach to the tmux session to interact with the agent
-#srun --jobid=7313010 --overlap --pty tmux attach -t claude
+#srun --jobid=7445784 --overlap --pty tmux attach -t claude
 
 #### how to detach form claude session 
 # press ctrl+b then d 

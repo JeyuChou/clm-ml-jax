@@ -4,7 +4,6 @@
 ---
 
 ## 1. Paper Positioning
-
 ### Core Claim (one sentence)
 We present a five-phase LLM-assisted agentic pipeline for translating legacy Fortran ESMs into validated, differentiable JAX implementations — demonstrated on CLM-ml-v2, a widely-used multilayer canopy model — and show that the resulting artifact enables scientific workflows (sensitivity analysis, gradient-based calibration) that were previously intractable.
 

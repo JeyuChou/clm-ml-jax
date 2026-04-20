@@ -8,6 +8,7 @@ dependencies:
   - pip:
       - "jax[cuda12]"       # GPU JAX — change to cuda11 if HPC uses CUDA 11
       - numpy>=1.20.0
+      - matplotlib>=3.7.0
       - f90nml>=1.4.0
       - netCDF4             # needed for reading tower/CLM input files
       - scipy

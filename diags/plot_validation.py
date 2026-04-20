@@ -51,8 +51,12 @@ from pathlib import Path
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt 
 import matplotlib.gridspec as gridspec
+import mpl_scatter_density
+from matplotlib.colors import LinearSegmentedColormap
+matplotlib.rcParams['pdf.fonttype'] = 42
+matplotlib.rcParams['ps.fonttype'] = 42
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_ROOT / "src"
@@ -165,40 +169,49 @@ def plot_profile_comparison(jax_dir: Path, ref_dir: Path, out_dir: Path) -> None
 
     # Profile variable columns (after col 0=calday, 1=height)
     profile_vars = [
-        (25, "Air temperature (K)", "Tair"),
-        (24, "Wind speed (m s$^{-1}$)", "Wind"),
-        (26, "Specific humidity (g kg$^{-1}$)", "q"),
-        (27, "CO$_2$ (ppm)", "CO2"),
+        (25, "(a) Air temperature (K)", "Tair"),
+        (24, "(b) Wind speed (m s$^{-1}$)", "Wind"),
+        (26, "(c) Specific humidity (g kg$^{-1}$)", "q"),
+        (27, "(d) CO$_2$ (ppm)", "CO2"),
     ]
 
-    fig, axes = plt.subplots(1, len(profile_vars), figsize=(14, 6), sharey=True)
+    fig, axes = plt.subplots(1, len(profile_vars), figsize=(14, 4), sharey=True)
 
     for ax, (col_idx, xlabel, label) in zip(axes, profile_vars):
         h_jax = jax_noon[:, 1]
         h_ref = ref_noon[:, 1]
-        ax.plot(ref_noon[:, col_idx], h_ref, "k-",  lw=1.5, label="Fortran ref")
-        ax.plot(jax_noon[:, col_idx], h_jax, "r--", lw=1.5, label="JAX")
-        ax.set_xlabel(xlabel, fontsize=9)
-        ax.set_title(label, fontsize=10, fontweight="bold")
-        ax.legend(fontsize=8)
-        ax.grid(alpha=0.3)
+        ax.plot(ref_noon[:, col_idx], h_ref, "-",color="navy",  lw=3, label="Fortran")
+        ax.plot(jax_noon[:, col_idx], h_jax, "--",color="deepskyblue", lw=3, label="JAX")
+        #ax.set_xlabel(xlabel, fontsize=9)
+        #ax.set_title(xlabel, fontsize=10, fontweight="bold")
+        
+        ax.text(0.10, 0.90,
+        f"{xlabel}",
+        transform=ax.transAxes, ha="left", va="bottom", fontsize=10, fontweight='bold',
+        bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.75, ec="none"))
 
+        ax.grid(alpha=0.3)
+        if col_idx ==profile_vars[0][0]:
+            ax.legend(fontsize=10, loc='lower left', prop={'size': 12})
+    
     axes[0].set_ylabel("Height (m)", fontsize=9)
-    fig.suptitle(
-        f"CHATS7 May 1, 2007 — Canopy profiles at ~noon: JAX vs Fortran\n"
-        f"(calday ≈ {target_calday:.3f})",
-        fontsize=12,
-    )
+    #fig.suptitle(
+    #    f"CHATS7 May 1, 2007 — Canopy profiles at ~noon: JAX vs Fortran\n"
+    #    f"(calday ≈ {target_calday:.3f})",
+    #    fontsize=12,
+    #)
     fig.tight_layout()
 
     out_path = out_dir / "validation_profiles.png"
+    pdf_path = out_dir / "validation_profiles.pdf"
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    fig.savefig(pdf_path,  bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
 
 
 def plot_scatter_comparison(jax_dir: Path, ref_dir: Path, out_dir: Path) -> None:
-    """Scatter plot: JAX vs Fortran for all flux variables (first day)."""
+    """Scatter plot: JAX vs Fortran for all flux variables (31 days)."""
     jax = load_flux(jax_dir)
     ref = load_flux(ref_dir)
 
@@ -206,37 +219,88 @@ def plot_scatter_comparison(jax_dir: Path, ref_dir: Path, out_dir: Path) -> None
     jax = jax[:nref]
     ref_day = ref[:nref]
 
-    var_names = ["Rn", "H", "LE", "Rabs", "LWup", "ET",
-                 "GPP", "SWdn", "Tair", "Tveg", "Tsoil",
-                 "ustar", "CO2", "Rnet_veg", "Rnet_soil", "beta", "Obu"]
-    cols = range(1, 18)
+    # (col_index, short name, unit string)
+    var_info = [
+        (1,  "(a) Rn",        "W m$^{-2}$"),
+        (2,  "(b) H",         "W m$^{-2}$"),
+        (3,  "(c) LE",        "W m$^{-2}$"),
+        (4,  "(d) Rabs",      "W m$^{-2}$"),
+        (5,  "(e) LWup",      "W m$^{-2}$"),
+        (6,  "(f) ET",        "mm s$^{-1}$"),
+        (7,  "(g) GPP",       "µmol m$^{-2}$ s$^{-1}$"),
+        (8,  "(h) SWdn",      "W m$^{-2}$"),
+        (9,  "(i) Tair",      "K"),
+        (10, "(j) Tveg",      "K"),
+        (11, "(k) Tsoil",     "K"),
+        (12, "(l) u*",        "m s$^{-1}$"),
+        (13, "(m) CO$_2$",    "ppm"),
+        (14, "(n) Rnet_veg",  "W m$^{-2}$"),
+        (15, "(o) Rnet_soil", "W m$^{-2}$"),
+        (17, "(p) Obu",       "m"),
+    ]
 
-    fig, axes = plt.subplots(3, 6, figsize=(18, 9))
+    fig, axes = plt.subplots(4, 4, figsize=(14, 9))
     axes = axes.flatten()
+    
 
-    for ax, col_idx, name in zip(axes, cols, var_names):
+    white_viridis = LinearSegmentedColormap.from_list('white_viridis', [
+        (0, '#ffffff'),
+        (1e-20, '#440053'),
+        (0.2, '#404388'),
+        (0.4, '#2a788e'),
+        (0.6, '#21a784'),
+        (0.8, '#78d151'),
+        (1, '#fde624'),
+        ], N=256)
+    # Pass 2: draw
+    last_sc = None
+    for ax, (col_idx, name, unit) in zip(axes, var_info):
         x = ref_day[:nref, col_idx]
         y = jax[:nref, col_idx]
         vmin = min(x.min(), y.min())
         vmax = max(x.max(), y.max())
-        ax.scatter(x, y, s=8, alpha=0.6, c="steelblue")
-        ax.plot([vmin, vmax], [vmin, vmax], "k--", lw=1, label="1:1")
-        r2 = float(np.corrcoef(x, y)[0, 1] ** 2) if np.std(x) > 0 else float("nan")
+
+        #last_sc = ax.hist2d(x, y, (35, 35), cmap="coolwarm", cmin=1)#color='darkcyan', alpha=0.3, s=20)
+        #'mediumspringgreen'
+        ax.scatter(x, y, color='cyan', alpha=0.09, s=30, edgecolors='purple', linewidths=0.9)
+        ax.plot([vmin, vmax], [vmin, vmax], "k--", lw=1)
+
+        r2   = float(np.corrcoef(x, y)[0, 1] ** 2) if np.std(x) > 0 else float("nan")
         rmse = float(np.sqrt(np.mean((y - x) ** 2)))
-        ax.set_title(f"{name}\nR²={r2:.3f}  RMSE={rmse:.2f}", fontsize=8)
-        ax.set_xlabel("Fortran", fontsize=7)
-        ax.set_ylabel("JAX", fontsize=7)
-        ax.tick_params(labelsize=7)
+        bias = float(np.mean(y - x))
+        denom = np.sum((x - np.mean(x)) ** 2)
+        nse  = float(1.0 - np.sum((y - x) ** 2) / denom) if denom > 0 else float("nan")
+
+        ax.text(0.60, 0.05,
+                f"Bias : {bias:.3f}\nCorr : {r2:.3f}\nNSE : {nse:.3f}\n",
+                transform=ax.transAxes, ha="left", va="bottom", fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.75, ec="none"))
+
+        ax.text(0.05, 0.80, f"{name} ({unit})", transform=ax.transAxes, ha="left", va="bottom", fontsize=12,fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.75, ec="none"))
+        
+        if ax.get_gridspec().get_geometry()[0] - 1 == ax.get_subplotspec().rowspan.start:
+            ax.set_xlabel("Fortran CLM-ml", fontsize=8)
+
+        if ax.get_gridspec().get_geometry()[1] -4 == ax.get_subplotspec().colspan.start  :
+            ax.set_ylabel("JAX CLM-ml", fontsize=8)
+            
+        ax.tick_params(labelsize=6)
 
     # Hide unused panels
-    for ax in axes[len(var_names):]:
+    for ax in axes[len(var_info):]:
         ax.set_visible(False)
 
-    fig.suptitle("JAX vs Fortran — All flux variables (31 days, 1488 timesteps)", fontsize=13)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 1])
+
+
 
     out_path = out_dir / "validation_scatter.png"
+    pdf_path = out_dir / "validation_scatter.pdf"
+
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.savefig(pdf_path, bbox_inches='tight')
+
     plt.close(fig)
     print(f"Saved: {out_path}")
 
