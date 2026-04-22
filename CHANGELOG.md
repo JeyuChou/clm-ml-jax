@@ -60,6 +60,7 @@ of 3-5x → AD is 3-5x cheaper than FD; crossover is p ~ T_ratio/2 ≈ 1.5-2.5.
 | 7578601 | `run_cpu_compile_benchmark.sh` | CPU vmap XLA compile time vs N with 1h timeout | **Done — OOM at N=128 (results N≤32 saved)** |
 | 7578655_0 | `run_precision_benchmark.sh` (task 0) | Float64 GPU throughput vs N | Pending |
 | 7578655_1 | `run_precision_benchmark.sh` (task 1) | Float32 GPU throughput vs N | Pending |
+| 7579151 | `run_cpu_compile_benchmark.sh` | CPU compile N=[128,512,1024,2048] on 768GB node | Running |
 
 ---
 
@@ -136,7 +137,7 @@ Applied to both `_make_leaf_photo_kernel` (acclim_type=0) and `_make_leaf_photo_
 
 ---
 
-### New benchmark: CPU vmap XLA compile time vs N (job 7578601) — COMPLETED (partial)
+### New benchmark: CPU vmap XLA compile time vs N (jobs 7578601 + 7579151)
 
 **Motivation:** Three CPU vmap jobs (7552426–7552428) have been running >17h without finishing for N=512/1024/2048. This is expected: XLA on CPU unrolls `jax.vmap` into a flat O(N × model_ops) graph at compile time. With 19,000-line physics, this becomes intractable. New benchmark characterises *where* the cliff is.
 
@@ -158,9 +159,11 @@ Applied to both `_make_leaf_photo_kernel` (acclim_type=0) and `_make_leaf_photo_
 | 128 | — | **OOM (128G)** | — |
 | 512+ | — | not reached | — |
 
-**Key finding:** LLVM XLA backend ran out of memory at N=128 (exceeded 128G RAM) — the compile cliff is between N=32 and N=128. This is stronger than expected: not just slow, but physically impossible to compile. Compile time is sublinear for small N (219s→426s from N=1→32). Per-sample throughput flat at ~18ms (sequential CPU). Partial results saved to `cpu_compile_time.csv`.
+**Key finding (job 7578601, 128G):** LLVM XLA backend ran out of memory at N=128 — the compile cliff is between N=32 and N=128. Not just slow: physically impossible to compile at 128G. Compile time sublinear for small N (219s→426s from N=1→32). Per-sample throughput flat at ~18ms (sequential CPU).
 
-**Commit:** `8558f83` (only the Python script — `bashscripts/` is gitignored)
+**Follow-up (job 7579151, 768G):** Resubmitted on large-memory node (`-C mem768`, `--mem=700gb`, `--exclusive`). N_VALUES trimmed to [128, 512, 1024, 2048] since N=1,8,32 already measured. CSV write switched to append mode so results accumulate across runs.
+
+**Commits:** `8558f83` (benchmark script), `9f5bec9` (resume N=128+, append CSV)
 
 ---
 
