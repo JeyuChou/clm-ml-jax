@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-04-22 — Multi-parameter calibration experiment (p=10, AD vs FD)
+
+### New files
+- `diags/multipar_calibration.py` — p=10 calibration experiment: Adam/jax.grad vs L-BFGS-B/FD vs Nelder-Mead
+- `diags/plot_multipar_calibration.py` — 2-panel publication figure (convergence + cost scaling)
+- `bashscripts/run_multipar_calibration.sh` — SLURM GPU job (glab1, 4h, 64G, 1 GPU)
+
+### Experiment design
+Addresses reviewer critique of Exp 4 (p=1, where Nelder-Mead can compete).
+p=10 scale factors (all atmospheric/physiological, theta_star = ones(10)):
+  0  alpha_sw    — shortwave radiation (direct + diffuse via atm2lnd_inst)
+  1  alpha_tref  — air temperature (forc_t_downscaled_col)
+  2  alpha_vcmax — global Vcmax25 scale (vcmaxpft_jax explicit arg)
+  3  alpha_iota  — WUE efficiency iota_SPA (module-global mutation)
+  4  alpha_q     — specific humidity (wateratm2lndbulk_inst)
+  5  alpha_pbot  — atmospheric pressure (forc_pbot_downscaled_col)
+  6  alpha_lwrad — longwave radiation (forc_lwrad_downscaled_col)
+  7  alpha_u     — wind u-component (forc_u_grc)
+  8  alpha_v     — wind v-component (forc_v_grc)
+  9  alpha_pco2  — CO2 partial pressure (forc_pco2_grc)
+
+Key claim: T_AD = O(1 backward), T_FD = O(2p forward). At p=10, typical T_ratio
+of 3-5x → AD is 3-5x cheaper than FD; crossover is p ~ T_ratio/2 ≈ 1.5-2.5.
+
+TO RUN: sbatch bashscripts/run_multipar_calibration.sh
+
+---
+
 ## 2026-04-22 — Paper rewrite (session 33–34), Exp 4 NM rerun, g1_MED IFT fix, precision + compile benchmarks
 
 ### Jobs submitted
