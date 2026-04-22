@@ -1,13 +1,16 @@
 # Changelog
 
-## 2026-04-22 — Paper rewrite (session 33), Exp 4 NM rerun, g1_MED IFT fix
+## 2026-04-22 — Paper rewrite (session 33–34), Exp 4 NM rerun, g1_MED IFT fix, precision + compile benchmarks
 
 ### Jobs submitted
 
 | Job | Script | Purpose | Status |
 |-----|--------|---------|--------|
 | 7577146 | `run_calibration_nm_only.sh` | NM-only rerun for Exp 4 figure (Adam hardcoded) | Running |
-| 7577180 | `run_g1_medlyn_check.sh` | Verify g1_MED IFT gradient fix | Running |
+| 7577180 | `run_g1_medlyn_check.sh` | Verify g1_MED IFT gradient fix | Pending |
+| 7578601 | `run_cpu_compile_benchmark.sh` | CPU vmap XLA compile time vs N with 1h timeout | Running |
+| 7578655_0 | `run_precision_benchmark.sh` (task 0) | Float64 GPU throughput vs N | Pending |
+| 7578655_1 | `run_precision_benchmark.sh` (task 1) | Float32 GPU throughput vs N | Pending |
 
 ---
 
@@ -81,6 +84,41 @@ Applied to both `_make_leaf_photo_kernel` (acclim_type=0) and `_make_leaf_photo_
 **Verification:** Job 7577180 submitted — will report PASS/FAIL at <1% rel error vs FD.
 
 **Commit:** `b196ac0`
+
+---
+
+### New benchmark: CPU vmap XLA compile time vs N (job 7578601)
+
+**Motivation:** Three CPU vmap jobs (7552426–7552428) have been running >17h without finishing for N=512/1024/2048. This is expected: XLA on CPU unrolls `jax.vmap` into a flat O(N × model_ops) graph at compile time. With 19,000-line physics, this becomes intractable. New benchmark characterises *where* the cliff is.
+
+**Script:** `diags/benchmark_cpu_compile.py`
+
+- N values: [1, 8, 32, 128, 512, 1024, 2048]
+- Per-N timeout: 3600s (SIGALRM) — records `timeout>3600s` and advances
+- Separate compile cache dir (no cross-N cache hits)
+- Output: `diags/figures/cpu_compile_time.csv` (compile_s, status, run_ms, ms_per_sample)
+- SLURM: no GPU, 8 CPUs, 128G, 14h limit on glab1
+
+**Commit:** `8558f83` (only the Python script — `bashscripts/` is gitignored)
+
+---
+
+### New benchmark: float32 vs float64 GPU throughput (job 7578655)
+
+**Motivation:** GPU hardware provides ~2× FP32 throughput over FP64 (Ampere/Turing). Quantifying this for CLM-ML-JAX supports the paper's GPU acceleration argument and is relevant for users who can tolerate reduced precision.
+
+**Mechanism:** `expt_init.py` now respects `CLM_ML_X64` env var (default `"1"` → float64 unchanged). With `CLM_ML_X64=0`, JAX silently maps all `jnp.float64` → `jnp.float32` throughout the physics — no physics code changes needed.
+
+**Script:** `diags/benchmark_precision.py`
+- CLI: `--precision f32|f64`
+- N values: [1, 8, 32, 128, 512, 1024, 2048]
+- Metrics: compile_s, run_ms (mean of 5 repeats), run_ms_std, ms_per_sample
+- Separate compile cache per precision
+- Output: `diags/figures/precision_benchmark_{f32,f64}.csv`
+
+**SLURM array job 7578655:** task 0 = f64 (`CLM_ML_X64=1`), task 1 = f32 (`CLM_ML_X64=0`), 6h GPU each.
+
+**Commits:** `a125f86` (expt_init patch + benchmark_precision.py)
 
 ---
 
