@@ -3,6 +3,7 @@
 .claude/
 
 # Python
+docs/
 bashscripts/
 Paper/
 prompts/

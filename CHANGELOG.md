@@ -57,7 +57,7 @@ of 3-5x → AD is 3-5x cheaper than FD; crossover is p ~ T_ratio/2 ≈ 1.5-2.5.
 |-----|--------|---------|--------|
 | 7577146 | `run_calibration_nm_only.sh` | NM-only rerun for Exp 4 figure (Adam hardcoded) | Running |
 | 7577180 | `run_g1_medlyn_check.sh` | Verify g1_MED IFT gradient fix | Pending |
-| 7578601 | `run_cpu_compile_benchmark.sh` | CPU vmap XLA compile time vs N with 1h timeout | Running |
+| 7578601 | `run_cpu_compile_benchmark.sh` | CPU vmap XLA compile time vs N with 1h timeout | **Done — OOM at N=128 (results N≤32 saved)** |
 | 7578655_0 | `run_precision_benchmark.sh` (task 0) | Float64 GPU throughput vs N | Pending |
 | 7578655_1 | `run_precision_benchmark.sh` (task 1) | Float32 GPU throughput vs N | Pending |
 
@@ -136,7 +136,7 @@ Applied to both `_make_leaf_photo_kernel` (acclim_type=0) and `_make_leaf_photo_
 
 ---
 
-### New benchmark: CPU vmap XLA compile time vs N (job 7578601)
+### New benchmark: CPU vmap XLA compile time vs N (job 7578601) — COMPLETED (partial)
 
 **Motivation:** Three CPU vmap jobs (7552426–7552428) have been running >17h without finishing for N=512/1024/2048. This is expected: XLA on CPU unrolls `jax.vmap` into a flat O(N × model_ops) graph at compile time. With 19,000-line physics, this becomes intractable. New benchmark characterises *where* the cliff is.
 
@@ -147,6 +147,18 @@ Applied to both `_make_leaf_photo_kernel` (acclim_type=0) and `_make_leaf_photo_
 - Separate compile cache dir (no cross-N cache hits)
 - Output: `diags/figures/cpu_compile_time.csv` (compile_s, status, run_ms, ms_per_sample)
 - SLURM: no GPU, 8 CPUs, 128G, 14h limit on glab1
+
+**Results (job 7578601 — aborted at N=128):**
+
+| N | compile_s | status | ms/sample |
+|---|-----------|--------|-----------|
+| 1 | 219.5s | ok | 20.83 |
+| 8 | 243.0s | ok | 17.70 |
+| 32 | 426.6s | ok | 18.04 |
+| 128 | — | **OOM (128G)** | — |
+| 512+ | — | not reached | — |
+
+**Key finding:** LLVM XLA backend ran out of memory at N=128 (exceeded 128G RAM) — the compile cliff is between N=32 and N=128. This is stronger than expected: not just slow, but physically impossible to compile. Compile time is sublinear for small N (219s→426s from N=1→32). Per-sample throughput flat at ~18ms (sequential CPU). Partial results saved to `cpu_compile_time.csv`.
 
 **Commit:** `8558f83` (only the Python script — `bashscripts/` is gitignored)
 
