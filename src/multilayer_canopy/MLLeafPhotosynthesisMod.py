@@ -830,6 +830,41 @@ def _ci_solver_scan(ci0, ci1, func_kwargs, n_iter=40):
     return x_final
 
 
+def _ci_solver_scan_ift(ci0, ci1, func_kwargs, n_iter=40):
+    """Ci secant solver with IFT-corrected gradient (Implicit Function Theorem).
+
+    Mirrors the pattern used in ``_bisect_gs_ift`` for WUE:
+    - Forward: run secant scan to find ci_root (stop its gradient)
+    - Backward: one Newton refinement  ci_ift = ci0 - F(ci0;θ)/stop_grad(∂F/∂ci)
+      where θ = {g0, g1, ...} in func_kwargs. This gives d(ci_ift)/dθ = -(∂F/∂θ)/(∂F/∂ci),
+      the exact IFT gradient, without differentiating through 40 scan iterations.
+
+    Used by Medlyn / Ball-Berry kernels where _ci_solver_scan gradient is NaN.
+    """
+    ci_scan  = _ci_solver_scan(ci0, ci1, func_kwargs, n_iter=n_iter)
+    ci0_ift  = jax.lax.stop_gradient(ci_scan)
+
+    # Residual at ci0_ift: gradient flows through func_kwargs (g0, g1, etc.)
+    f_ci     = _CiFuncPure_jax(ci0_ift, **func_kwargs)
+
+    # ∂F/∂ci: central FD at ci0_ift; fully stop_gradient'd (denominator only)
+    _delta   = jnp.asarray(1e-4, dtype=ci0_ift.dtype)
+    df_dci   = jax.lax.stop_gradient(
+        (_CiFuncPure_jax(ci0_ift + _delta, **func_kwargs)
+         - _CiFuncPure_jax(ci0_ift - _delta, **func_kwargs))
+        / (2.0 * _delta)
+    )
+
+    # Apply Newton step only when ∂F/∂ci is well-defined
+    _eps       = jnp.asarray(1e-8, dtype=ci0_ift.dtype)
+    apply      = jnp.abs(df_dci) > _eps
+    safe_f     = jnp.where(apply, f_ci,   jnp.zeros_like(f_ci))
+    safe_denom = jnp.where(apply, df_dci, jnp.ones_like(df_dci))
+    # Forward:  ci0_ift - ~0/df = ci0_ift = ci_root  ✓
+    # Backward: -(∂F/∂θ) / safe_denom = IFT  ✓
+    return ci0_ift - safe_f / safe_denom
+
+
 @functools.lru_cache(maxsize=None)
 def _make_leaf_photo_kernel(
     *,
@@ -958,7 +993,7 @@ def _make_leaf_photo_kernel(
             c3psn_pft_val=c3psn_pft_val,
             dpai_ic=1.0,              # always 1.0: inactive layers masked by jnp.where(active,...) below
         )
-        ci_root = _ci_solver_scan(ci0_v, ci1_v, _fkw, n_iter=40)
+        ci_root = _ci_solver_scan_ift(ci0_v, ci1_v, _fkw, n_iter=40)
 
         # --- Final photosynthesis at ci_root — Fortran lines 221-240 ---
         if is_c3:
@@ -1172,7 +1207,7 @@ def _make_leaf_photo_kernel_acclim(
             c3psn_pft_val=c3psn_pft_val,
             dpai_ic=1.0,
         )
-        ci_root = _ci_solver_scan(ci0_v, ci1_v, _fkw, n_iter=40)
+        ci_root = _ci_solver_scan_ift(ci0_v, ci1_v, _fkw, n_iter=40)
 
         if is_c3:
             _ac = (vcmax_val * jnp.maximum(ci_root - cp_val, 0.0)
