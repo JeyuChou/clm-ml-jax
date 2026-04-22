@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-04-22 — Session 35: paper methodology review + multi-parameter calibration experiment
+
+### Paper methodology review (NeurIPS framing)
+
+Reviewed the 5-phase methodology section as a research software engineering expert targeting NeurIPS.
+Key findings and recommended improvements:
+
+1. **Generalizability unproven** — currently asserted, not demonstrated. Recommended: apply methodology to one additional ESM module (even small) to turn claim into evidence.
+2. **Exp 4 (p=1 calibration) is counterproductive** — Nelder-Mead beating Adam on a 1D problem is expected and undermines the gradient case. Replaced with p=10 multi-parameter experiment (see below).
+3. **No ablation of methodology components** — recommended mining 31 session CHANGELOG logs for: repair loop auto-convergence rate, human intervention frequency, plan.md guard effectiveness.
+4. **Missing Algorithm box** — for NeurIPS ML track, the Ralph loop needs formal algorithm specification.
+5. **Phase 5 JAX-specifics not separated from language-agnostic Phase 5a** — recommended splitting into 5a (integration, agnostic) and 5b (target-language optimizations).
+6. **L-BFGS-B baseline missing** — added to Exp 4 replacement to directly show FD cost at p=10.
+7. **Oracle instrumentation underspecified** — most work-intensive step for new ESMs; needs its own subsection.
+
+---
+
 ## 2026-04-22 — Multi-parameter calibration experiment (p=10, AD vs FD)
 
 ### New files
@@ -24,7 +41,11 @@ p=10 scale factors (all atmospheric/physiological, theta_star = ones(10)):
 Key claim: T_AD = O(1 backward), T_FD = O(2p forward). At p=10, typical T_ratio
 of 3-5x → AD is 3-5x cheaper than FD; crossover is p ~ T_ratio/2 ≈ 1.5-2.5.
 
-TO RUN: sbatch bashscripts/run_multipar_calibration.sh
+### Job submitted
+- **Job 7578886** — `run_multipar_calibration.sh`, glab1, 4h, GPU
+  - Outputs: `diags/output/multipar_calibration_results.json`
+  - Figures: `diags/figures/multipar_calibration.{pdf,png}`
+  - Status: SUBMITTED 2026-04-22
 
 ---
 
