@@ -23,7 +23,7 @@ from pathlib import Path
 os.environ['CLM_ML_NO_CHECKPOINT'] = '1'
 
 import jax
-jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", os.environ.get("CLM_ML_X64", "1") != "0")
 import jax.numpy as jnp
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
