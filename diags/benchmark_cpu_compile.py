@@ -54,7 +54,7 @@ from diags.expt_init import (
 FIGURES_DIR = Path(__file__).parent / "figures"
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
-N_VALUES  = [1, 8, 32, 128, 512, 1024, 2048]
+N_VALUES  = [128, 512, 1024, 2048]  # N=1,8,32 measured in job 7578601
 TIMEOUT_S = 3600    # 1 hour per N
 REPEATS   = 3       # post-compile throughput repeats (only when compile succeeds)
 
@@ -189,12 +189,15 @@ print("  " + "-" * 65, flush=True)
 for r in rows:
     print(f"  {r['N']:>6}  {r['compile_s']:>12}  {r['status']:>20}  {r['run_ms']:>10}  {r['ms_per_sample']:>10}", flush=True)
 
-# ── Write CSV ─────────────────────────────────────────────────────────────────
+# ── Write CSV (append if file exists, so partial runs accumulate) ─────────────
 csv_path = FIGURES_DIR / "cpu_compile_time.csv"
-with open(csv_path, "w", newline="") as f:
-    writer = csv.DictWriter(f, fieldnames=["N", "compile_s", "status", "run_ms", "ms_per_sample"])
-    writer.writeheader()
+fieldnames = ["N", "compile_s", "status", "run_ms", "ms_per_sample"]
+write_header = not csv_path.exists()
+with open(csv_path, "a", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    if write_header:
+        writer.writeheader()
     writer.writerows(rows)
-print(f"\nCSV saved: {csv_path}", flush=True)
+print(f"\nCSV {'created' if write_header else 'appended'}: {csv_path}", flush=True)
 
 print("\n=== benchmark_cpu_compile.py complete ===", flush=True)
