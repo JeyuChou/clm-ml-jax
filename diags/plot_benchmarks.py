@@ -96,8 +96,10 @@ def _load_fortran_multisite(path: Path | None) -> dict[str, list[dict]]:
             except (KeyError, ValueError) as e:
                 print(f"  [plot] Skipping malformed Fortran row {row}: {e}", file=sys.stderr)
                 continue
+            quality = row.get("parallel_quality", "ok")
             result["seq"].append({"N": N, "ms_per_site": seq_ms})
-            result["par"].append({"N": N, "ms_per_site": par_ms})
+            # Only include parallel points flagged as reliable
+            result["par"].append({"N": N, "ms_per_site": par_ms, "quality": quality})
     for k in result:
         result[k].sort(key=lambda r: r["N"])
     print(f"  [plot] Loaded Fortran multisite data: {len(result['seq'])} N-values from {path}")
@@ -232,13 +234,24 @@ def _panel_b(ax, ms: dict[str, list[dict]],
                         xytext=(6, -11), fontsize=7, color=C_FORT_SEQ)
 
     if fortran and fortran.get("par"):
-        fort_par_Ns  = [r["N"] for r in fortran["par"]]
-        fort_par_mss = [r["ms_per_site"] for r in fortran["par"]]
-        ax.plot(fort_par_Ns, fort_par_mss, "^:", color=C_FORT_PAR, lw=1.8, ms=6,
-                label="Fortran parallel (N simultaneous processes)", zorder=3, alpha=0.9)
-        for n, m in zip(fort_par_Ns, fort_par_mss):
-            ax.annotate(f"{m:.1f}", (n, m), textcoords="offset points",
-                        xytext=(6, 5), fontsize=7, color=C_FORT_PAR)
+        # Split into reliable vs noisy points (N=16,32 have 1 rep, high variance)
+        ok_rows   = [r for r in fortran["par"] if r.get("quality", "ok") == "ok"]
+        noisy_rows = [r for r in fortran["par"] if r.get("quality", "ok") != "ok"]
+        if ok_rows:
+            ax.plot([r["N"] for r in ok_rows], [r["ms_per_site"] for r in ok_rows],
+                    "^:", color=C_FORT_PAR, lw=1.8, ms=6,
+                    label="Fortran parallel (N simultaneous processes)", zorder=3, alpha=0.9)
+            for r in ok_rows:
+                ax.annotate(f"{r['ms_per_site']:.1f}", (r["N"], r["ms_per_site"]),
+                            textcoords="offset points", xytext=(6, 5), fontsize=7, color=C_FORT_PAR)
+        if noisy_rows:
+            ax.plot([r["N"] for r in noisy_rows], [r["ms_per_site"] for r in noisy_rows],
+                    "^", color=C_FORT_PAR, ms=6, alpha=0.4, zorder=3,
+                    label="Fortran parallel (noisy, 1 rep)")
+            for r in noisy_rows:
+                ax.annotate(f"{r['ms_per_site']:.1f}*", (r["N"], r["ms_per_site"]),
+                            textcoords="offset points", xytext=(6, 5), fontsize=7,
+                            color=C_FORT_PAR, alpha=0.5)
 
     # Fortran reference line (hard-coded estimate for single-site)
     ax.axhline(_FORTRAN_MS_STEP, color=C_FORT, ls="--", lw=1.5,
