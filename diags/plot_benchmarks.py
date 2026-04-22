@@ -5,11 +5,16 @@ Reads two CSV files produced by the benchmark jobs:
   diags/figures/laxscan_benchmark.csv   — diff (lax.scan) vs non-diff (Python loop)
   diags/figures/multisite_benchmark.csv — vmap N-site GPU vs CPU scaling
 
+Optionally overlays Fortran reference timing from a CSV produced by the
+Fortran benchmark suite (clm-ml-fortran/benchmark/run_multisite_benchmark.sh):
+  --fortran path/to/multisite_benchmark_fortran.csv
+
 Produces one figure with three panels:
   Panel A: diff (lax.scan) vs non-diff, Euler and RK4 — steady-state ms/step
            + compile time annotation + speedup labels
   Panel B: ms/site/step vs N sites for GPU and CPU (log–log)
            with reference Fortran single-site time marked
+           + optional Fortran sequential and parallel lines
   Panel C: GPU vs CPU throughput at N=1, 16, 32 (sites/second)
 
 Output: diags/figures/benchmark_summary.png  (300 dpi)
@@ -17,7 +22,8 @@ Output: diags/figures/benchmark_summary.png  (300 dpi)
 Usage (run from project root after benchmark jobs complete):
     python diags/plot_benchmarks.py
     python diags/plot_benchmarks.py --laxscan path/to/laxscan.csv \
-                                    --multisite path/to/multisite.csv
+                                    --multisite path/to/multisite.csv \
+                                    --fortran path/to/multisite_benchmark_fortran.csv
 """
 from __future__ import annotations
 
@@ -53,15 +59,50 @@ _PREV = {
 _FORTRAN_MS_STEP = 112600.0 / 1488.0   # 75.7 ms/step
 
 # ── Color palette ─────────────────────────────────────────────────────────────
-C_GPU    = "#2563EB"   # blue
-C_CPU    = "#DC2626"   # red
-C_DIFF   = "#16A34A"   # green  (lax.scan diff mode)
-C_NDIFF  = "#9333EA"   # purple (Python loop non-diff)
-C_FORT   = "#F59E0B"   # amber  (Fortran reference)
-ALPHA    = 0.85
+C_GPU       = "#2563EB"   # blue
+C_CPU       = "#DC2626"   # red
+C_DIFF      = "#16A34A"   # green  (lax.scan diff mode)
+C_NDIFF     = "#9333EA"   # purple (Python loop non-diff)
+C_FORT      = "#F59E0B"   # amber  (Fortran reference line)
+C_FORT_SEQ  = "#D97706"   # darker amber (Fortran sequential N-site line)
+C_FORT_PAR  = "#92400E"   # brown (Fortran parallel N-site line)
+ALPHA       = 0.85
 
 
 # ── Data loading helpers ───────────────────────────────────────────────────────
+
+def _load_fortran_multisite(path: Path | None) -> dict[str, list[dict]]:
+    """
+    Load multisite_benchmark_fortran.csv produced by run_multisite_benchmark.sh.
+
+    Expected columns (after parse_results.py enrichment):
+      backend,N,seq_total_s,seq_ss_ms_per_site,parallel_wall_s,parallel_ms_per_site[,speedup_par_vs_seq]
+
+    Returns {"seq": [...], "par": [...]} where each entry has keys N, ms_per_site.
+    Returns empty dict if path is None or file does not exist.
+    """
+    result: dict[str, list[dict]] = {"seq": [], "par": []}
+    if path is None:
+        return result
+    if not path.exists():
+        print(f"  [plot] INFO: Fortran multisite CSV not found: {path}", file=sys.stderr)
+        return result
+    with open(path) as f:
+        for row in csv.DictReader(f):
+            try:
+                N = int(row["N"])
+                seq_ms = float(row["seq_ss_ms_per_site"])
+                par_ms = float(row["parallel_ms_per_site"])
+            except (KeyError, ValueError) as e:
+                print(f"  [plot] Skipping malformed Fortran row {row}: {e}", file=sys.stderr)
+                continue
+            result["seq"].append({"N": N, "ms_per_site": seq_ms})
+            result["par"].append({"N": N, "ms_per_site": par_ms})
+    for k in result:
+        result[k].sort(key=lambda r: r["N"])
+    print(f"  [plot] Loaded Fortran multisite data: {len(result['seq'])} N-values from {path}")
+    return result
+
 
 def _load_laxscan(path: Path) -> dict:
     """Load laxscan_benchmark.csv → {mode: {field: value}}."""
@@ -155,10 +196,19 @@ def _panel_a(ax, laxscan: dict):
                     label, ha="center", va="bottom", fontsize=8, color=C_NDIFF)
 
 
-def _panel_b(ax, ms: dict[str, list[dict]]):
-    """Panel B: ms/site/step vs N (log–log) for GPU and CPU."""
+def _panel_b(ax, ms: dict[str, list[dict]],
+             fortran: dict[str, list[dict]] | None = None):
+    """Panel B: ms/site/step vs N (log–log) for GPU and CPU.
+
+    Parameters
+    ----------
+    ax : matplotlib Axes
+    ms : JAX multisite data {"gpu": [...], "cpu": [...]}
+    fortran : optional Fortran multisite data {"seq": [...], "par": [...]}
+              from _load_fortran_multisite().  Pass None to omit.
+    """
     for backend, color, label in [
-        ("gpu", C_GPU, "GPU (A100)"),
+        ("gpu", C_GPU, "GPU (RTX 8000)"),
         ("cpu", C_CPU, "CPU"),
     ]:
         rows = ms[backend]
@@ -171,9 +221,28 @@ def _panel_b(ax, ms: dict[str, list[dict]]):
             ax.annotate(f"{m:.1f}", (n, m), textcoords="offset points",
                         xytext=(6, 3), fontsize=7.5, color=color)
 
-    # Fortran reference line
+    # Fortran measured lines (optional, from CSV)
+    if fortran and fortran.get("seq"):
+        fort_seq_Ns  = [r["N"] for r in fortran["seq"]]
+        fort_seq_mss = [r["ms_per_site"] for r in fortran["seq"]]
+        ax.plot(fort_seq_Ns, fort_seq_mss, "s--", color=C_FORT_SEQ, lw=1.8, ms=6,
+                label="Fortran sequential (N runs × 1 site)", zorder=3, alpha=0.9)
+        for n, m in zip(fort_seq_Ns, fort_seq_mss):
+            ax.annotate(f"{m:.1f}", (n, m), textcoords="offset points",
+                        xytext=(6, -11), fontsize=7, color=C_FORT_SEQ)
+
+    if fortran and fortran.get("par"):
+        fort_par_Ns  = [r["N"] for r in fortran["par"]]
+        fort_par_mss = [r["ms_per_site"] for r in fortran["par"]]
+        ax.plot(fort_par_Ns, fort_par_mss, "^:", color=C_FORT_PAR, lw=1.8, ms=6,
+                label="Fortran parallel (N simultaneous processes)", zorder=3, alpha=0.9)
+        for n, m in zip(fort_par_Ns, fort_par_mss):
+            ax.annotate(f"{m:.1f}", (n, m), textcoords="offset points",
+                        xytext=(6, 5), fontsize=7, color=C_FORT_PAR)
+
+    # Fortran reference line (hard-coded estimate for single-site)
     ax.axhline(_FORTRAN_MS_STEP, color=C_FORT, ls="--", lw=1.5,
-               label=f"Fortran reference ({_FORTRAN_MS_STEP:.0f} ms, Derecho CPU)")
+               label=f"Fortran 1-site ref ({_FORTRAN_MS_STEP:.0f} ms, Derecho CPU)")
 
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
@@ -181,7 +250,7 @@ def _panel_b(ax, ms: dict[str, list[dict]]):
     ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     ax.set_xlabel("Number of sites (N)", fontsize=10)
     ax.set_ylabel("ms / site / step", fontsize=10)
-    ax.set_title("B.  Multi-site vmap throughput (GPU vs CPU)\n[GPU=A100, vs sequential JAX on same hardware]",
+    ax.set_title("B.  Multi-site vmap throughput (GPU vs CPU)\n[GPU=RTX 8000, vs sequential JAX on same hardware]",
                  fontsize=10, fontweight="bold")
     ax.legend(fontsize=9)
     ax.yaxis.grid(True, which="both", alpha=0.3)
@@ -207,7 +276,7 @@ def _panel_c(ax, ms: dict[str, list[dict]]):
                 for i, N in enumerate(target_Ns)]
 
     bars_g = ax.bar(x - w/2 - 0.02, gpu_thru, width=w, color=C_GPU, alpha=ALPHA,
-                    label="GPU (A100)", zorder=3)
+                    label="GPU (RTX 8000)", zorder=3)
     bars_c = ax.bar(x + w/2 + 0.02, cpu_thru, width=w, color=C_CPU, alpha=ALPHA,
                     label="CPU", zorder=3)
 
@@ -230,7 +299,7 @@ def _panel_c(ax, ms: dict[str, list[dict]]):
     ax.set_xticks(x)
     ax.set_xticklabels([f"N={n}" for n in target_Ns], fontsize=11)
     ax.set_ylabel("Throughput (sites / second)", fontsize=10)
-    ax.set_title("C.  GPU vs CPU throughput at N=1, 16, 32\n[sites / second, A100 GPU]",
+    ax.set_title("C.  GPU vs CPU throughput at N=1, 16, 32\n[sites / second, RTX 8000 GPU]",
                  fontsize=10, fontweight="bold")
     ax.legend(fontsize=9)
     ax.yaxis.grid(True, alpha=0.3)
@@ -244,15 +313,24 @@ def main():
     parser.add_argument("--laxscan",   default=str(_FIGURES_DIR / "laxscan_benchmark.csv"))
     parser.add_argument("--multisite", default=str(_FIGURES_DIR / "multisite_benchmark.csv"))
     parser.add_argument("--out",       default=str(_FIGURES_DIR / "benchmark_summary.png"))
+    parser.add_argument(
+        "--fortran",
+        default=None,
+        metavar="FORTRAN_CSV",
+        help="Optional: path to multisite_benchmark_fortran.csv from the Fortran benchmark "
+             "suite (clm-ml-fortran/benchmark/run_multisite_benchmark.sh). "
+             "Overlays Fortran sequential and parallel N-site lines on Panel B.",
+    )
     args = parser.parse_args()
 
     print("Loading data ...", flush=True)
-    laxscan  = _load_laxscan(Path(args.laxscan))
+    laxscan   = _load_laxscan(Path(args.laxscan))
     multisite = _load_multisite(Path(args.multisite))
+    fortran   = _load_fortran_multisite(Path(args.fortran) if args.fortran else None)
 
     print("Plotting ...", flush=True)
     fig = plt.figure(figsize=(17, 5.5))
-    fig.suptitle("CLM-ML-JAX GPU Performance Benchmarks (A100)",
+    fig.suptitle("CLM-ML-JAX GPU Performance Benchmarks (Quadro RTX 8000)",
                  fontsize=13, fontweight="bold", y=1.02)
 
     gs = GridSpec(1, 3, figure=fig, wspace=0.38)
@@ -261,7 +339,7 @@ def main():
     ax_c = fig.add_subplot(gs[0, 2])
 
     _panel_a(ax_a, laxscan)
-    _panel_b(ax_b, multisite)
+    _panel_b(ax_b, multisite, fortran=fortran if fortran["seq"] else None)
     _panel_c(ax_c, multisite)
 
     plt.tight_layout()
