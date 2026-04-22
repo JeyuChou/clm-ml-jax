@@ -50,7 +50,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 print("=== multipar_calibration.py: loading model ===", flush=True)
 from diags.expt_init import (
     mlcanopy_inst, grid, _mlcf_kwargs,
-    jax as _jax, jnp as _jnp, MLCanopyFluxes,
+    MLCanopyFluxes,
     atm2lnd_inst, wateratm2lndbulk_inst,
     compute_gpp,
 )
