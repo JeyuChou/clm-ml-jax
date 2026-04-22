@@ -61,7 +61,7 @@ of 3-5x → AD is 3-5x cheaper than FD; crossover is p ~ T_ratio/2 ≈ 1.5-2.5.
 | 7552426 | `run_ensemble_cpu_512.sh` | CPU vmap N=512 throughput | **Done — OOM at N=512 after ~72h** |
 | 7578655_0 | `run_precision_benchmark.sh` (task 0) | Float64 GPU throughput vs N | Pending |
 | 7578655_1 | `run_precision_benchmark.sh` (task 1) | Float32 GPU throughput vs N | Pending |
-| 7579151 | `run_cpu_compile_benchmark.sh` | CPU compile N=[128,512,1024,2048] on 768GB node | Running |
+| 7579151 | `run_cpu_compile_benchmark.sh` | CPU compile N=[128,512,1024,2048] on 768GB node | **Done — OOM at N=128 after ~2min (faster than 128G: no swap, hits VA limit immediately)** |
 
 ---
 
@@ -168,7 +168,7 @@ Applied to both `_make_leaf_photo_kernel` (acclim_type=0) and `_make_leaf_photo_
 
 The N=512 result is qualitatively different: LLVM spent 72 hours on graph construction before the allocator gave up. This shows compile time grows super-linearly with N — the graph is built incrementally, then fails at the link step.
 
-**Follow-up (job 7579151, 768G):** Resubmitted on large-memory node (`-C mem768`, `--mem=700gb`, `--exclusive`). N_VALUES trimmed to [128, 512, 1024, 2048] since N=1,8,32 already measured. CSV write switched to append mode so results accumulate across runs.
+**Follow-up (job 7579151, 768G node, completed):** N=128 OOM'd again — after only ~2 min, even faster than on 128G. Reason: without swap pressure, LLVM hits the virtual address space hard limit immediately rather than spending time paging. This confirms the failure is a **VA space exhaustion**, not a physical RAM shortage. Increasing memory does not help. The XLA CPU flat-unrolling is fundamentally infeasible for N≥128 with this model.
 
 **Commits:** `8558f83` (benchmark script), `9f5bec9` (resume N=128+, append CSV)
 
