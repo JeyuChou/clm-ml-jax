@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-04-23 — Session 37: g1_MED gradient fix (explicit g1_MED_jax arg)
+
+### Fix: d(GPP)/d(g1_MED) — explicit g1_MED_jax argument
+
+**Problem:** Job 7577180 showed JAX gradient = +5.2 vs FD = -743 for d(GPP)/d(alpha_g1) under Medlyn (gs_type=0). The IFT fix from session 33 fixed the NaN but not the magnitude/sign.
+
+**Root cause (refined):** The exact mechanism blocking the gradient is subtle and was not definitively identified through static analysis. The IFT formula is mathematically correct. The likely issue is that reading `MLpftcon.g1_MED` from a Python module global inside `jax.lax.scan`'s traced body does not propagate the JAX abstract tracer for `alpha` into `g1_val` in all JAX versions/execution paths. The explicit-arg pattern (used successfully for `vcmaxpft_jax`) bypasses this.
+
+**Fix (mirrors vcmaxpft_jax pattern):**
+- `LeafPhotosynthesis` now accepts `g1_MED_jax=None`; when provided, it overrides `MLpftcon.g1_MED` for `_g1_MED_jnp`
+- `MLCanopyFluxes` now accepts `g1_MED_jax=None` and threads it to both `LeafPhotosynthesis(sun/sha)` calls
+- No change to `_set_pftcon` pattern (other callers unaffected)
+- No change to lru_cache or IFT logic
+
+**New files:**
+- `diags/check_g1_medlyn_fixed.py` — uses `MLCanopyFluxes(..., g1_MED_jax=alpha*orig_g1_MED)` directly (no `_set_pftcon`)
+- `bashscripts/run_g1_medlyn_fixed.sh` — SLURM job (glab1, 3h, GPU)
+
+**Job submitted:** 7590268 (`run_g1_medlyn_fixed.sh`)
+
+**Files changed:**
+- `src/multilayer_canopy/MLLeafPhotosynthesisMod.py` — `g1_MED_jax=None` param + `_g1_MED_jnp` conditional
+- `src/multilayer_canopy/MLCanopyFluxesMod.py` — `g1_MED_jax=None` param + thread to LeafPhotosynthesis
+
+---
+
 ## 2026-04-23 — Session 36: job results (NM calibration, precision benchmark, g1_MED, multipar)
 
 ### Job results summary

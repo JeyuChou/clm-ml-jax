@@ -170,6 +170,7 @@ def MLCanopyFluxes(
     grid: 'GridInfo | None' = None,
     _o2ref_py: 'float | None' = None,
     vcmaxpft_jax=None,
+    g1_MED_jax=None,
 ) -> mlcanopy_type:
     """
     Compute all multilayer canopy fluxes for one CLM timestep.
@@ -594,9 +595,9 @@ def MLCanopyFluxes(
             # Both sun and shade in one fused GPU dispatch (2× fewer round-trips)
             inst = LeafBoundaryLayerBoth(num_mlcan, filter_mlcan, inst)
             inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isun, inst, grid=grid,
-                                      _o2ref_py=_o2ref_py_val)
+                                      _o2ref_py=_o2ref_py_val, g1_MED_jax=g1_MED_jax)
             inst = LeafPhotosynthesis(num_mlcan, filter_mlcan, isha, inst, grid=grid,
-                                      _o2ref_py=_o2ref_py_val)
+                                      _o2ref_py=_o2ref_py_val, g1_MED_jax=g1_MED_jax)
             inst = FluxProfileSolution(num_mlcan, filter_mlcan, inst, grid=grid)
             inst = LeafWaterPotential(num_mlcan, filter_mlcan, isun, inst)
             inst = LeafWaterPotential(num_mlcan, filter_mlcan, isha, inst)

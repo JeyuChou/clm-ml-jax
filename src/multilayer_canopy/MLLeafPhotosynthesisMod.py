@@ -2031,6 +2031,7 @@ def LeafPhotosynthesis(
     mlcanopy_inst: mlcanopy_type,
     grid=None,
     _o2ref_py: float = None,
+    g1_MED_jax=None,
 ) -> mlcanopy_type:
     """
     Calculate leaf photosynthesis and stomatal conductance for sunlit
@@ -2083,6 +2084,12 @@ def LeafPhotosynthesis(
         il: Sunlit (``isun``) or shaded (``isha``) leaf index.
         mlcanopy_inst: Canopy container; all photosynthesis and
             stomatal conductance fields are updated.
+        g1_MED_jax: Optional JAX array of shape ``(mxpft+1,)`` with the
+            Medlyn stomatal slope values.  When provided, overrides
+            ``MLpftcon.g1_MED`` so that autodiff can trace through it
+            (mirrors the ``vcmaxpft_jax`` pattern used in
+            ``CanopyNitrogenProfile``).  Pass ``alpha * MLpftcon.g1_MED``
+            to differentiate w.r.t. a global g1 scale factor ``alpha``.
 
     Returns:
         Updated :class:`mlcanopy_type`.
@@ -2102,8 +2109,11 @@ def LeafPhotosynthesis(
     # pft is a concrete Python int (derived from numpy), so jnp indexing gives
     # a JAX scalar that is differentiable — gradient flows through g1, iota, etc.
     # These are NOT converted to float() so they remain on the JAX tape.
+    # g1_MED_jax: when provided (diff-mode gradient check), use it in place of
+    # MLpftcon.g1_MED so the JAX tracer for alpha flows into g1_val and
+    # d(GPP)/d(alpha_g1) is computed correctly — mirrors vcmaxpft_jax pattern.
     _g0_MED_jnp = jnp.asarray(MLpftcon.g0_MED)
-    _g1_MED_jnp = jnp.asarray(MLpftcon.g1_MED)
+    _g1_MED_jnp = jnp.asarray(g1_MED_jax) if g1_MED_jax is not None else jnp.asarray(MLpftcon.g1_MED)
     _g0_BB_jnp  = jnp.asarray(MLpftcon.g0_BB)
     _g1_BB_jnp  = jnp.asarray(MLpftcon.g1_BB)
     _iota_jnp   = jnp.asarray(MLpftcon.iota_SPA)
