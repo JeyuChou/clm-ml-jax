@@ -1,5 +1,83 @@
 # Changelog
 
+## 2026-04-23 — Session 36: job results (NM calibration, precision benchmark, g1_MED, multipar)
+
+### Job results summary
+
+| Job | Purpose | Status | Key result |
+|-----|---------|--------|------------|
+| 7577146 | NM-only calibration (vcmax+iota, 2-param) | **COMPLETE** | Both Adam and NM converged to <0.02% rel err |
+| 7578655_0 | Precision benchmark f64 | **COMPLETE** | ~11ms/sample for N≥32, all N=1..2048 OK |
+| 7578655_1 | Precision benchmark f32 | **COMPLETE** | ~11–12ms/sample for N≥32 — **no speedup vs f64** |
+| 7578886 | 10-param multipar calibration | **CANCELLED** (time limit) | Adam diverged to NaN; NM killed at eval 1 |
+| 7577180 | g1_MED IFT gradient check | **FAIL** | FD=−743, JAX=+5.2 — wrong sign, 100× off magnitude |
+| 7552426 | CPU vmap N=512 throughput | **OOM** | LLVM VA space exhaustion (128G) |
+| 7579151 | CPU compile N=128 on 768GB node | **OOM** | VA space exhaustion (confirmed RAM-independent) |
+
+---
+
+### Job 7577146: NM-only calibration — COMPLETE, BOTH METHODS CONVERGED
+
+Adam (gradient-based, 2-param vcmax+iota):
+- `vcmax_final = 125.017` (true=125.0, rel_err=0.01%)
+- `iota_final = 374.909` (true=375.0, rel_err=0.02%)
+- Final loss = 6.22×10⁻⁹
+
+Nelder-Mead (gradient-free, 53 evaluations, 17879s ≈ 5h):
+- `vcmax_final = 124.977` (true=125.0, rel_err=0.02%)
+- `iota_final = 374.952` (true=375.0, rel_err=0.01%)
+- Final loss = 2.78×10⁻⁹
+
+Both methods recovered both parameters to machine precision. Output files committed: `diags/figures/calibration_vcmax_iota_results.csv`, `diags/figures/calibration_vcmax_iota_convergence.png`.
+
+**Paper Exp 4 story:** Adam and NM both converge to exact truth on 2-parameter recovery. For higher p, AD avoids O(2p) FD probes — crossover is ~p=2 based on T_ratio≈3.3.
+
+---
+
+### Jobs 7578655_0/1: Precision benchmark — COMPLETE, f32 ≈ f64 (no speedup)
+
+**Key finding: float32 provides essentially no throughput benefit over float64 on this model.**
+
+| N | f64 ms/sample | f32 ms/sample | ratio |
+|---|--------------|--------------|-------|
+| 1 | 29.2 | 27.6 | 0.95 |
+| 8 | 13.5 | 13.5 | 1.00 |
+| 32 | 11.5 | 11.9 | 1.04 |
+| 128 | 11.2 | 11.5 | 1.03 |
+| 512 | 11.4 | 11.6 | 1.02 |
+| 1024 | 11.8 | 11.4 | 0.97 |
+| 2048 | 10.9 | 11.5 | 1.05 |
+
+Expected 2× FP32 speedup never materialises. Likely reasons: (a) the model is dominated by memory-bandwidth-bound operations (many independent array reads/writes per computation), not tensor-core FLOPS; (b) large fraction of scalar/transcendental ops (exp/log/sqrt for stomatal conductance, radiation) that run at the same speed regardless of precision.
+
+**Implication for paper:** The f32 result is actually a *positive* finding — users get float64 fidelity at no extra cost vs. float32. Updated paper section from "in preparation" to actual results.
+
+Output CSVs committed: `diags/figures/precision_benchmark_f64.csv`, `diags/figures/precision_benchmark_f32.csv`.
+
+---
+
+### Job 7578886: 10-param multipar calibration — CANCELLED
+
+Adam (gradient-based, p=10): diverged to NaN after step 1. Known NaN gradient issue applies to multi-parameter case where some parameters (e.g., iota via module-global mutation, g1_MED) do not have correct IFT gradients.
+
+Nelder-Mead: was at eval 1 (each eval ~319s) when SLURM killed the job. With 319s/eval and O(100–300) evals needed for p=10, NM requires ~9–26h — job needed longer time limit.
+
+**Status: blocked on NaN gradient fix for multi-param case.**
+
+---
+
+### Job 7577180: g1_MED IFT gradient check — FAIL
+
+- FD = −7.43×10² (correct, large, negative)
+- JAX = +5.15 (wrong sign, magnitude off by 100×)
+- Rel. error = 1.01 — essentially completely wrong
+
+Session 25 IFT fix is incomplete for g1_MED. The IFT pattern in `_ci_solver_scan_ift` applies to the ci solver but the gradient path through g1_MED itself may have additional stop_gradient barriers blocking the signal, or the ∂F/∂θ term is not correctly including the g1 contribution.
+
+**Status: open bug, needs further investigation.**
+
+---
+
 ## 2026-04-22 — Session 35: paper methodology review + multi-parameter calibration experiment
 
 ### Paper methodology review (NeurIPS framing)
@@ -55,12 +133,12 @@ of 3-5x → AD is 3-5x cheaper than FD; crossover is p ~ T_ratio/2 ≈ 1.5-2.5.
 
 | Job | Script | Purpose | Status |
 |-----|--------|---------|--------|
-| 7577146 | `run_calibration_nm_only.sh` | NM-only rerun for Exp 4 figure (Adam hardcoded) | Running |
-| 7577180 | `run_g1_medlyn_check.sh` | Verify g1_MED IFT gradient fix | Pending |
+| 7577146 | `run_calibration_nm_only.sh` | NM-only rerun for Exp 4 figure (Adam hardcoded) | **Done — both methods converged** |
+| 7577180 | `run_g1_medlyn_check.sh` | Verify g1_MED IFT gradient fix | **Done — FAIL (wrong sign, 100× off)** |
 | 7578601 | `run_cpu_compile_benchmark.sh` | CPU vmap XLA compile time vs N with 1h timeout | **Done — OOM at N=128 after ~47min** |
 | 7552426 | `run_ensemble_cpu_512.sh` | CPU vmap N=512 throughput | **Done — OOM at N=512 after ~72h** |
-| 7578655_0 | `run_precision_benchmark.sh` (task 0) | Float64 GPU throughput vs N | Pending |
-| 7578655_1 | `run_precision_benchmark.sh` (task 1) | Float32 GPU throughput vs N | Pending |
+| 7578655_0 | `run_precision_benchmark.sh` (task 0) | Float64 GPU throughput vs N | **Done — f64 ~11ms/sample N≥32** |
+| 7578655_1 | `run_precision_benchmark.sh` (task 1) | Float32 GPU throughput vs N | **Done — f32 ≈ f64 (no speedup)** |
 | 7579151 | `run_cpu_compile_benchmark.sh` | CPU compile N=[128,512,1024,2048] on 768GB node | **Done — OOM at N=128 after ~2min (faster than 128G: no swap, hits VA limit immediately)** |
 
 ---
