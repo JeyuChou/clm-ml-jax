@@ -3,6 +3,12 @@
 .claude/
 
 # Python
+docs/
+bashscripts/
+Paper/
+prompts/
+Domain-Litterature/
+logs/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -113,7 +119,9 @@ dmypy.json
 .DS_Store
 Thumbs.db
 *.err
-*.out
 
 #plots
 comparison_plots/
+
+
+Paper/jaxes_paper/

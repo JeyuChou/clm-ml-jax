@@ -7,9 +7,18 @@ Flatau et al. (1992) J. Appl. Meteor. 31:1507-1513.
 
 Original Fortran module: MLWaterVaporMod
 Fortran lines 1-115
+
+Differentiability notes
+-----------------------
+Both ``SatVap`` and ``LatVap`` accept plain Python floats **or** JAX
+arrays (scalars or batched).  All branching on temperature uses
+``jnp.where`` so the functions are fully differentiable and
+``jax.jit``-compatible.
 """
 
-from typing import Tuple
+from typing import Tuple, Union
+
+import jax.numpy as jnp
 
 from clm_src_main.clm_varcon import tfrz, hvap, hsub    # noqa: F401
 from multilayer_canopy.MLclm_varcon import mmh2o             # noqa: F401
@@ -64,7 +73,7 @@ _d7: float =  0.394116744e-13
 _d8: float =  0.498070196e-16
 
 
-def SatVap(t: float) -> Tuple[float, float]:
+def SatVap(t):
     """
     Compute saturation vapour pressure and its temperature derivative.
 
@@ -81,8 +90,11 @@ def SatVap(t: float) -> Tuple[float, float]:
     (Fortran lines 75-76). Results are converted from millibars to Pa
     by multiplying by 100 (Fortran lines 91-92).
 
+    Differentiable: ``jnp.where`` replaces Python ``if`` on temperature
+    so the function is ``jax.jit``- and ``jax.grad``-compatible.
+
     Args:
-        t: Temperature (K).
+        t: Temperature (K) — Python float or JAX scalar/array.
 
     Returns:
         Tuple of ``(es, desdt)`` where:
@@ -91,37 +103,62 @@ def SatVap(t: float) -> Tuple[float, float]:
         - ``desdt``: d(es)/dT (Pa/K).
     """
     # Temperature in Celsius, clamped to valid polynomial range — Fortran lines 74-76
-    tc = t - tfrz
-    if tc >  100.0:
-        tc = 100.0
-    if tc < -75.0:
-        tc = -75.0
+    tc = jnp.clip(jnp.asarray(t) - tfrz, -75.0, 100.0)
 
-    if tc >= 0.0:
-        # Water vapour polynomials — Fortran lines 78-83
-        es = _a0 + tc*(_a1 + tc*(_a2 + tc*(_a3 + tc*(_a4
-             + tc*(_a5 + tc*(_a6 + tc*(_a7 + tc*_a8)))))))
-        desdt = _b0 + tc*(_b1 + tc*(_b2 + tc*(_b3 + tc*(_b4
-                + tc*(_b5 + tc*(_b6 + tc*(_b7 + tc*_b8)))))))
-    else:
-        # Ice polynomials — Fortran lines 84-89
-        es = _c0 + tc*(_c1 + tc*(_c2 + tc*(_c3 + tc*(_c4
-             + tc*(_c5 + tc*(_c6 + tc*(_c7 + tc*_c8)))))))
-        desdt = _d0 + tc*(_d1 + tc*(_d2 + tc*(_d3 + tc*(_d4
-                + tc*(_d5 + tc*(_d6 + tc*(_d7 + tc*_d8)))))))
+    # Water vapour polynomials — Fortran lines 78-83 (evaluated for all t)
+    es_w    = _a0 + tc*(_a1 + tc*(_a2 + tc*(_a3 + tc*(_a4
+              + tc*(_a5 + tc*(_a6 + tc*(_a7 + tc*_a8)))))))
+    desdt_w = _b0 + tc*(_b1 + tc*(_b2 + tc*(_b3 + tc*(_b4
+              + tc*(_b5 + tc*(_b6 + tc*(_b7 + tc*_b8)))))))
 
-    # Convert from millibars (mb) to Pa — Fortran lines 91-92
-    es    = es    * 100.0
-    desdt = desdt * 100.0
+    # Ice polynomials — Fortran lines 84-89 (evaluated for all t)
+    es_i    = _c0 + tc*(_c1 + tc*(_c2 + tc*(_c3 + tc*(_c4
+              + tc*(_c5 + tc*(_c6 + tc*(_c7 + tc*_c8)))))))
+    desdt_i = _d0 + tc*(_d1 + tc*(_d2 + tc*(_d3 + tc*(_d4
+              + tc*(_d5 + tc*(_d6 + tc*(_d7 + tc*_d8)))))))
+
+    # Select water vs ice branch without Python if — differentiable
+    above_zero = tc >= 0.0
+    es    = jnp.where(above_zero, es_w,    es_i)    * 100.0   # mb → Pa
+    desdt = jnp.where(above_zero, desdt_w, desdt_i) * 100.0
 
     return es, desdt
+
+
+def SatVap_py(t: float):
+    """Pure-Python version of :func:`SatVap` for plain float inputs.
+
+    Uses the same 8th-order polynomial fits but with Python arithmetic
+    and ``if/else`` branching.  No JAX dispatch overhead — safe for use
+    inside per-layer Python loops.
+
+    Returns ``(es, desdt)`` as plain Python floats (Pa and Pa/K).
+    """
+    tc = t - tfrz
+    if tc < -75.0:
+        tc = -75.0
+    elif tc > 100.0:
+        tc = 100.0
+
+    if tc >= 0.0:
+        es    = _a0 + tc*(_a1 + tc*(_a2 + tc*(_a3 + tc*(_a4
+                  + tc*(_a5 + tc*(_a6 + tc*(_a7 + tc*_a8)))))))
+        desdt = _b0 + tc*(_b1 + tc*(_b2 + tc*(_b3 + tc*(_b4
+                  + tc*(_b5 + tc*(_b6 + tc*(_b7 + tc*_b8)))))))
+    else:
+        es    = _c0 + tc*(_c1 + tc*(_c2 + tc*(_c3 + tc*(_c4
+                  + tc*(_c5 + tc*(_c6 + tc*(_c7 + tc*_c8)))))))
+        desdt = _d0 + tc*(_d1 + tc*(_d2 + tc*(_d3 + tc*(_d4
+                  + tc*(_d5 + tc*(_d6 + tc*(_d7 + tc*_d8)))))))
+
+    return es * 100.0, desdt * 100.0
 
 
 # ---------------------------------------------------------------------------
 # Public: molar latent heat of vaporization
 # ---------------------------------------------------------------------------
 
-def LatVap(t: float) -> float:
+def LatVap(t):
     """
     Compute the molar latent heat of vaporization as a function of
     temperature, following the CLM5 formulation.
@@ -139,17 +176,15 @@ def LatVap(t: float) -> float:
         lambda = hvap * mmh2o    if t > tfrz
         lambda = hsub * mmh2o    if t <= tfrz
 
+    Differentiable: ``jnp.where`` replaces Python ``if`` on temperature.
+
     Args:
-        t: Temperature (K).
+        t: Temperature (K) — Python float or JAX scalar/array.
 
     Returns:
         Molar latent heat of vaporization (J/mol).
     """
-    # Select vaporization or sublimation — Fortran lines 111-113
-    if t > tfrz:
-        lam = hvap
-    else:
-        lam = hsub
-
+    # Select vaporization or sublimation without Python if — differentiable
+    lam = jnp.where(jnp.asarray(t) > tfrz, hvap, hsub)
     # Convert J/kg → J/mol — Fortran line 114
     return lam * mmh2o

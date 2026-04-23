@@ -5,9 +5,24 @@ Leaf temperature and energy fluxes for the multilayer canopy model.
 
 Original Fortran module: MLLeafFluxesMod
 Fortran lines 1-115
+
+Differentiability notes
+-----------------------
+* All ``float()`` wrappers removed — JAX scalar arithmetic works on
+  traced values.
+* ``if dpai_ic > 0:`` replaced by ``jnp.where`` masks.  Both branches
+  are always computed; safe denominators (``jnp.where(..., denom, 1.0)``)
+  prevent NaN/Inf when conductances are zero on empty layers.
+* ``SatVap`` and ``LatVap`` are now fully differentiable (see
+  MLWaterVaporMod).
+* Energy balance check uses ``jnp.abs``; the Python ``if`` on the
+  result is a diagnostic-only path skipped under ``jax.jit``.
 """
 
 from __future__ import annotations
+
+import jax
+import jax.numpy as jnp
 
 from clm_src_main.abortutils import endrun                       # noqa: F401
 from multilayer_canopy.MLclm_varctl import dtime_ml                  # noqa: F401
@@ -71,75 +86,90 @@ def LeafFluxes(
     Returns:
         Updated :class:`mlcanopy_type`.
     """
-    dtime: float = float(dtime_ml)    # Multilayer canopy timestep (s)
+    dtime = dtime_ml    # Multilayer canopy timestep (s) — Python float constant
 
     # Latent heat of vaporization — Fortran line 65
-    lam = LatVap(float(mlcanopy_inst.tref_forcing[p]))    # J/mol
+    lam = LatVap(mlcanopy_inst.tref_forcing[p])    # J/mol
 
-    dpai_ic = float(mlcanopy_inst.dpai_profile[p, ic])
+    dpai_ic  = mlcanopy_inst.dpai_profile[p, ic]
+    active   = dpai_ic > 0.0                       # JAX bool scalar
 
-    if dpai_ic > 0.0:                                      # Fortran lines 67-105
+    # Unpack scalars (used in both branches)
+    tair_ic = mlcanopy_inst.tair_profile[p, ic]
 
-        # Unpack scalars
-        pref_p       = float(mlcanopy_inst.pref_forcing[p])
-        cpair_p      = float(mlcanopy_inst.cpair_forcing[p])
-        tair_ic      = float(mlcanopy_inst.tair_profile[p, ic])
-        eair_ic      = float(mlcanopy_inst.eair_profile[p, ic])
-        cpleaf_ic    = float(mlcanopy_inst.cpleaf_profile[p, ic])
-        fwet_ic      = float(mlcanopy_inst.fwet_profile[p, ic])
-        fdry_ic      = float(mlcanopy_inst.fdry_profile[p, ic])
-        gbh_ic       = float(mlcanopy_inst.gbh_leaf[p, ic, il])
-        gbv_ic       = float(mlcanopy_inst.gbv_leaf[p, ic, il])
-        gs_ic        = float(mlcanopy_inst.gs_leaf[p, ic, il])
-        rnleaf_ic    = float(mlcanopy_inst.rnleaf_leaf[p, ic, il])
-        tleaf_bef_ic = float(mlcanopy_inst.tleaf_bef_leaf[p, ic, il])
+    # -----------------------------------------------------------------------
+    # Active-layer physics — computed unconditionally; masked below
+    # Fortran lines 67-96
+    # -----------------------------------------------------------------------
+    pref_p       = mlcanopy_inst.pref_forcing[p]
+    cpair_p      = mlcanopy_inst.cpair_forcing[p]
+    eair_ic      = mlcanopy_inst.eair_profile[p, ic]
+    cpleaf_ic    = mlcanopy_inst.cpleaf_profile[p, ic]
+    fwet_ic      = mlcanopy_inst.fwet_profile[p, ic]
+    fdry_ic      = mlcanopy_inst.fdry_profile[p, ic]
+    gbh_ic       = mlcanopy_inst.gbh_leaf[p, ic, il]
+    gbv_ic       = mlcanopy_inst.gbv_leaf[p, ic, il]
+    gs_ic        = mlcanopy_inst.gs_leaf[p, ic, il]
+    rnleaf_ic    = mlcanopy_inst.rnleaf_leaf[p, ic, il]
+    tleaf_bef_ic = mlcanopy_inst.tleaf_bef_leaf[p, ic, il]
 
-        # Saturation vapour pressure at tleaf_bef — Fortran lines 69-70
-        esat, desat = SatVap(tleaf_bef_ic)
-        qsat  = esat  / pref_p                             # mol/mol
-        dqsat = desat / pref_p                             # mol/mol/K
+    # Saturation vapour pressure at tleaf_bef — Fortran lines 69-70
+    esat, desat = SatVap(tleaf_bef_ic)
+    qsat  = esat  / pref_p    # mol/mol
+    dqsat = desat / pref_p    # mol/mol/K
 
-        # Leaf transpiration conductance — Fortran line 72
-        gleaf = gs_ic * gbv_ic / (gs_ic + gbv_ic)
+    # Leaf transpiration conductance — Fortran line 72
+    # Safe denominator: avoid 0/0 when gs = gbv = 0 on empty layers
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    gleaf_denom = jnp.maximum(gs_ic + gbv_ic, 1.0e-30)
+    gleaf       = gs_ic * gbv_ic / gleaf_denom
 
-        # Total conductance (transpiration + evaporation) — Fortran line 74
-        gw = gleaf * fdry_ic + gbv_ic * fwet_ic
+    # Total conductance — Fortran line 74
+    gw = gleaf * fdry_ic + gbv_ic * fwet_ic
 
-        # Linearised leaf temperature — Fortran lines 76-81
-        num1   = 2.0 * cpair_p * gbh_ic
-        num2   = lam * gw
-        num3   = (rnleaf_ic
-                  - lam * gw * (qsat - dqsat * tleaf_bef_ic)
-                  + cpleaf_ic / dtime * tleaf_bef_ic)
-        den    = cpleaf_ic / dtime + num1 + num2 * dqsat
-        tleaf_val = (num1 * tair_ic + num2 * (eair_ic / pref_p) + num3) / den
+    # Linearised leaf temperature — Fortran lines 76-81
+    num1 = 2.0 * cpair_p * gbh_ic
+    num2 = lam * gw
+    num3 = (rnleaf_ic
+            - lam * gw * (qsat - dqsat * tleaf_bef_ic)
+            + cpleaf_ic / dtime * tleaf_bef_ic)
+    # Safe denominator: avoid /0 when cpleaf = gbh = gw = 0 on empty layers
+    # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
+    tleaf_denom = jnp.maximum(cpleaf_ic / dtime + num1 + num2 * dqsat, 1.0e-30)
+    tleaf_active = (num1 * tair_ic + num2 * (eair_ic / pref_p) + num3) / tleaf_denom
 
-        # Storage heat flux — Fortran line 83
-        stleaf_val = (tleaf_val - tleaf_bef_ic) * cpleaf_ic / dtime
+    # Storage heat flux — Fortran line 83
+    stleaf_active = (tleaf_active - tleaf_bef_ic) * cpleaf_ic / dtime
 
-        # Sensible heat flux — Fortran line 85
-        shleaf_val = 2.0 * cpair_p * (tleaf_val - tair_ic) * gbh_ic
+    # Sensible heat flux — Fortran line 85
+    shleaf_active = 2.0 * cpair_p * (tleaf_active - tair_ic) * gbh_ic
 
-        # Transpiration and evaporation fluxes (mol H2O/m2/s) — Fortran lines 87-89
-        num1_flux   = qsat + dqsat * (tleaf_val - tleaf_bef_ic) - eair_ic / pref_p
-        trleaf_val  = gleaf * fdry_ic * num1_flux
-        evleaf_val  = gbv_ic * fwet_ic * num1_flux
+    # Transpiration and evaporation — Fortran lines 87-89
+    vapour_flux   = qsat + dqsat * (tleaf_active - tleaf_bef_ic) - eair_ic / pref_p
+    trleaf_active = gleaf    * fdry_ic * vapour_flux
+    evleaf_active = gbv_ic   * fwet_ic * vapour_flux
 
-        # Latent heat flux — Fortran line 91
-        lhleaf_val  = (trleaf_val + evleaf_val) * lam
+    # Latent heat flux — Fortran line 91
+    lhleaf_active = (trleaf_active + evleaf_active) * lam
 
-        # Energy balance error check — Fortran lines 93-96
-        err = rnleaf_ic - shleaf_val - lhleaf_val - stleaf_val
-        if abs(err) > 1.0e-3:
-            endrun(msg=' ERROR: LeafFluxes: energy balance error')
+    # -----------------------------------------------------------------------
+    # Select active vs. inactive values — Fortran lines 98-104
+    # -----------------------------------------------------------------------
+    tleaf_val  = jnp.where(active, tleaf_active,  tair_ic)
+    stleaf_val = jnp.where(active, stleaf_active, 0.0)
+    shleaf_val = jnp.where(active, shleaf_active, 0.0)
+    lhleaf_val = jnp.where(active, lhleaf_active, 0.0)
+    evleaf_val = jnp.where(active, evleaf_active, 0.0)
+    trleaf_val = jnp.where(active, trleaf_active, 0.0)
 
-    else:                                                  # Fortran lines 98-104
-        tleaf_val  = float(mlcanopy_inst.tair_profile[p, ic])
-        stleaf_val = 0.0
-        shleaf_val = 0.0
-        lhleaf_val = 0.0
-        evleaf_val = 0.0
-        trleaf_val = 0.0
+    # Energy balance error check — JIT-compatible via debug.callback
+    # Mask inactive layers (dpai=0, rnleaf may hold spval=1e36) to avoid false errors
+    err = jnp.where(active, rnleaf_ic - shleaf_val - lhleaf_val - stleaf_val, 0.0)
+    jax.debug.callback(
+        lambda e: endrun(msg=' ERROR: LeafFluxes: energy balance error')
+        if abs(float(e)) > 1.0e-3 else None,
+        err,
+    )
 
     return mlcanopy_inst._replace(
         tleaf_leaf  = mlcanopy_inst.tleaf_leaf.at[p, ic, il].set(tleaf_val),

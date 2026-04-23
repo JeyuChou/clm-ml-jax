@@ -10,7 +10,34 @@ Original Fortran module: MLclm_varctl
 Fortran lines 1-65
 """
 
+from typing import NamedTuple
+
 from clm_src_main.clm_varcon import ispval    # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# Differentiable-mode infrastructure — not part of original Fortran
+# ---------------------------------------------------------------------------
+
+class GridInfo(NamedTuple):
+    """Structural grid constants extracted *before* JAX tracing.
+
+    Under ``jax.grad``, NamedTuple fields of ``mlcanopy_inst`` become
+    abstract tracers.  Calling ``int()`` on a tracer raises
+    ``ConcretizationTypeError``.  ``GridInfo`` bundles those integers so
+    they can be extracted once (as concrete Python ints) and threaded
+    through all physics functions via a closure or explicit parameter.
+    """
+    p: int      # patch index (always 1 in single-site mode)
+    ncan: int   # number of canopy layers
+    ntop: int   # top foliage layer
+    nbot: int   # bottom foliage layer
+
+
+DIFFERENTIABLE_MODE: bool = False
+"""When *True*, skip ``endrun`` error checks, diagnostic file I/O, and
+any operations that break the JAX gradient tape.  Set to *True* inside
+the ``make_clm_ml_forward`` factory before calling physics routines."""
 
 
 # ---------------------------------------------------------------------------

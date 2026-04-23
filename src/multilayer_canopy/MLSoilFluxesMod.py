@@ -6,7 +6,18 @@ multilayer canopy model.
 
 Original Fortran module: MLSoilFluxesMod
 Fortran lines 1-105
+
+Differentiability notes
+-----------------------
+All ``float()`` wrappers removed — JAX scalar arithmetic works directly
+on traced values.  The energy balance error check uses ``jnp.abs`` and
+is left as a Python ``if`` on a JAX scalar (diagnostic only; skipped
+when running under ``jax.jit``; use ``jax.debug.callback`` for
+JIT-compatible checking if needed).
 """
+
+import jax
+import jax.numpy as jnp
 
 from multilayer_canopy.MLWaterVaporMod import SatVap, LatVap    # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
@@ -72,20 +83,20 @@ def SoilFluxes(
         Updated :class:`mlcanopy_type`.
     """
     # Unpack inputs (Fortran associate block, lines 43-63)
-    tref     = float(mlcanopy_inst.tref_forcing[p])
-    pref_p   = float(mlcanopy_inst.pref_forcing[p])
-    rhomol_p = float(mlcanopy_inst.rhomol_forcing[p])
-    cpair_p  = float(mlcanopy_inst.cpair_forcing[p])
-    rnsoi_p  = float(mlcanopy_inst.rnsoi_soil[p])
-    rhg_p    = float(mlcanopy_inst.rhg_soil[p])
-    soilres_p = float(mlcanopy_inst.soilres_soil[p])
-    gac0_p   = float(mlcanopy_inst.gac0_soil[p])
-    soil_t_p = float(mlcanopy_inst.soil_t_soil[p])
-    soil_dz_p = float(mlcanopy_inst.soil_dz_soil[p])
-    soil_tk_p = float(mlcanopy_inst.soil_tk_soil[p])
-    tg_bef_p = float(mlcanopy_inst.tg_bef_soil[p])
-    tair_1   = float(mlcanopy_inst.tair_profile[p, 1])
-    eair_1   = float(mlcanopy_inst.eair_profile[p, 1])
+    tref      = mlcanopy_inst.tref_forcing[p]
+    pref_p    = mlcanopy_inst.pref_forcing[p]
+    rhomol_p  = mlcanopy_inst.rhomol_forcing[p]
+    cpair_p   = mlcanopy_inst.cpair_forcing[p]
+    rnsoi_p   = mlcanopy_inst.rnsoi_soil[p]
+    rhg_p     = mlcanopy_inst.rhg_soil[p]
+    soilres_p = mlcanopy_inst.soilres_soil[p]
+    gac0_p    = mlcanopy_inst.gac0_soil[p]
+    soil_t_p  = mlcanopy_inst.soil_t_soil[p]
+    soil_dz_p = mlcanopy_inst.soil_dz_soil[p]
+    soil_tk_p = mlcanopy_inst.soil_tk_soil[p]
+    tg_bef_p  = mlcanopy_inst.tg_bef_soil[p]
+    tair_1    = mlcanopy_inst.tair_profile[p, 1]
+    eair_1    = mlcanopy_inst.eair_profile[p, 1]
 
     # ------------------------------------------------------------------
     # Latent heat of vaporization — Fortran line 66
@@ -133,10 +144,16 @@ def SoilFluxes(
 
     # ------------------------------------------------------------------
     # Energy balance error check — Fortran lines 87-90
+    # Diagnostic only: the jnp.abs call is differentiable; the Python
+    # ``if`` on the JAX scalar is skipped under jax.jit.
     # ------------------------------------------------------------------
     err = rnsoi_p - shsoi_p - lhsoi_p - gsoi_p
-    if abs(err) > 0.001:
-        endrun(msg=' ERROR: SoilFluxes: energy balance error')
+    # JIT-compatible diagnostic: callback runs host-side with concrete value
+    jax.debug.callback(
+        lambda e: endrun(msg=' ERROR: SoilFluxes: energy balance error')
+        if abs(float(e)) > 0.001 else None,
+        err,
+    )
 
     # ------------------------------------------------------------------
     # Water vapour flux: W/m2 → mol H2O/m2/s — Fortran line 92

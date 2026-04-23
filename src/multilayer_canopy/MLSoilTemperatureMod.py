@@ -98,16 +98,15 @@ def SoilTemperature(
     # ------------------------------------------------------------------
     # Aliases — mirror Fortran associate block (lines 76-80)
     # ------------------------------------------------------------------
-    import numpy as _np_st
-    z        = col.z                             # (nc, nlevsno+nlevgrnd) using direct index
-    t_soisno = _np_st.array(temperature_inst.t_soisno_col, dtype=_np_st.float64)   # mutable copy
-    gsoi     = mlcanopy_inst.gsoi_soil           # (nc,)
+    z        = col.z                              # (nc, nlevsno+nlevgrnd) using direct index
+    t_soisno = temperature_inst.t_soisno_col      # JAX array — updated immutably with .at[].set()
+    gsoi     = mlcanopy_inst.gsoi_soil            # (nc,)
 
     # ------------------------------------------------------------------
     # pfilter: p→c identity map — Fortran lines 90-93
-    # In standalone mode p == c; pfilter(c) = c
+    # Integer indices only; not part of the differentiable computation.
     # ------------------------------------------------------------------
-    pfilter = _np_st.zeros(nc, dtype=_np_st.int32)
+    pfilter = np.zeros(nc, dtype=np.int32)
     for fc in range(1, num_nolakec + 1):
         c = int(filter_nolakec[fc - 1])
         pfilter[c] = c
@@ -120,9 +119,9 @@ def SoilTemperature(
     # ------------------------------------------------------------------
     # Save soil temperature for energy conservation — Fortran lines 99-104
     # tssbef(c,j) = t_soisno(c,j) for j in 1:nlevgrnd
-    # (using direct index j, matching SoilInit convention)
+    # Only used in the energy-conservation error check (concrete values OK).
     # ------------------------------------------------------------------
-    tssbef = _np_st.zeros((nc, nlevgrnd + 1), dtype=_np_st.float64)
+    tssbef = np.zeros((nc, nlevgrnd + 1), dtype=np.float64)
     for j in range(1, nlevgrnd + 1):
         for fc in range(1, num_nolakec + 1):
             c = int(filter_nolakec[fc - 1])
@@ -131,62 +130,58 @@ def SoilTemperature(
     # ------------------------------------------------------------------
     # Thermal conductivity and heat capacity — Fortran lines 107-110
     # ------------------------------------------------------------------
-    tk        = _np_st.zeros((nc, nth),  dtype=_np_st.float64)
-    cv        = _np_st.zeros((nc, nth),  dtype=_np_st.float64)
-    tk_h2osfc = _np_st.zeros(nc,         dtype=_np_st.float64)
+    tk        = jnp.zeros((nc, nth),  dtype=jnp.float64)
+    cv        = jnp.zeros((nc, nth),  dtype=jnp.float64)
+    tk_h2osfc = jnp.zeros(nc,         dtype=jnp.float64)
 
-    soilstate_inst, temperature_inst, tk_jax, cv_jax, tk_h2osfc_jax = SoilThermProp(
+    soilstate_inst, temperature_inst, tk, cv, tk_h2osfc = SoilThermProp(
         bounds, num_nolakec, filter_nolakec,
         tk, cv, tk_h2osfc,
         temperature_inst, waterdiagnosticbulk_inst,
         waterstatebulk_inst, water_inst, soilstate_inst,
     )
-    # Convert returned JAX arrays back to numpy for in-place tridiagonal assembly
-    tk        = _np_st.array(tk_jax,        dtype=_np_st.float64)
-    cv        = _np_st.array(cv_jax,        dtype=_np_st.float64)
-    tk_h2osfc = _np_st.array(tk_h2osfc_jax, dtype=_np_st.float64)
 
     # ------------------------------------------------------------------
     # Tridiagonal matrix assembly — Fortran lines 113-143
     # Arrays indexed 1:nlevgrnd (index 0 unused)
     # Use direct soil-layer index j (matching SoilInit convention)
     # ------------------------------------------------------------------
-    atri = _np_st.zeros((nc, nlevgrnd + 1), dtype=_np_st.float64)
-    btri = _np_st.zeros((nc, nlevgrnd + 1), dtype=_np_st.float64)
-    ctri = _np_st.zeros((nc, nlevgrnd + 1), dtype=_np_st.float64)
-    rtri = _np_st.zeros((nc, nlevgrnd + 1), dtype=_np_st.float64)
+    atri = jnp.zeros((nc, nlevgrnd + 1), dtype=jnp.float64)
+    btri = jnp.zeros((nc, nlevgrnd + 1), dtype=jnp.float64)
+    ctri = jnp.zeros((nc, nlevgrnd + 1), dtype=jnp.float64)
+    rtri = jnp.zeros((nc, nlevgrnd + 1), dtype=jnp.float64)
 
     for j in range(1, nlevgrnd + 1):
         for fc in range(1, num_nolakec + 1):
             c = int(filter_nolakec[fc - 1])
 
-            fact = dtime / float(cv[c, j])
+            fact = dtime / cv[c, j]
 
             if j == 1:
                 # Top layer: gsoi upper boundary — Fortran lines 118-123
-                dzp = float(z[c, j + 1]) - float(z[c, j])
-                atri[c, j] =  0.0
-                btri[c, j] =  1.0 + fact * float(tk[c, j]) / dzp
-                ctri[c, j] = -fact * float(tk[c, j]) / dzp
-                rtri[c, j] =  float(t_soisno[c, j]) + fact * float(gsoi[pfilter[c]])
+                dzp = z[c, j + 1] - z[c, j]
+                atri = atri.at[c, j].set(0.0)
+                btri = btri.at[c, j].set(1.0 + fact * tk[c, j] / dzp)
+                ctri = ctri.at[c, j].set(-fact * tk[c, j] / dzp)
+                rtri = rtri.at[c, j].set(t_soisno[c, j] + fact * gsoi[pfilter[c]])
 
             elif j <= nlevgrnd - 1:
                 # Interior layers — Fortran lines 125-132
-                dzm = float(z[c, j])     - float(z[c, j - 1])
-                dzp = float(z[c, j + 1]) - float(z[c, j])
-                atri[c, j] = -fact * float(tk[c, j - 1]) / dzm
-                btri[c, j] =  1.0 + fact * (float(tk[c, j - 1]) / dzm
-                                           + float(tk[c, j])     / dzp)
-                ctri[c, j] = -fact * float(tk[c, j]) / dzp
-                rtri[c, j] =  float(t_soisno[c, j])
+                dzm = z[c, j]     - z[c, j - 1]
+                dzp = z[c, j + 1] - z[c, j]
+                atri = atri.at[c, j].set(-fact * tk[c, j - 1] / dzm)
+                btri = btri.at[c, j].set(1.0 + fact * (tk[c, j - 1] / dzm
+                                                        + tk[c, j]     / dzp))
+                ctri = ctri.at[c, j].set(-fact * tk[c, j] / dzp)
+                rtri = rtri.at[c, j].set(t_soisno[c, j])
 
             elif j == nlevgrnd:
                 # Bottom layer: zero heat flux — Fortran lines 134-140
-                dzm = float(z[c, j]) - float(z[c, j - 1])
-                atri[c, j] = -fact * float(tk[c, j - 1]) / dzm
-                btri[c, j] =  1.0 + fact * float(tk[c, j - 1]) / dzm
-                ctri[c, j] =  0.0
-                rtri[c, j] =  float(t_soisno[c, j])
+                dzm = z[c, j] - z[c, j - 1]
+                atri = atri.at[c, j].set(-fact * tk[c, j - 1] / dzm)
+                btri = btri.at[c, j].set(1.0 + fact * tk[c, j - 1] / dzm)
+                ctri = ctri.at[c, j].set(0.0)
+                rtri = rtri.at[c, j].set(t_soisno[c, j])
 
     # ------------------------------------------------------------------
     # Solve tridiagonal system — Fortran lines 145-149
@@ -196,19 +191,20 @@ def SoilTemperature(
     for fc in range(1, num_nolakec + 1):
         c = int(filter_nolakec[fc - 1])
         u_sol = tridiag(
-            jnp.asarray(atri[c, 0:nlevgrnd + 1]),
-            jnp.asarray(btri[c, 0:nlevgrnd + 1]),
-            jnp.asarray(ctri[c, 0:nlevgrnd + 1]),
-            jnp.asarray(rtri[c, 0:nlevgrnd + 1]),
+            atri[c, 0:nlevgrnd + 1],
+            btri[c, 0:nlevgrnd + 1],
+            ctri[c, 0:nlevgrnd + 1],
+            rtri[c, 0:nlevgrnd + 1],
             nlevgrnd,
         )
         # u_sol has shape (nlevgrnd+1,) with data at indices 1..nlevgrnd
         for j in range(1, nlevgrnd + 1):
-            t_soisno[c, j] = float(u_sol[j])
+            t_soisno = t_soisno.at[c, j].set(u_sol[j])
 
     # ------------------------------------------------------------------
     # Energy conservation check — Fortran lines 151-159
     # |gsoi - edif| < 1e-6 W/m2
+    # Concrete float comparisons are acceptable for this error-check path.
     # ------------------------------------------------------------------
     for fc in range(1, num_nolakec + 1):
         c = int(filter_nolakec[fc - 1])
@@ -220,9 +216,7 @@ def SoilTemperature(
             endrun(msg='ERROR: MLSoilTemperatureMod: soil temperature energy conservation error')
 
     # Write updated t_soisno back to temperature_inst
-    temperature_inst = temperature_inst._replace(
-        t_soisno_col=jnp.array(t_soisno)
-    )
+    temperature_inst = temperature_inst._replace(t_soisno_col=t_soisno)
 
     return temperature_inst, soilstate_inst
 
@@ -326,7 +320,6 @@ def SoilThermProp(
         Tuple ``(soilstate_inst, temperature_inst)`` with updated
         ``thk_col`` inside ``soilstate_inst``.
     """
-    import math
     from clm_src_main.clm_varpar import nlevsno, nlevgrnd
     from clm_src_main.clm_varcon import (denh2o, denice, tfrz,
                             tkwat, tkice, tkair,
@@ -357,14 +350,10 @@ def SoilThermProp(
     csol       = soilstate_inst.csol_col
     watsat     = soilstate_inst.watsat_col
 
-    # Convert all mutable work arrays to numpy so that in-place
-    # element-by-element assignment works in Python loops.
-    import numpy as _np
-    thk          = _np.array(soilstate_inst.thk_col, dtype=_np.float64)
-    bw           = _np.array(waterdiagnosticbulk_inst.bw_col, dtype=_np.float64)
-    tk_np        = _np.array(tk,        dtype=_np.float64)
-    cv_np        = _np.array(cv,        dtype=_np.float64)
-    tk_h2osfc_np = _np.array(tk_h2osfc, dtype=_np.float64)
+    # Work arrays — JAX, updated via .at[c, j].set(...)
+    # thk: per-layer thermal conductivity (W/m/K)
+    # tk, cv, tk_h2osfc: passed in as zero-filled JAX arrays, filled here
+    thk = soilstate_inst.thk_col  # start from existing JAX array
 
     # ------------------------------------------------------------------
     # Indexing note:
@@ -372,7 +361,7 @@ def SoilThermProp(
     #   are populated by SoilInit / initVertical at DIRECT indices j=1..nlevgrnd
     #   (no nlevsno offset).  thk_col is allocated with full nlevsno+nlevgrnd+1
     #   size but we write to it at j=1..nlevgrnd directly as well.
-    #   tk_np and cv_np are local (nc, nlevgrnd+1) arrays used by SoilTemperature
+    #   tk and cv are local (nc, nlevgrnd+1) arrays used by SoilTemperature
     #   which also uses direct j indexing.
     # ------------------------------------------------------------------
 
@@ -386,56 +375,69 @@ def SoilThermProp(
 
             # h2osoi_liq/ice are stored at [c, j-1] (clmDataMod convention: first
             # soil layer at index 0). Using [c, j] reads the next layer's moisture.
-            liq_vol = float(h2osoi_liq[c, j - 1]) / denh2o
-            ice_vol = float(h2osoi_ice[c, j - 1]) / denice
-            dz_j    = float(dz[c, j])
-            ws_j    = float(watsat[c, j])   # watsat indexed 1:nlevgrnd
+            liq_j   = h2osoi_liq[c, j - 1]
+            ice_j   = h2osoi_ice[c, j - 1]
+            liq_vol = liq_j / denh2o
+            ice_vol = ice_j / denice
+            dz_j    = dz[c, j]
+            ws_j    = watsat[c, j]   # watsat indexed 1:nlevgrnd
 
-            satw = (liq_vol + ice_vol) / (dz_j * ws_j)
-            satw = min(1.0, satw)
+            # Safe denominator for satw (ws_j could be 0 for bedrock)
+            ws_j_safe = jnp.where(ws_j > 0.0, ws_j, 1.0)
+            satw_raw  = (liq_vol + ice_vol) / (dz_j * ws_j_safe)
+            satw      = jnp.minimum(1.0, satw_raw)
 
-            if satw > 1.0e-7:
-                fl = (float(h2osoi_liq[c, j - 1]) / (denh2o * dz_j)) / (
-                     float(h2osoi_liq[c, j - 1]) / (denh2o * dz_j)
-                   + float(h2osoi_ice[c, j - 1]) / (denice * dz_j))
+            # Wet-path (satw > 1e-7): compute fl, dksat, dke, thk_wet
+            # Safe fl denominator: liq_vol/dz + ice_vol/dz could be zero
+            fl_num   = liq_vol / dz_j
+            fl_denom = liq_vol / dz_j + ice_vol / dz_j
+            fl_denom_safe = jnp.where(fl_denom > 0.0, fl_denom, 1.0)
+            fl = fl_num / fl_denom_safe
 
-                dksat = (float(tkmg[c, j])
-                         * tkwat ** (fl * ws_j)
-                         * tkice ** ((1.0 - fl) * ws_j))
+            dksat = tkmg[c, j] * tkwat ** (fl * ws_j) * tkice ** ((1.0 - fl) * ws_j)
 
-                if float(t_soisno[c, j]) >= tfrz:
-                    dke = max(0.0, math.log10(satw) + 1.0)
-                else:
-                    dke = satw
+            # dke depends on temperature: log10(satw)+1 (thawed) or satw (frozen)
+            # Use satw_safe to avoid log10(0) in the thawed branch
+            satw_safe  = jnp.where(satw > 0.0, satw, 1.0e-10)
+            dke_thawed = jnp.maximum(0.0, jnp.log10(satw_safe) + 1.0)
+            dke_frozen = satw
+            dke = jnp.where(t_soisno[c, j] >= tfrz, dke_thawed, dke_frozen)
 
-                thk[c, j] = dke * dksat + (1.0 - dke) * float(tkdry[c, j])
-            else:
-                thk[c, j] = float(tkdry[c, j])
+            thk_wet = dke * dksat + (1.0 - dke) * tkdry[c, j]
+            thk_dry = tkdry[c, j]
 
+            # Select wet or dry path based on satw
+            thk_val = jnp.where(satw > 1.0e-7, thk_wet, thk_dry)
+
+            # Bedrock override (static Python comparison — j and nbedrock[c] are concrete)
             if j > int(nbedrock[c]):
-                thk[c, j] = thk_bedrock
+                thk_val = jnp.asarray(thk_bedrock)
+
+            thk = thk.at[c, j].set(thk_val)
 
     # Snow thermal conductivity — skipped in standalone mode (snl=0)
 
     # ------------------------------------------------------------------
     # Interface thermal conductivity — Fortran lines 244-256
     # tk(c,j) for j = 1 : nlevgrnd-1 (soil only), then tk(c,nlevgrnd)=0
-    # tk_np uses direct j indexing (matches SoilTemperature)
+    # tk uses direct j indexing (matches SoilTemperature)
     # ------------------------------------------------------------------
     for fc in range(1, num_nolakec + 1):
         c   = int(filter_nolakec[fc - 1])
-        snl_c = int(snl[c])
 
         for j in range(1, nlevgrnd):   # j = 1 .. nlevgrnd-1
             thk_j   = thk[c, j]
             thk_jp1 = thk[c, j + 1]
-            z_j     = float(z[c, j])
-            z_jp1   = float(z[c, j + 1])
-            zi_j    = float(zi[c, j])
-            tk_np[c, j] = (thk_j * thk_jp1 * (z_jp1 - z_j)
-                          / (thk_j * (z_jp1 - zi_j) + thk_jp1 * (zi_j - z_j)))
+            z_j     = z[c, j]
+            z_jp1   = z[c, j + 1]
+            zi_j    = zi[c, j]
+            # Safe denominator for interface conductivity formula
+            denom = thk_j * (z_jp1 - zi_j) + thk_jp1 * (zi_j - z_j)
+            denom_safe = jnp.where(jnp.abs(denom) > 0.0, denom, 1.0e-10)
+            tk_val = thk_j * thk_jp1 * (z_jp1 - z_j) / denom_safe
+            tk = tk.at[c, j].set(tk_val)
 
-        tk_np[c, nlevgrnd] = 0.0
+        tk = tk.at[c, nlevgrnd].set(0.0)
 
     # ------------------------------------------------------------------
     # h2osfc thermal conductivity — Fortran lines 258-264
@@ -443,42 +445,54 @@ def SoilThermProp(
     # ------------------------------------------------------------------
     for fc in range(1, num_nolakec + 1):
         c = int(filter_nolakec[fc - 1])
-        zh2osfc = 1.0e-3 * (0.5 * float(h2osfc[c]))
-        z1      = float(z[c, 1])
+        zh2osfc = 1.0e-3 * (0.5 * h2osfc[c])
+        z1      = z[c, 1]
         thk1    = thk[c, 1]
-        if tkwat * z1 + thk1 * zh2osfc != 0.0:
-            tk_h2osfc_np[c] = (tkwat * thk1 * (z1 + zh2osfc)
-                            / (tkwat * z1 + thk1 * zh2osfc))
-        else:
-            tk_h2osfc_np[c] = tkwat
+        denom   = tkwat * z1 + thk1 * zh2osfc
+        # Avoid division by zero; fall back to tkwat when denom≈0
+        denom_safe = jnp.where(jnp.abs(denom) > 0.0, denom, 1.0)
+        tk_h2osfc_val = jnp.where(
+            jnp.abs(denom) > 0.0,
+            tkwat * thk1 * (z1 + zh2osfc) / denom_safe,
+            jnp.asarray(tkwat),
+        )
+        tk_h2osfc = tk_h2osfc.at[c].set(tk_h2osfc_val)
 
     # ------------------------------------------------------------------
     # Soil heat capacity (de Vries 1963) — Fortran lines 267-280
-    # cv_np uses direct j indexing (matches SoilTemperature)
+    # cv uses direct j indexing (matches SoilTemperature)
     # ------------------------------------------------------------------
     for j in range(1, nlevgrnd + 1):
         for fc in range(1, num_nolakec + 1):
             c = int(filter_nolakec[fc - 1])
             # h2osoi_liq/ice stored at [c, j-1] (clmDataMod convention)
-            cv_np[c, j] = (float(csol[c, j]) * (1.0 - float(watsat[c, j]))
-                          * float(dz[c, j])
-                          + float(h2osoi_ice[c, j - 1]) * cpice
-                          + float(h2osoi_liq[c, j - 1]) * cpliq)
+            cv_val = (csol[c, j] * (1.0 - watsat[c, j])
+                      * dz[c, j]
+                      + h2osoi_ice[c, j - 1] * cpice
+                      + h2osoi_liq[c, j - 1] * cpliq)
 
+            # Bedrock override (static Python comparison)
             if j > int(nbedrock[c]):
-                cv_np[c, j] = csol_bedrock * float(dz[c, j])
+                cv_val = jnp.asarray(csol_bedrock) * dz[c, j]
 
+            # Top layer: add snow heat capacity if no active snow layers
             if j == 1:
                 snl_c = int(snl[c])
-                if snl_c + 1 == 1 and float(h2osno[c]) > 0.0:
-                    cv_np[c, j] += cpice * float(h2osno[c])
+                if snl_c + 1 == 1:
+                    cv_val = cv_val + jnp.where(
+                        h2osno[c] > 0.0,
+                        cpice * h2osno[c],
+                        jnp.zeros(()),
+                    )
+
+            cv = cv.at[c, j].set(cv_val)
 
     # Snow heat capacity — skipped in standalone mode (snl=0)
 
     # Write thk back to soilstate_inst NamedTuple (thk_col has full size,
     # but only j=1..nlevgrnd elements were updated).
-    soilstate_inst = soilstate_inst._replace(thk_col=jnp.array(thk))
+    soilstate_inst = soilstate_inst._replace(thk_col=thk)
     # bw unchanged (no snow in standalone) — leave waterdiagnosticbulk_inst as-is
 
     return (soilstate_inst, temperature_inst,
-            jnp.array(tk_np), jnp.array(cv_np), jnp.array(tk_h2osfc_np))
+            tk, cv, tk_h2osfc)

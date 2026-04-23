@@ -357,3 +357,52 @@ def Init() -> MLpftcon_type:
 # Module-level singleton (mirrors Fortran: type(MLpftcon_type), public :: MLpftcon)
 # ---------------------------------------------------------------------------
 MLpftcon: MLpftcon_type = Init()
+
+
+# ---------------------------------------------------------------------------
+# Parameter injection factory (for gradient-based optimization)
+# ---------------------------------------------------------------------------
+
+def make_pft_params(theta_dict: dict, base: MLpftcon_type | None = None) -> MLpftcon_type:
+    """Build an MLpftcon_type with optimizable parameters injected from theta_dict.
+
+    Intended use: parameter optimization experiments.  All fields not listed
+    in theta_dict are taken from ``base`` (defaults to the module-level
+    ``MLpftcon`` singleton).
+
+    theta_dict keys are ``(field_name, pft_index)`` tuples or plain field names
+    (applied to all PFTs, replacing the full array).
+
+    Supported injection patterns::
+
+        # Single PFT override (most common — CHATS7 PFT 7):
+        make_pft_params({("vcmaxpft", 7): 125.0, ("iota_SPA", 7): 375.0})
+
+        # Full-array replacement (replace all PFTs at once):
+        make_pft_params({"vcmaxpft": jnp.full(mxpft+1, 100.0)})
+
+        # Scale factor (multiply current value by alpha):
+        # Use module-global mutation directly; see diags/optimize_params.py.
+
+    Parameters
+    ----------
+    theta_dict : dict mapping (field, pft_idx) or field_name to new values
+    base       : MLpftcon_type to start from (defaults to MLpftcon singleton)
+
+    Returns
+    -------
+    New MLpftcon_type with injected values (fully differentiable if theta_dict
+    values are JAX traced arrays; ``MLpftcon.vcmaxpft[pft]`` uses dynamic gather
+    so vcmaxpft is traceable through CanopyNitrogenProfileMod).
+    """
+    if base is None:
+        base = MLpftcon
+    kwargs = {}
+    for key, val in theta_dict.items():
+        if isinstance(key, tuple):
+            field_name, pft_idx = key
+            current = getattr(base, field_name)
+            kwargs[field_name] = current.at[pft_idx].set(val)
+        else:
+            kwargs[key] = val
+    return base._replace(**kwargs)
