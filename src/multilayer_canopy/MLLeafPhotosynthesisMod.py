@@ -2406,13 +2406,25 @@ def LeafPhotosynthesis(
 
         gs_new_sl = jnp.maximum(_gs_sl * fpsi, _gsmin_pft2)
 
-        # Safe gleaf: prevent divide-by-zero for inactive layers
-        _gs_safe = jnp.maximum(gs_new_sl, 1.0e-30)
-        gleaf_sl = 1.0 / (1.0 / _gbc_sl + dh2o_to_dco2 / _gs_safe)
+        # Safe gleaf: prevent divide-by-zero for inactive layers.
+        # For inactive layers _gbc_sl == 0 → 1/_gbc_sl = inf → gleaf_sl = 0.
+        # But ci_sl = cair - anet_sl / gleaf_sl would then be anet_sl/0.
+        # d(ci_sl)/d(anet_sl) = 1/gleaf_sl = 1/0 = inf, and 0*inf = NaN in
+        # backward for alpha_pbot.  Guard _gbc_sl too so gleaf_sl > 0.
+        _gs_safe  = jnp.maximum(gs_new_sl, 1.0e-30)
+        _gbc_safe = jnp.maximum(_gbc_sl,   1.0e-30)
+        gleaf_sl = 1.0 / (1.0 / _gbc_safe + dh2o_to_dco2 / _gs_safe)
 
         # Photosynthesis recompute (is_c3 is a static Python bool)
         if is_c3:
-            b0_sl  = _kc_sl * (1.0 + _o2ref_p2 / _ko_sl)
+            # Guard _ko_sl against zero for inactive layers (dpai==0) where
+            # kc/ko were zeroed out in the first loop.  For active layers
+            # _ko_sl > 0 always, so jnp.maximum does not change the value.
+            # Without the guard: _o2ref_p2 / 0 → inf, and _kc_sl * inf = 0*inf
+            # = NaN in forward; d/d(_o2ref_p2) = _kc_sl/_ko_sl = 0/0 = NaN in
+            # backward — causing NaN JAX gradient for alpha_pbot.
+            _ko_safe2 = jnp.maximum(_ko_sl, jnp.asarray(1.0e-30))
+            b0_sl  = _kc_sl * (1.0 + _o2ref_p2 / _ko_safe2)
             bq_sl  = -(_cair_sl + b0_sl) - (_vcmax_sl - _rd_sl) / gleaf_sl
             cq_sl  = _vcmax_sl * (_cair_sl - _cp_sl) - _rd_sl * (_cair_sl + b0_sl)
             r1_sl, r2_sl = quadratic(1.0 / gleaf_sl, bq_sl, cq_sl)
@@ -2430,11 +2442,21 @@ def LeafPhotosynthesis(
 
         agross_sl = _RealizedRate(_c3psn_val, ac_sl, aj_sl, ap_sl)
         anet_sl   = agross_sl - _rd_sl
-        cs_sl     = jnp.maximum(_cair_sl - anet_sl / _gbc_sl, 1.0)
+        # Use _gbc_safe (clamped from 0) so d(cs_sl)/d(anet_sl) = 1/_gbc_safe
+        # is finite for inactive layers; otherwise -1/0 → -inf and
+        # d(jnp.maximum)/d(anet_sl) = 0 * (-inf) = NaN for alpha_pbot.
+        cs_sl     = jnp.maximum(_cair_sl - anet_sl / _gbc_safe, 1.0)
         ci_sl     = _cair_sl - anet_sl / gleaf_sl
 
-        hs_sl     = ((_gbv_sl * _eair_sl + gs_new_sl * _lesat_sl)
-                     / ((_gbv_sl + gs_new_sl) * _lesat_sl))
+        # Guard hs_sl denominator against zero for inactive layers (dpai==0)
+        # where _lesat_sl == 0 and _gbv_sl == 0: denominator = gs_new_sl * 0 = 0,
+        # giving 0/0 = NaN.  d(hs_sl)/d(_eair_sl) = _gbv_sl / denom = 0/0 = NaN
+        # in backward pass.  Since _eair_sl is traced by alpha_pbot, this NaN
+        # multiplied by the jnp.where mask (0 for inactive) gives 0*NaN = NaN
+        # gradient for alpha_pbot.  Fix: clamp denominator to eps for inactive layers.
+        _hs_denom = jnp.maximum((_gbv_sl + gs_new_sl) * _lesat_sl,
+                                 jnp.asarray(1.0e-30))
+        hs_sl     = (_gbv_sl * _eair_sl + gs_new_sl * _lesat_sl) / _hs_denom
         vpd_sl    = jnp.maximum(_lesat_sl - hs_sl * _lesat_sl, 0.1)
 
         # Mask inactive layers and write all outputs back in one _replace()

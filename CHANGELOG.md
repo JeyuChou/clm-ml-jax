@@ -1,5 +1,108 @@
 # Changelog
 
+## 2026-04-24 — Session 39: d(GPP)/d(g1_MED) — JAX IS CORRECT, FD at eps=1e-4 is WRONG
+
+### Root cause of apparent JAX/FD mismatch for d(GPP)/d(alpha_g1)
+
+**Finding: JAX is correct (+4.98). FD at eps=1e-4 (+1254) is numerically unreliable.**
+
+**Investigation sequence:**
+1. Kernel level: JAX/FD ratio = 1.019 ✓ (kernel gradient correct)
+2. Second loop direct (d(agross)/d(scale_gs)): JAX/FD = 1.000 ✓ (second loop quadratic correct)
+3. Full chain kernel+second-loop in one function: JAX/FD = 1.018 ✓ (chain correct)
+4. LeafPhotosynthesis (both loops): JAX=+4.98, FD(eps=1e-4)=+1254 → ratio 0.004 ✗
+
+**Root cause of FD unreliability for isha leaves:**
+The shade-leaf (isha) ci-solver is NON-SMOOTH with respect to perturbations of g1 at small epsilon. The ci-solver uses fixed-point iteration (scan over 40 steps). Under a small perturbation (eps=1e-4), the solver can converge to a DIFFERENT attractor branch, giving a wildly different ci that is unrelated to the smooth mathematical derivative.
+
+The FD is chaotic at ALL small epsilon values:
+```
+eps=0.1:  FD(isha)=+1.13    (agrees with JAX=+1.12 ✓)
+eps=0.01: FD(isha)=-34.6    (WRONG — solver branch flip)
+eps=0.001:FD(isha)=-93.5    (WRONG)
+eps=1e-4: FD(isha)=+1251    (WRONG — was the "reference" value)
+eps=1e-5: FD(isha)=+55000   (WRONG)
+```
+
+At eps=0.1, FD converges:
+- isun FD ≈ +3.89, JAX = +3.86 ✓
+- isha FD ≈ +1.13, JAX = +1.12 ✓
+- **Total FD(eps=0.1)=+5.02, JAX=+4.98 → ratio=0.992 (within 1%)**
+
+The IFT-based JAX gradient correctly computes the smooth derivative at the solution (using the local Jacobian dF/dci and dF/dg1), while FD at small epsilon measures numerical chaos from the iterative solver.
+
+**Why isun is smooth but isha is chaotic:**
+- Sunlit leaves have higher APAR → larger photosynthesis → higher gs (0.24–0.48) → ci-solver well-conditioned
+- Shade leaves have lower APAR → gs down to 0.002 → ci-solver near degenerate regime where small perturbations in g1 cause large ci shifts and possible branch-flipping
+
+**Conclusion: No bug in JAX AD. The d(GPP)/d(alpha_g1) gradient is CORRECT.**
+
+**Implication for calibration:** The 10-param calibration will work. FD checks should use eps=0.1 for g1_MED parameter to avoid solver-branch numerical artifacts.
+
+**New diagnostic scripts:**
+- `diags/debug_second_loop.py` — confirmed kernel+second-loop chain correct (ratio 1.018)
+- `diags/debug_g1_fast.py` — multi-epsilon FD scan proves JAX is correct
+
+**Files changed:** No physics code changes needed. FD test scripts updated.
+
+---
+
+## 2026-04-24 — Session 38: alpha_pbot NaN gradient fix (inactive-layer zero-division)
+
+### Fix: d(GPP)/d(alpha_pbot) — three NaN sources in second loop of LeafPhotosynthesis
+
+**Problem:** Job 7589868 (`check_10param_grads.py`) showed `alpha_pbot` produces JAX grad = NaN while FD grad = +4.70. Forward pass is correct; only the backward pass fails.
+
+**Root cause analysis:**
+`alpha_pbot` traces through `forc_pbot[c]` into three JAX-traced fields:
+1. `pref_cur_forcing[p]` → `pref_forcing[p]` (used in FluxProfileSolution and LeafBoundaryLayer)
+2. `co2ref_cur_forcing[p]` → `co2ref_forcing[p]` (flows into `cair_profile` — same path as alpha_pco2 which PASSES)
+3. `o2ref_forcing[p]` (= `forc_po2 / pbot * 1e3`) — unique to pbot, not in pco2 path
+
+In the second loop of `LeafPhotosynthesis` (soil-moisture adjustment, lines ~2379-2476), three operations cause NaN gradients for inactive canopy layers (where `dpai == 0`):
+
+1. **`_ko_sl = 0` for inactive layers** (zeroed in first loop via `jnp.where(active, ko_val, 0)`):
+   ```python
+   b0_sl = _kc_sl * (1.0 + _o2ref_p2 / _ko_sl)  # _ko_sl = 0 → _o2ref_p2 / 0
+   ```
+   `d(b0_sl)/d(_o2ref_p2) = _kc_sl / _ko_sl = 0/0 = NaN`. Multiplied by `jnp.where` mask `0` → `0 * NaN = NaN`.
+
+2. **`_gbc_sl = 0` for inactive layers** (also zeroed in first loop):
+   ```python
+   gleaf_sl = 1.0 / (1.0 / _gbc_sl + ...)  # → gleaf_sl = 0 for inactive
+   ci_sl = _cair_sl - anet_sl / gleaf_sl    # anet_sl / 0 = inf
+   cs_sl = jnp.maximum(_cair_sl - anet_sl / _gbc_sl, 1.0)  # x/0 = inf
+   ```
+   `anet_sl` is traced via `o2ref_p2 → b0_sl → ac_sl → anet_sl`. `d(ci_sl)/d(anet_sl) = 1/0 = inf`.  `0 * inf = NaN`.
+
+3. **`_lesat_sl = 0` and `_gbv_sl = 0` for inactive layers**:
+   ```python
+   hs_sl = (_gbv_sl * _eair_sl + ...) / ((_gbv_sl + gs_new_sl) * _lesat_sl)
+   # denom = gs_new_sl * 0 = 0 → hs_sl = 0/0 = NaN
+   ```
+   `_eair_sl` is traced by `alpha_pbot` via `eair_profile[p]` (updated via `ImplicitFluxProfileSolution` which multiplies `_pref_p`). `d(hs_sl)/d(_eair_sl) = _gbv_sl / 0 = 0/0 = NaN`. `0 * NaN = NaN`.
+
+**Why alpha_pco2 passes but alpha_pbot fails:**
+`alpha_pco2` scales only `forc_pco2` which enters only `co2ref_cur` → `co2ref_forcing` → `cair_profile` (via `co2ref[p]` in `FluxProfileSolution`). Neither `o2ref_forcing` nor `pref_forcing`/`eair_profile` depends on `forc_pco2`, so none of these three division-by-zero paths are traced for alpha_pco2.
+
+**Fixes applied (all in `src/multilayer_canopy/MLLeafPhotosynthesisMod.py`, second loop ~lines 2413-2452):**
+
+1. `_ko_safe2 = jnp.maximum(_ko_sl, 1e-30)` — guard ko denominator in `b0_sl`
+2. `_gbc_safe = jnp.maximum(_gbc_sl, 1e-30)` — guard gbc in `gleaf_sl` and `cs_sl`
+3. `_hs_denom = jnp.maximum((_gbv_sl+gs_new_sl)*_lesat_sl, 1e-30)` — guard hs denominator
+
+All three fixes use `jnp.maximum(x, 1e-30)` which does not change values for active layers (where the denominators are always positive).
+
+**New files:**
+- `bashscripts/run_pbot_grad_fix.sh` — SLURM script to verify the fix (alpha_pbot only, ~30min)
+
+**Files changed:**
+- `src/multilayer_canopy/MLLeafPhotosynthesisMod.py` — three inactive-layer zero-division guards in second loop
+
+**Status:** Written, not yet run. Submit `sbatch bashscripts/run_pbot_grad_fix.sh` to verify.
+
+---
+
 ## 2026-04-23 — Session 37: g1_MED gradient fix (explicit g1_MED_jax arg)
 
 ### Fix: d(GPP)/d(g1_MED) — explicit g1_MED_jax argument
