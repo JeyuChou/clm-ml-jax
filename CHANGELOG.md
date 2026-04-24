@@ -43,7 +43,11 @@ The IFT-based JAX gradient correctly computes the smooth derivative at the solut
 - `diags/debug_second_loop.py` — confirmed kernel+second-loop chain correct (ratio 1.018)
 - `diags/debug_g1_fast.py` — multi-epsilon FD scan proves JAX is correct
 
-**Files changed:** No physics code changes needed. FD test scripts updated.
+**Verification level:** Confirmed at `LeafPhotosynthesis` level (isolates both loops).
+Full `MLCanopyFluxes` backward pass OOM on CPU (known issue) — requires GPU via SLURM.
+Submit `sbatch bashscripts/run_g1_medlyn_fixed.sh` to get full GPU verification.
+
+**Files changed:** No physics code changes needed. FD test scripts updated with eps=0.1.
 
 ---
 
