@@ -45,6 +45,7 @@ def _f(s):
 with open(DATA, newline="") as fh:
     rows = list(csv.DictReader(fh))
 
+rows     = [r for r in rows if r["status"] != "INACT"]
 params   = [r["param"] for r in rows]
 statuses = [r["status"] for r in rows]
 grad_jax = np.array([_f(r["grad_jax"]) for r in rows])
@@ -151,17 +152,14 @@ patch_fd  = mpatches.Patch(color="#aec7e8", label="FD (reference)")
 patch_p   = mpatches.Patch(color="#2ca02c", label="AD/JAX — PASS")
 patch_nan = mpatches.Patch(color="#d62728", hatch="///", alpha=0.65,
                            label="AD/JAX — NaN")
-patch_ina = mpatches.Patch(color="#9467bd", hatch="///", alpha=0.65,
-                           label="AD/JAX — inactive")
-ax.legend(handles=[patch_fd, patch_p, patch_nan, patch_ina],
+ax.legend(handles=[patch_fd, patch_p, patch_nan],
           fontsize=7, loc="lower right", handlelength=1.2,
           handletextpad=0.3, borderpad=0.5)
 
 n_pass = statuses.count("PASS")
 n_nan  = statuses.count("NaN")
-n_ina  = statuses.count("INACT")
 ax.text(0.97, 0.02,
-        f"{n_pass} PASS  ·  {n_nan} NaN  ·  {n_ina} inactive",
+        f"{n_pass} PASS  ·  {n_nan} NaN",
         transform=ax.transAxes, fontsize=7, ha="right", va="bottom",
         color="gray")
 
@@ -213,9 +211,9 @@ ax2.set_xlim(pass_err_s.min() * 0.05, xlim_right)
 
 # ── Suptitle ──────────────────────────────────────────────────────────────────
 fig.suptitle(
-    "CLM-ml-jax: 10-parameter gradient verification  "
+    "CLM-ml-jax: gradient verification — 7 active parameters  "
     r"($\partial\,\overline{\rm GPP}_{\rm day}\,/\,\partial\,\alpha_i$)"
-    "\nMedlyn stomata · CHATS7 · 1 May 2007 · GPU · reverse-mode AD vs central FD",
+    "\nMedlyn stomata · CHATS7 · 1 May 2007 · GPU · reverse-mode AD vs central FD (eps=1e-4)",
     fontsize=8, y=1.01,
 )
 
