@@ -1,13 +1,16 @@
 """
 plot_grad_check.py — Publication-quality gradient correctness figure for CLM-ML-JAX.
 
-Replaces fd_grad_check.png + le_h_grad_check.png with a single 2-panel figure:
-  A. Relative error heatmap  (3 outputs × 5 parameters, log10 color scale)
-     All 12 active checks are well below the 1% criterion; INACT cells hatched.
+Two-panel figure:
+  A. Relative error heatmap  (3 outputs × 7 parameters, log10 color scale)
+     GPP: 7/7 verified PASS; LE/H: 4/4 original params verified, 3 new marked "—".
   B. AD vs FD agreement scatter (log-log, 1:1 line, ±1% band)
-     Agreement holds across 4 decades of gradient magnitude.
+     15 verified checks span 4 decades of gradient magnitude.
 
-All data hardcoded from JAXES.tex Table (Experiment 2: Gradient Correctness).
+Data sources:
+  - Original 4 params (sw, tref, iota, vcmax): hardcoded from Sessions 36-37.
+  - New 3 params (q, pbot, u): check_10param_grads.csv (Session 38-39).
+    alpha_pbot NaN fixed by jnp.maximum guards in MLLeafPhotosynthesisMod.py.
 Stomatal model: WUE (gs_type=2). epsilon=1e-4 central FD.
 
 Usage:
@@ -48,35 +51,44 @@ plt.rcParams.update({
     "axes.spines.right": False,
 })
 
-# ── Data (from JAXES.tex lines 511-531) ──────────────────────────────────────
+# ── Data ──────────────────────────────────────────────────────────────────────
+# 7 parameters under WUE (gs_type=2); g1_MED removed (inactive under WUE).
+# New params q, pbot, u added from check_10param_grads.csv (Session 38-39).
+# alpha_pbot NaN fixed by jnp.maximum guards in MLLeafPhotosynthesisMod.py.
 PARAMS  = [r"$\alpha_\mathrm{sw}$", r"$\alpha_\mathrm{tref}$",
-           r"$\alpha_{g_1}$",       r"$\alpha_{\iota}$",
-           r"$\alpha_\mathrm{vcmax}$"]
+           r"$\alpha_{\iota}$",      r"$\alpha_\mathrm{vcmax}$",
+           r"$\alpha_{q}$",          r"$\alpha_{P}$",
+           r"$\alpha_{u}$"]
 OUTPUTS = ["GPP", "LE", "H"]
 
-_NA = np.nan  # inactive under WUE stomatal model
+_NA = np.nan  # not verified (LE/H for new params pending; no cell is INACT)
 
-# rel_err[output_row][param_col] — NaN = INACT
+# rel_err[output_row][param_col] — NaN = not yet verified
 REL_ERR = np.array([
-    # α_sw    α_tref   α_g1   α_ι      α_vcmax
-    [3.7e-7,  1.3e-4,  _NA,   1.1e-6,  1.8e-8],  # GPP
-    [1.0e-6,  1.1e-4,  _NA,   1.3e-6,  8.5e-8],  # LE
-    [1.4e-6,  1.1e-4,  _NA,   1.2e-6,  8.4e-8],  # H
+    # α_sw    α_tref   α_ι      α_vcmax  α_q      α_P      α_u
+    [3.7e-7,  1.3e-4,  1.1e-6,  1.8e-8,  8.3e-5,  4.4e-6,  4.2e-5],  # GPP (all verified)
+    [1.0e-6,  1.1e-4,  1.3e-6,  8.5e-8,  _NA,     _NA,     _NA   ],  # LE  (new 3: TBD)
+    [1.4e-6,  1.1e-4,  1.2e-6,  8.4e-8,  _NA,     _NA,     _NA   ],  # H   (new 3: TBD)
 ])
 
 # Active (output, param, |AD|, |FD|) pairs for scatter
+# New GPP pairs from check_10param_grads.csv; LE/H only for verified params.
 GRAD_PAIRS = [
-    # GPP
+    # GPP — original 4
     ("GPP", r"$\alpha_\mathrm{sw}$",     10.70,   10.70),
     ("GPP", r"$\alpha_\mathrm{tref}$",   48.69,   48.69),
     ("GPP", r"$\alpha_{\iota}$",          2.136,   2.136),
     ("GPP", r"$\alpha_\mathrm{vcmax}$",  14.14,   14.14),
-    # LE
+    # GPP — new 3 (from check_10param_grads.csv; pbot NaN fixed in Session 38)
+    ("GPP", r"$\alpha_{q}$",              0.1536,  0.1536),
+    ("GPP", r"$\alpha_{P}$",              4.698,   4.698),
+    ("GPP", r"$\alpha_{u}$",              0.875,   0.875),
+    # LE — original 4
     ("LE",  r"$\alpha_\mathrm{sw}$",    200.0,   200.0),
     ("LE",  r"$\alpha_\mathrm{tref}$",  9238.0,  9237.0),
     ("LE",  r"$\alpha_{\iota}$",         77.93,   77.93),
     ("LE",  r"$\alpha_\mathrm{vcmax}$",  60.42,   60.42),
-    # H
+    # H — original 4
     ("H",   r"$\alpha_\mathrm{sw}$",    117.5,   117.5),
     ("H",   r"$\alpha_\mathrm{tref}$",  8998.0,  8997.0),
     ("H",   r"$\alpha_{\iota}$",         69.13,   69.13),
@@ -96,6 +108,9 @@ _OFFSET = {
     ("GPP", r"$\alpha_\mathrm{sw}$"):      (-0.30, -0.22),
     ("GPP", r"$\alpha_\mathrm{vcmax}$"):   ( 0.06, -0.22),
     ("GPP", r"$\alpha_\mathrm{tref}$"):    (-0.55,  0.12),
+    ("GPP", r"$\alpha_{q}$"):              (-0.55, -0.22),
+    ("GPP", r"$\alpha_{P}$"):              ( 0.06,  0.12),
+    ("GPP", r"$\alpha_{u}$"):              ( 0.06, -0.22),
     ("LE",  r"$\alpha_\mathrm{sw}$"):      (-0.55, -0.20),
     ("LE",  r"$\alpha_\mathrm{tref}$"):    (-0.62,  0.12),   # push left (H is to right)
     ("LE",  r"$\alpha_{\iota}$"):          (-0.56,  0.12),
@@ -143,8 +158,8 @@ def plot(out_stem: Path) -> None:
                     edgecolor="#6B7280", hatch="////", zorder=3,
                 )
                 ax_heat.add_patch(rect)
-                ax_heat.text(c, r, "INACT", ha="center", va="center",
-                             fontsize=7, color="#4B5563", fontstyle="italic",
+                ax_heat.text(c, r, "—", ha="center", va="center",
+                             fontsize=9, color="#4B5563",
                              zorder=4)
             else:
                 log_v = np.log10(v)
@@ -181,11 +196,11 @@ def plot(out_stem: Path) -> None:
                  fontsize=7, color="#B91C1C",
                  transform=cbar.ax.transAxes, clip_on=False)
 
-    ax_heat.set_title("(a)  Relative error: AD vs. FD", loc="left",
-                      fontsize=9, fontweight="bold", pad=6)
+    ax_heat.set_title("(a)  Relative error: AD vs. FD  (— = LE/H not yet verified)",
+                      loc="left", fontsize=9, fontweight="bold", pad=6)
 
     # ── Panel B: AD vs FD log-log scatter ─────────────────────────────────────
-    lim_lo, lim_hi = 0.9, 2.5e4
+    lim_lo, lim_hi = 0.05, 2.5e4
     x_ref = np.logspace(np.log10(lim_lo), np.log10(lim_hi), 300)
 
     # ±1% shaded band around identity
@@ -236,12 +251,12 @@ def plot(out_stem: Path) -> None:
     ax_scat.xaxis.set_major_formatter(ticker.LogFormatterMathtext())
     ax_scat.yaxis.set_major_formatter(ticker.LogFormatterMathtext())
 
-    ax_scat.set_title("(b)  AD vs. FD agreement across 4 decades",
+    ax_scat.set_title("(b)  AD vs. FD agreement across 4+ decades",
                       loc="left", fontsize=9, fontweight="bold", pad=6)
 
     # Pass-rate badge
     ax_scat.text(0.97, 0.04,
-                 "12/12 active checks PASS\n(all rel. errors $<$ 1%)",
+                 "15/15 verified checks PASS\n(7 GPP · 4 LE · 4 H, all rel. err $<$ 1%)",
                  transform=ax_scat.transAxes,
                  ha="right", va="bottom", fontsize=7.5, color="#166534",
                  bbox=dict(boxstyle="round,pad=0.35", fc="#DCFCE7",
