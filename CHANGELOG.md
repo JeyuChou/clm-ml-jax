@@ -1,6 +1,57 @@
 # Changelog
 
-## 2026-04-24 — Session 39: d(GPP)/d(g1_MED) — JAX IS CORRECT, FD at eps=1e-4 is WRONG
+## 2026-04-28 — Session 41: Redesigned calibration experiment (p=10, all active)
+
+### Changes to multipar_calibration.py
+
+**Problem:** Adam curve was bumpy and non-converging. Root causes:
+1. **3 inactive parameters** (lwrad, v, pco2): Adam received zero gradient for these → their
+   random initial perturbations [0.7, 1.3] never moved → param_err never reached zero.
+2. **GPP-only loss**: alpha_q has |d(GPP)/dq| = 0.054 (near zero) but |d(H)/dq| = 40.2
+   → nearly invisible to the optimizer → inconsistent update magnitudes across parameters.
+3. **LR = 0.02 too aggressive** for 10-param space with mixed gradient scales.
+
+**Fix:**
+- **Combined loss** (GPP + H + LE, each normalized by own magnitude) → every parameter
+  has a strong signal. alpha_q and alpha_u now have gradients ~40–100× larger than with GPP alone.
+- **10 truly active parameters**: SW split into 4 waveband components
+  (vis_dir, nir_dir, vis_dif, nir_dif) replacing the 3 inactive ones.
+  Verification: `arr.at[:,1].mul(theta_vis).at[:,2].mul(theta_nir)` gradients confirmed correct.
+- **Adam LR = 0.005** (was 0.02) for smooth convergence curve.
+- **Added L-BFGS-B + JAX gradient** as Method B (scipy `jac=True`): shows that
+  exact gradient enables fast quasi-Newton convergence vs FD or gradient-free.
+
+**Parameter set (p=10, all active):**
+| idx | name        | what it scales                  |
+|-----|-------------|----------------------------------|
+|  0  | vis_dir     | forc_solad[:, 1] (visible PAR direct) |
+|  1  | nir_dir     | forc_solad[:, 2] (NIR direct)    |
+|  2  | vis_dif     | forc_solai[:, 1] (visible diffuse)|
+|  3  | nir_dif     | forc_solai[:, 2] (NIR diffuse)   |
+|  4  | tref        | forc_t_downscaled_col            |
+|  5  | vcmax       | vcmaxpft (explicit JAX arg)      |
+|  6  | iota        | iota_SPA (pftcon mutation)       |
+|  7  | q           | forc_q_downscaled_col            |
+|  8  | pbot        | forc_pbot_downscaled_col         |
+|  9  | u           | forc_u_grc                       |
+
+**4 methods compared:**
+- Method A: Adam + jax.grad (LR=0.005, 300 steps)
+- Method B: L-BFGS-B + jax.grad (scipy jac=True, exact gradient)
+- Method C: L-BFGS-B + FD (scipy jac=None)
+- Method D: Nelder-Mead (gradient-free)
+
+**To run:**
+```bash
+python diags/multipar_calibration.py   # ~runtime similar to previous (10 params, one timestep)
+python diags/plot_multipar_calibration.py
+```
+
+**Status:** IN PROGRESS — scripts written, not yet run on GPU.
+
+---
+
+## 2026-04-27 — Session 40: Job results — pbot PASS, 7-param Jacobian COMPLETE
 
 ### Root cause of apparent JAX/FD mismatch for d(GPP)/d(alpha_g1)
 
