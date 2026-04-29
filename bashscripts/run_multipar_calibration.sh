@@ -3,7 +3,7 @@
 #SBATCH --output=/burg-archive/home/al4385/clm-ml-jax/logs/%j_multipar_calibration.out
 #SBATCH --error=/burg-archive/home/al4385/clm-ml-jax/logs/%j_multipar_calibration.err
 #SBATCH --partition=glab1
-#SBATCH --time=6:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
@@ -12,22 +12,13 @@
 
 # Multi-parameter calibration experiment (p=10, all active): AD vs FD vs Nelder-Mead.
 #
-# Redesigned experiment (Session 41):
+# Redesigned experiment (Session 42):
+#   - Multi-timestep loss: T=8 midday steps spread across May — breaks equifinality
+#     (single-step was under-determined: 10 params, 3 outputs → equifinal solutions)
+#   - Adam: cosine-annealing LR 0.01→1e-4 over 500 steps (was fixed 0.005, oscillated)
 #   - Combined loss: normalized MSE over (GPP, H, LE) — all params have active gradients
-#   - p=10 all active: SW split into 4 waveband components (vis/NIR x direct/diffuse)
-#     replacing 3 inactive params (lwrad, v, pco2)
-#   - Adam LR=0.005, 300 steps for smooth convergence
+#   - p=10 all active: SW split into 4 waveband components
 #   - 4 methods: Adam/AD, L-BFGS-B/AD (scipy jac=True), L-BFGS-B/FD, Nelder-Mead
-#
-# Runtime budget (worst case, no cache):
-#   JIT compile forward  ~800s
-#   JIT compile backward ~900s
-#   Adam 300 steps       ~90s   (post-JIT)
-#   L-BFGS-B/AD          ~30s   (post-JIT, ~20 quasi-Newton steps)
-#   L-BFGS-B/FD          ~60s   (post-JIT, p+1=11 fwd per grad step)
-#   Nelder-Mead 10000 ev ~180s  (post-JIT)
-#   Total (no cache)     ~2100s < 6h
-#   With JAX cache:      ~400s
 #
 # Outputs:
 #   diags/output/multipar_calibration_results.json

@@ -1,5 +1,90 @@
 # Changelog
 
+## 2026-04-29 — Session 43: Resubmit calibration jobs (multi-step 24h + single-step variant)
+
+### Job results from April 28
+- **7677849 temporal_jacobian**: COMPLETED (1h36min). Compile-once design worked.
+  All 248 steps in 10.2 min. Figures saved. See Session 42 for Jacobian stats.
+- **7677819 multipar_calibration**: TIMEOUT (6h). Killed during multi-step backward
+  JIT warm-up (8×forward unrolled graph). Target gen: 49 min, single-step backward
+  JIT: 25 min, multi-step backward JIT: incomplete when killed.
+
+### Resubmissions
+- **Job 7681126** (`multipar_calibration`, `run_multipar_calibration.sh`): 24h wall time,
+  g097. Exact same script — now has enough time for multi-step backward JIT (~2h) + all
+  4 optimizer methods.
+- **Job 7681127** (`multipar_calibration_singlestep`, `run_multipar_calibration_singlestep.sh`):
+  6h wall time, g098. New variant — pre-warms only single-step backward (~25 min), runs
+  all 4 optimizer methods against single-step loss. Tests equifinality hypothesis
+  empirically. Output: `diags/output/multipar_calibration_singlestep_results.json`.
+
+### Job 7681127 results — single-step (COMPLETED, 44 min)
+Equifinality confirmed experimentally. All 4 methods drive loss → 0 but param_err stays ~0.5–0.9:
+- Adam/AD: loss=1.98e-02, param_err=0.711  ← **also fails to minimize loss!**
+- L-BFGS-B/AD: loss=1.03e-20, param_err=0.913  (finds a different zero)
+- L-BFGS-B/FD: loss=1.24e-15, param_err=0.913  (same equifinal zero)
+- Nelder-Mead: loss=1.09e-14, param_err=0.478   (different equifinal zero)
+
+**Adam failure root cause (separate from equifinality):**
+Two-phase gradient dynamic: phase 1 (steps 1–100) has large gradients → v accumulates large
+values. Phase 2 (near the flat equifinal manifold) has tiny gradients, but β₂=0.999's ~1000-step
+memory window keeps v inflated → g/sqrt(v) → 0 → Adam stalls at loss=0.02.
+This is NOT oscillation — it is a stationary plateau caused by v not adapting to the new
+(small) gradient scale.
+
+**Fix applied to both scripts:**
+- β₂: 0.999 → 0.9 (10-step memory, v forgets phase-1 values in ~10 steps)
+- Gradient clipping: global norm clipped to 10.0 (prevents T_air Jacobian ~100× dominance)
+- N_ADAM: 500 → 1000 (singlestep only; multi-step kept at 500)
+Files changed: `diags/multipar_calibration_singlestep.py`, `diags/multipar_calibration.py`
+
+**Job 7681249** — retest singlestep with fixed Adam (running on g098, 6h).
+
+### New files
+- `diags/multipar_calibration_singlestep.py` — single-step loss calibration script
+- `bashscripts/run_multipar_calibration_singlestep.sh` — 6h SLURM script for above
+
+---
+
+## 2026-04-28 — Session 42: Temporal Jacobian + calibration equifinality fix
+
+### Root cause identified: single-step calibration is equifinal
+Analysis of previous `multipar_calibration_results.json`:
+- Single-step loss (3 outputs, 10 params) is under-determined → infinite equifinal solutions
+- L-BFGS-B+AD achieves loss=1e-20 but param_err=0.912 — finds a *different* zero, not θ★
+- Adam oscillates at loss≈0.013 because fixed LR=0.005 overshoots minimum at step 93
+
+### Fix 1: multipar_calibration.py — multi-step loss + cosine annealing
+- **Multi-timestep loss**: T=8 midday steps spread across May (days 1,5,9,13,17,21,25,29 at noon)
+  - step indices: [24, 216, 408, 600, 792, 984, 1176, 1368]
+  - 24 outputs for 10 params → well-determined, equifinality broken
+- **Adam cosine-annealing LR**: 0.01 → 1e-4 over 500 steps (was fixed 0.005, 300 steps)
+- **Saved theta_final** for all methods (needed by plot_multipar_calibration.py)
+- SLURM job 7677819 submitted (pending glab1 GPU)
+
+### Fix 2: temporal_jacobian.py — compile-once design
+**Problem**: `_make_forward(atm_s, watm_s)` baked forcing as XLA constants in the closure.
+Different forcing per step → different XLA binary → recompilation for each of 248 steps.
+First compilation took 37+ min → job would never finish within 6h.
+
+**Fix**: `forward_with_forcing(scales, atm_inst, watm_inst)` takes forcing as explicit JAX
+pytree arguments with `jacrev(..., argnums=0)`. JAX traces for abstract array shapes once,
+compiles ONE XLA binary, reuses it for all 248 steps. One compilation (~10-30 min),
+then ~1s per step.
+
+- SLURM job 7677849 submitted (running on g101)
+
+### Fix 3: plot_multipar_calibration.py — 3-panel figure
+- Panel A: Loss convergence with cosine LR inset
+- Panel B: Per-parameter recovery |θ_final − θ★| grouped bar chart
+- Panel C: Gradient cost scaling
+
+### Status
+- temporal_jacobian job 7677849: running (model loading, ~5 min into job)
+- multipar_calibration job 7677819: pending (Resources)
+
+---
+
 ## 2026-04-28 — Session 41: Redesigned calibration experiment (p=10, all active)
 
 ### Changes to multipar_calibration.py
