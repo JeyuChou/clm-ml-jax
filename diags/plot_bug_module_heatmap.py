@@ -121,12 +121,14 @@ col_totals = BUG_MATRIX.sum(axis=0)
 row_totals = BUG_MATRIX.sum(axis=1)
 
 # ── Figure ────────────────────────────────────────────────────────────────────
-fig = plt.figure(figsize=(6.2, 3.8))
+fig = plt.figure(figsize=(6.8, 4.0))
 
-# Main axes for heatmap
-ax = fig.add_axes([0.22, 0.18, 0.70, 0.75])
+# Layout constants
+L, B, W, H = 0.21, 0.26, 0.68, 0.65   # main heatmap [left, bottom, width, height]
 
-# Draw heatmap manually (seaborn optional)
+# Main heatmap axes
+ax = fig.add_axes([L, B, W, H])
+
 from matplotlib.colors import LinearSegmentedColormap
 cmap = LinearSegmentedColormap.from_list(
     "yor", ["#ffffff", "#FEF3C7", "#FCA5A5", "#DC2626"], N=256)
@@ -137,9 +139,9 @@ im = ax.imshow(BUG_MATRIX, cmap=cmap, vmin=0, vmax=vmax,
 
 # Grid lines
 for x in np.arange(-0.5, len(MODULES), 1):
-    ax.axvline(x, color="white", linewidth=0.8)
+    ax.axvline(x, color="white", linewidth=0.9)
 for y in np.arange(-0.5, len(TYPE_CODES), 1):
-    ax.axhline(y, color="white", linewidth=0.8)
+    ax.axhline(y, color="white", linewidth=0.9)
 
 # Cell annotations
 for i in range(BUG_MATRIX.shape[0]):
@@ -150,19 +152,18 @@ for i in range(BUG_MATRIX.shape[0]):
             ax.text(j, i, str(v), ha="center", va="center",
                     fontsize=8, fontweight="bold", color=txt_color)
 
-# Axes labels
+# Axes labels — x labels rotated 45° with right-alignment
 ax.set_xticks(range(len(MODULES)))
-ax.set_xticklabels(MODULES, rotation=40, ha="right", fontsize=7.5)
+ax.set_xticklabels(MODULES, rotation=45, ha="right", fontsize=7.5)
 ax.set_yticks(range(len(TYPE_LABELS)))
 ax.set_yticklabels(TYPE_LABELS, fontsize=7.8)
 ax.tick_params(length=0)
 
-# Column totals (bar at top)
-ax_top = fig.add_axes([0.22, 0.935, 0.70, 0.055])
-ax_top.bar(range(len(MODULES)), col_totals, color="#6B7280", alpha=0.7,
-           width=0.7)
+# Column totals bar at top
+ax_top = fig.add_axes([L, B + H + 0.01, W, 0.06])
+ax_top.bar(range(len(MODULES)), col_totals, color="#6B7280", alpha=0.7, width=0.7)
 ax_top.set_xlim(-0.5, len(MODULES) - 0.5)
-ax_top.set_ylim(0, max(col_totals) + 1)
+ax_top.set_ylim(0, max(col_totals) + 1.5)
 ax_top.axis("off")
 for j, v in enumerate(col_totals):
     if v > 0:
@@ -170,8 +171,8 @@ for j, v in enumerate(col_totals):
                     fontsize=7, color="#333333")
 ax_top.set_title("Bugs per module", fontsize=7.5, pad=2)
 
-# Row totals (bar at right)
-ax_right = fig.add_axes([0.935, 0.18, 0.05, 0.75])
+# Row totals bar at right
+ax_right = fig.add_axes([L + W + 0.01, B, 0.05, H])
 ax_right.barh(range(len(TYPE_CODES)), row_totals, color="#6B7280", alpha=0.7,
               height=0.65)
 ax_right.set_ylim(-0.5, len(TYPE_CODES) - 0.5)
@@ -183,14 +184,15 @@ for i, v in enumerate(row_totals):
                   fontsize=7, color="#333333")
 ax_right.set_title("n", fontsize=7.5, rotation=0, pad=2)
 
-# Colorbar
-cbar_ax = fig.add_axes([0.935, 0.01, 0.03, 0.12])
+# Colorbar — bottom-right, clear of the row-totals bar
+cbar_ax = fig.add_axes([L + W + 0.01, B - 0.18, 0.025, 0.14])
 cb = fig.colorbar(im, cax=cbar_ax)
 cb.set_label("Count", fontsize=7)
+cb.set_ticks([0, 2, 4, 5])
 cb.ax.tick_params(labelsize=6.5)
 
-# Main title
-fig.text(0.56, 0.01, "Module (ordered by total bug count  →)",
+# X-axis title below heatmap
+fig.text(L + W / 2, 0.01, "Module (ordered by total bug count  →)",
          ha="center", fontsize=8)
 
 # ── Save ──────────────────────────────────────────────────────────────────────
