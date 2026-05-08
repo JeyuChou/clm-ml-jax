@@ -1,7 +1,8 @@
 """
 Multi-parameter calibration experiment (p=10): AD vs FD vs Nelder-Mead.
+lax.scan variant — fixes JIT compile bottleneck from Python-loop unrolling.
 
-Key design decisions vs previous version:
+Key design decisions vs previous version (multipar_calibration.py):
   1. COMBINED LOSS: MSE on (GPP, H, LE) — all parameters have active gradients.
   2. ALL ACTIVE PARAMETERS: SW split into 4 waveband components (vis/NIR × dir/dif).
   3. MULTI-TIMESTEP LOSS: average over T=8 midday steps spread across May 2007.
@@ -11,6 +12,13 @@ Key design decisions vs previous version:
      Fixed LR=0.005 overshoots the flat-valley minimum at step ~93 and oscillates.
   5. FOUR METHODS: Adam/AD, L-BFGS-B/AD (exact JAX gradient via scipy jac=True),
      L-BFGS-B/FD (scipy default FD), Nelder-Mead.
+
+FIX: jax.lax.scan replaces Python for loop in loss_fn_multi.
+  The original loss_fn_multi used a Python for loop over T=8 timesteps, which JAX
+  unrolls into 8 sequential copies of the XLA graph during tracing.  This caused:
+    Multi-step backward JIT compile time: ~30,944 s (~8.6 hours!) in the prior run.
+  With jax.lax.scan, XLA compiles ONE body function and iterates T times at runtime,
+  eliminating the T× compile-time blowup.
 
 Parameter set (p=10 scale factors, truth = ones(10)):
   0  alpha_vis_dir  — visible (PAR) direct-beam solar (solad[:, 1])
@@ -33,7 +41,7 @@ Loss (multi-step): mean of normalized MSE over T steps × 3 outputs.
   Each output normalized by its own magnitude at theta_star.
 
 Outputs:
-  diags/output/multipar_calibration_results.json
+  diags/output/multipar_calibration_laxscan_results.json
 """
 from __future__ import annotations
 
@@ -60,7 +68,7 @@ OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Shared init ───────────────────────────────────────────────────────────────
-print("=== multipar_calibration.py: loading model ===", flush=True)
+print("=== multipar_calibration_laxscan.py: loading model ===", flush=True)
 from diags.expt_init import (
     mlcanopy_inst, grid, _mlcf_kwargs,
     MLCanopyFluxes,
@@ -124,6 +132,13 @@ def forward_theta_at(theta: jnp.ndarray, atm_inst, watm_inst):
     theta[7] alpha_q       — specific humidity scale
     theta[8] alpha_pbot    — atmospheric pressure scale
     theta[9] alpha_u       — wind speed scale
+
+    Note on _set_pftcon inside lax.scan:
+      During JAX tracing (including scan tracing), Python side effects like
+      _set_pftcon run once during the trace phase.  The mutation installs the
+      abstract tracer into the NamedTuple, and the scan body traces correctly.
+      If this causes issues, iota_SPA scaling can be extracted inline without
+      module mutation (pass iota_SPA as an explicit JAX array to MLCanopyFluxes).
     """
     modified_atm = atm_inst._replace(
         forc_solad_downscaled_col = _scale_solad(
@@ -168,9 +183,8 @@ def forward_theta(theta: jnp.ndarray):
 
 # ── Load multi-timestep forcing states ───────────────────────────────────────
 # 8 midday steps spread across May (noon ≈ step 39 of each day, 48 steps/day).
-# CHATS7 is at lon=-121.84° (PDT = UTC-7 in May).  The netCDF starts at 00:00 UTC
-# on May 1, so local noon (12:00 PDT = 19:00 UTC) falls at 1-based step 39
-# (38 × 30-min intervals after midnight UTC + 1).
+# CHATS7 lon=-121.84° (PDT=UTC-7). Data starts 00:00 UTC May 1.
+# Local noon (12:00 PDT = 19:00 UTC) = 1-based step 39.
 T_STEPS          = 8
 MULTI_STEP_IDXS  = [39 + k * 4 * 48 for k in range(T_STEPS)]  # days 1,5,9,13,17,21,25,29
 
@@ -197,24 +211,6 @@ for _step in MULTI_STEP_IDXS:
     _multi_atm_watm.append((_atm_s, _watm_s))
     print(f"  Loaded step {_step}", flush=True)
 
-# ── Empirical midday verification: scan steps 35–45 on day 1 ─────────────────
-# Confirms that the chosen offset (39) is a daytime step with GPP > 0.
-print("\n=== Midday scan: steps 35–45 (day 1) — confirming GPP > 0 ===", flush=True)
-_theta_ones = jnp.ones(P, dtype=jnp.float64)
-for _scan_step in range(35, 46):
-    (_sc_atm, _sc_watm, _) = TowerMetCurr(
-        _fin_tower, _scan_step,
-        TowerDataMod.tower_num,
-        _bounds_mt.begp, _bounds_mt.endp,
-        clm_instMod.atm2lnd_inst,
-        clm_instMod.wateratm2lndbulk_inst,
-        clm_instMod.frictionvel_inst,
-    )
-    _sc_gpp, _sc_h, _sc_le = forward_theta_at(_theta_ones, _sc_atm, _sc_watm)
-    jax.block_until_ready((_sc_gpp, _sc_h, _sc_le))
-    _marker = " ← midday" if _scan_step == MULTI_STEP_IDXS[0] else ""
-    print(f"  scan step {_scan_step:3d}: GPP={float(_sc_gpp):.3f}"
-          f"  H={float(_sc_h):.3f}  LE={float(_sc_le):.3f}{_marker}", flush=True)
 
 # ── Generate synthetic targets ────────────────────────────────────────────────
 theta_star = jnp.ones(P, dtype=jnp.float64)
@@ -242,6 +238,25 @@ print(f"  Target generation: {time.time()-t0:.2f}s", flush=True)
 _EPS_NORM = 1e-6
 
 
+# ── Stack forcing states into batched pytrees for lax.scan ────────────────────
+# Each NamedTuple field is stacked along a new leading axis of size T_STEPS.
+# This allows jax.lax.scan to slice one timestep per iteration without unrolling
+# the full graph T times (which was the source of the ~8.6-hour compile time).
+
+print("\n=== Stacking forcing states into batched pytrees ===", flush=True)
+_atm_list  = [atm for atm, _   in _multi_atm_watm]
+_watm_list = [w   for _,   w   in _multi_atm_watm]
+
+_atm_batch  = jax.tree.map(lambda *xs: jnp.stack(xs, axis=0), *_atm_list)
+_watm_batch = jax.tree.map(lambda *xs: jnp.stack(xs, axis=0), *_watm_list)
+_targets_batch = jnp.array(
+    [[float(g), float(h), float(le)] for g, h, le in _multi_targets],
+    dtype=jnp.float64,
+)  # shape (T_STEPS, 3)
+print(f"  _atm_batch type:     {type(_atm_batch)}", flush=True)
+print(f"  _targets_batch shape: {_targets_batch.shape}", flush=True)
+
+
 # ── Loss functions ────────────────────────────────────────────────────────────
 
 def loss_fn_single(theta: jnp.ndarray) -> jnp.ndarray:
@@ -254,22 +269,32 @@ def loss_fn_single(theta: jnp.ndarray) -> jnp.ndarray:
     )
 
 
-def loss_fn_multi(theta: jnp.ndarray) -> jnp.ndarray:
-    """Multi-step normalized MSE averaged over T_STEPS timesteps.
+def loss_fn_multi_scan(theta: jnp.ndarray) -> jnp.ndarray:
+    """Multi-step normalized MSE averaged over T_STEPS timesteps via lax.scan.
 
-    The Python loop is unrolled by JAX during tracing, producing an XLA
-    program with T_STEPS inlined forward passes.  With T>=4 steps the
-    10-parameter problem is over-determined and equifinality is broken.
+    FIX vs loss_fn_multi: uses jax.lax.scan instead of a Python for loop.
+    The Python for loop in the original caused JAX to unroll the full graph
+    T=8 times during tracing, leading to ~8x longer JIT compile time.
+    With lax.scan, XLA compiles ONE body function and iterates T times at
+    runtime — compile time is O(1) in T instead of O(T).
+
+    Note on _set_pftcon: during scan tracing, the Python side effect in
+    forward_theta_at (_set_pftcon) executes once during the trace phase.
+    This is acceptable — the abstract tracer is installed into the NamedTuple
+    and the scan body traces correctly.
     """
-    total = jnp.zeros((), dtype=jnp.float64)
-    for (_atm_i, _watm_i), (_g_t, _h_t, _le_t) in zip(_multi_atm_watm, _multi_targets):
-        gpp, h, le = forward_theta_at(theta, _atm_i, _watm_i)
-        total = total + (
-            ((gpp - _g_t) / (jnp.abs(_g_t) + _EPS_NORM)) ** 2
-            + ((h   - _h_t) / (jnp.abs(_h_t) + _EPS_NORM)) ** 2
-            + ((le  - _le_t) / (jnp.abs(_le_t) + _EPS_NORM)) ** 2
+    def body(carry, inputs):
+        atm_i, watm_i, tgt = inputs   # tgt shape (3,)
+        gpp, h, le = forward_theta_at(theta, atm_i, watm_i)
+        loss_i = (
+            ((gpp - tgt[0]) / (jnp.abs(tgt[0]) + _EPS_NORM)) ** 2
+            + ((h   - tgt[1]) / (jnp.abs(tgt[1]) + _EPS_NORM)) ** 2
+            + ((le  - tgt[2]) / (jnp.abs(tgt[2]) + _EPS_NORM)) ** 2
         )
-    return total / T_STEPS
+        return carry, loss_i
+
+    _, losses = jax.lax.scan(body, None, (_atm_batch, _watm_batch, _targets_batch))
+    return jnp.mean(losses)
 
 
 # ── Timing: forward and backward passes (single-step, for T_ratio benchmark) ─
@@ -315,13 +340,14 @@ for pv, tad, tfd in zip(p_values, T_ad_s, T_fd_s):
     print(f"  p={pv:3d}: T_AD={tad:.4f}s  T_FD={tfd:.4f}s  speedup={tfd/tad:.1f}x",
           flush=True)
 
-# Compile multi-step loss (longer compile time, used for all optimizers)
-print("\n  Warmup multi-step backward...", flush=True)
-_loss_multi_jit      = jax.jit(loss_fn_multi)
-_loss_multi_and_grad = jax.jit(jax.value_and_grad(loss_fn_multi))
+# Compile multi-step scan loss (should be much faster than the unrolled version)
+print("\n  Warmup multi-step backward (lax.scan — compile once, T iterations):", flush=True)
+_loss_multi_scan_jit      = jax.jit(loss_fn_multi_scan)
+_loss_multi_scan_and_grad = jax.jit(jax.value_and_grad(loss_fn_multi_scan))
 t_wu = time.time()
-_ = jax.block_until_ready(_loss_multi_and_grad(theta_star))
-print(f"  Multi-step backward JIT compile: {time.time()-t_wu:.2f}s", flush=True)
+_ = jax.block_until_ready(_loss_multi_scan_and_grad(theta_star))
+print(f"  Multi-step backward compile (lax.scan — compile once, T iterations):"
+      f" {time.time()-t_wu:.2f}s", flush=True)
 
 
 # ── Initial perturbation ──────────────────────────────────────────────────────
@@ -330,7 +356,7 @@ theta_0_np = rng.uniform(0.7, 1.3, size=P)
 theta_0    = jnp.array(theta_0_np, dtype=jnp.float64)
 
 loss_0_single = float(_loss_single_jit(theta_0))
-loss_0_multi  = float(_loss_multi_jit(theta_0))
+loss_0_multi  = float(_loss_multi_scan_jit(theta_0))
 print(f"\n  Initial theta_0: {np.round(theta_0_np, 3).tolist()}", flush=True)
 print(f"  Initial loss (single-step): {loss_0_single:.4e}", flush=True)
 print(f"  Initial loss (multi-step):  {loss_0_multi:.4e}", flush=True)
@@ -366,7 +392,7 @@ def adam_step(params, m, v, grad, t, lr,
 print("\n" + "=" * 60, flush=True)
 print(f"=== Method A: Adam + jax.grad (500 steps, cosine LR 0.01→1e-4,"
       f" b2={ADAM_B2}, clip={ADAM_CLIP_NORM}) ===", flush=True)
-print("    Loss: multi-step (T=8)", flush=True)
+print("    Loss: multi-step (T=8, lax.scan)", flush=True)
 print("=" * 60, flush=True)
 
 LR_MAX  = 0.01
@@ -389,7 +415,7 @@ n_grad_evals = 0
 for step in range(1, N_ADAM + 1):
     t_step = time.time()
     lr_t = cosine_lr(step, N_ADAM, LR_MAX, LR_MIN)
-    loss_val, g = _loss_multi_and_grad(theta)
+    loss_val, g = _loss_multi_scan_and_grad(theta)
     jax.block_until_ready((loss_val, g))
     n_grad_evals += 1
 
@@ -422,7 +448,7 @@ adam_theta_final = theta.tolist()
 # ── L-BFGS-B + exact JAX gradient ────────────────────────────────────────────
 print("\n" + "=" * 60, flush=True)
 print("=== Method B: L-BFGS-B + jax.grad (exact gradient) ===", flush=True)
-print("    Loss: multi-step (T=8)", flush=True)
+print("    Loss: multi-step (T=8, lax.scan)", flush=True)
 print("=" * 60, flush=True)
 
 lbfgsb_ad_loss_history = []; lbfgsb_ad_nfev_history = []; lbfgsb_ad_time_s = []
@@ -433,7 +459,7 @@ _t_lbfgsb_ad_start = time.time()
 def _loss_and_grad_numpy(x):
     _lbfgsb_ad_evals[0] += 1
     theta = jnp.array(x, dtype=jnp.float64)
-    loss_val, grad_val = _loss_multi_and_grad(theta)
+    loss_val, grad_val = _loss_multi_scan_and_grad(theta)
     jax.block_until_ready((loss_val, grad_val))
     lv = float(loss_val)
     lbfgsb_ad_loss_history.append(lv)
@@ -466,7 +492,7 @@ lbfgsb_ad_fwd_equiv = [g * T_ratio for g in lbfgsb_ad_nfev_history]
 # ── L-BFGS-B + FD gradient ───────────────────────────────────────────────────
 print("\n" + "=" * 60, flush=True)
 print("=== Method C: L-BFGS-B + FD gradient (scipy jac=None) ===", flush=True)
-print("    Loss: multi-step (T=8)", flush=True)
+print("    Loss: multi-step (T=8, lax.scan)", flush=True)
 print("=" * 60, flush=True)
 
 lbfgsb_fd_loss_history = []; lbfgsb_fd_nfev_history = []; lbfgsb_fd_time_s = []
@@ -476,7 +502,7 @@ _t_lbfgsb_fd_start = time.time()
 
 def _loss_np_lbfgsb(x):
     _lbfgsb_fd_evals[0] += 1
-    lv = float(_loss_multi_jit(jnp.array(x, dtype=jnp.float64)))
+    lv = float(_loss_multi_scan_jit(jnp.array(x, dtype=jnp.float64)))
     lbfgsb_fd_loss_history.append(lv)
     lbfgsb_fd_nfev_history.append(_lbfgsb_fd_evals[0])
     lbfgsb_fd_time_s.append(time.time() - _t_lbfgsb_fd_start)
@@ -507,7 +533,7 @@ lbfgsb_fd_fwd_equiv = lbfgsb_fd_nfev_history
 # ── Nelder-Mead ───────────────────────────────────────────────────────────────
 print("\n" + "=" * 60, flush=True)
 print("=== Method D: Nelder-Mead (gradient-free) ===", flush=True)
-print("    Loss: multi-step (T=8)", flush=True)
+print("    Loss: multi-step (T=8, lax.scan)", flush=True)
 print("=" * 60, flush=True)
 
 nm_loss_history = []; nm_nfev_history = []; nm_time_s = []
@@ -517,7 +543,7 @@ _t_nm_start = time.time()
 
 def _loss_np_nm(x):
     _nm_evals[0] += 1
-    lv = float(_loss_multi_jit(jnp.array(x, dtype=jnp.float64)))
+    lv = float(_loss_multi_scan_jit(jnp.array(x, dtype=jnp.float64)))
     nm_loss_history.append(lv)
     nm_nfev_history.append(_nm_evals[0])
     nm_time_s.append(time.time() - _t_nm_start)
@@ -549,6 +575,7 @@ results = {
     "p": P,
     "T_steps": T_STEPS,
     "multi_step_indices": MULTI_STEP_IDXS,
+    "loss_variant": "lax.scan",
     "param_names": [
         "vis_dir", "nir_dir", "vis_dif", "nir_dif",
         "tref", "vcmax", "iota", "q", "pbot", "u",
@@ -617,9 +644,9 @@ results = {
     },
 }
 
-out_path = OUTPUT_DIR / "multipar_calibration_results.json"
+out_path = OUTPUT_DIR / "multipar_calibration_laxscan_results.json"
 with open(out_path, "w") as f:
     json.dump(results, f, indent=2)
 print(f"  Results saved: {out_path}", flush=True)
 
-print("\n=== multipar_calibration.py complete ===", flush=True)
+print("\n=== multipar_calibration_laxscan.py complete ===", flush=True)

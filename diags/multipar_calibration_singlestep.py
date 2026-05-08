@@ -1,5 +1,6 @@
 """
-Multi-parameter calibration experiment (p=10): single-step loss variant.
+Multi-parameter calibration experiment (p=10): single-step loss variant
+with Tikhonov regularization to break equifinality.
 
 Identical setup to multipar_calibration.py but uses only a single-step loss
 (no multi-step JIT compilation).  The multi-step backward JIT takes >2h to
@@ -9,14 +10,15 @@ compile (it unrolls 8 forward passes into one XLA graph).  This script:
   2. Runs all four optimizer methods against the single-step loss.
   3. Finishes within ~1-2h total (vs 24h needed for multi-step).
 
-Purpose: empirically test whether single-step loss is truly equifinal for
-p=10.  Previous analysis predicted it is (10 params, 3 outputs per step),
-but we want the actual optimizer trajectories to confirm.
+Purpose: confirm Tikhonov regularization breaks the equifinality of the
+single-step loss.  Without regularization, all optimizers reach loss≈0 at
+parameter vectors far from theta_star (‖Δθ‖≈0.5–0.9).  With
+L_reg = LAMBDA_REG * ‖theta - 1‖^2, the unique minimum is at theta_star.
 
 Parameter set and forward function are identical to multipar_calibration.py.
 
 Outputs:
-  diags/output/multipar_calibration_singlestep_results.json
+  diags/output/multipar_calibration_singlestep_tikhonov_results.json
 """
 from __future__ import annotations
 
@@ -42,8 +44,11 @@ from scipy.optimize import minimize as _sp_minimize
 OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+LAMBDA_REG = 0.1  # Tikhonov weight: selects theta=theta_star among equifinal solutions
+
 # ── Shared init ───────────────────────────────────────────────────────────────
-print("=== multipar_calibration_singlestep.py: loading model ===", flush=True)
+print(f"=== multipar_calibration_singlestep.py (TIKHONOV lambda={LAMBDA_REG}): loading model ===",
+      flush=True)
 from diags.expt_init import (
     mlcanopy_inst, grid, _mlcf_kwargs,
     MLCanopyFluxes,
@@ -140,15 +145,17 @@ print(f"  Target generation: {time.time()-t0:.2f}s", flush=True)
 _EPS_NORM = 1e-6
 
 
-# ── Loss function (single-step) ───────────────────────────────────────────────
+# ── Loss function (single-step, Tikhonov-regularized) ────────────────────────
 
 def loss_fn(theta: jnp.ndarray) -> jnp.ndarray:
     gpp, h, le = forward_theta(theta)
-    return (
+    data_loss = (
         ((gpp - GPP_target) / (jnp.abs(GPP_target) + _EPS_NORM)) ** 2
         + ((h   - H_target)   / (jnp.abs(H_target)   + _EPS_NORM)) ** 2
         + ((le  - LE_target)  / (jnp.abs(LE_target)  + _EPS_NORM)) ** 2
     )
+    reg_loss = LAMBDA_REG * jnp.sum((theta - 1.0) ** 2)
+    return data_loss + reg_loss
 
 
 # ── JIT compile forward and backward ─────────────────────────────────────────
@@ -235,7 +242,7 @@ def adam_step(params, m, v, grad, t, lr,
 print("\n" + "=" * 60, flush=True)
 print(f"=== Method A: Adam + jax.grad (1000 steps, cosine LR 0.01→1e-4,"
       f" b2={ADAM_B2}, clip={ADAM_CLIP_NORM}) ===", flush=True)
-print("    Loss: single-step", flush=True)
+print(f"    Loss: single-step + Tikhonov (lambda={LAMBDA_REG})", flush=True)
 print("=" * 60, flush=True)
 
 LR_MAX = 0.01; LR_MIN = 1e-4; N_ADAM = 1000
@@ -285,7 +292,7 @@ adam_theta_final = theta.tolist()
 # ── L-BFGS-B + exact JAX gradient ────────────────────────────────────────────
 print("\n" + "=" * 60, flush=True)
 print("=== Method B: L-BFGS-B + jax.grad (exact gradient) ===", flush=True)
-print("    Loss: single-step", flush=True)
+print(f"    Loss: single-step + Tikhonov (lambda={LAMBDA_REG})", flush=True)
 print("=" * 60, flush=True)
 
 lbfgsb_ad_loss_history = []; lbfgsb_ad_nfev_history = []; lbfgsb_ad_time_s = []
@@ -329,7 +336,7 @@ lbfgsb_ad_fwd_equiv = [g * T_ratio for g in lbfgsb_ad_nfev_history]
 # ── L-BFGS-B + FD gradient ───────────────────────────────────────────────────
 print("\n" + "=" * 60, flush=True)
 print("=== Method C: L-BFGS-B + FD gradient (scipy jac=None) ===", flush=True)
-print("    Loss: single-step", flush=True)
+print(f"    Loss: single-step + Tikhonov (lambda={LAMBDA_REG})", flush=True)
 print("=" * 60, flush=True)
 
 lbfgsb_fd_loss_history = []; lbfgsb_fd_nfev_history = []; lbfgsb_fd_time_s = []
@@ -370,7 +377,7 @@ lbfgsb_fd_fwd_equiv = lbfgsb_fd_nfev_history
 # ── Nelder-Mead ───────────────────────────────────────────────────────────────
 print("\n" + "=" * 60, flush=True)
 print("=== Method D: Nelder-Mead (gradient-free) ===", flush=True)
-print("    Loss: single-step", flush=True)
+print(f"    Loss: single-step + Tikhonov (lambda={LAMBDA_REG})", flush=True)
 print("=" * 60, flush=True)
 
 nm_loss_history = []; nm_nfev_history = []; nm_time_s = []
@@ -410,7 +417,8 @@ print("\n=== Saving results ===", flush=True)
 results = {
     "p": P,
     "T_steps": 1,
-    "mode": "single_step",
+    "mode": "single_step_tikhonov",
+    "lambda_reg": LAMBDA_REG,
     "param_names": [
         "vis_dir", "nir_dir", "vis_dif", "nir_dif",
         "tref", "vcmax", "iota", "q", "pbot", "u",
@@ -479,9 +487,10 @@ results = {
     },
 }
 
-out_path = OUTPUT_DIR / "multipar_calibration_singlestep_results.json"
+out_path = OUTPUT_DIR / "multipar_calibration_singlestep_tikhonov_results.json"
 with open(out_path, "w") as f:
     json.dump(results, f, indent=2)
 print(f"  Results saved: {out_path}", flush=True)
 
-print("\n=== multipar_calibration_singlestep.py complete ===", flush=True)
+print(f"\n=== multipar_calibration_singlestep.py (TIKHONOV lambda={LAMBDA_REG}) complete ===",
+      flush=True)
