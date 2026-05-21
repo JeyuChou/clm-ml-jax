@@ -163,6 +163,7 @@ axA.set_title(f"(a) Convergence — $p={P}$ parameters", fontsize=8.5, fontweigh
 axA.legend(fontsize=6, loc="upper right")
 axA.grid(True, which="both", alpha=0.2)
 axA.tick_params(labelsize=7)
+axA.set_xlim(0, 600)
 
 # Inset: cosine LR schedule
 ax_inset = inset_axes(axA, width="38%", height="30%", loc="lower left",

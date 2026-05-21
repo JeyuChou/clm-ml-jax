@@ -59,11 +59,13 @@ PARAM_NAMES = [
     r"$P_\mathrm{bot}$",
     r"$u$",
 ]
+PLOT_PARAM_INDICES = (0, 1, 2, 3, 4, 6)
+PLOT_PARAM_NAMES = [PARAM_NAMES[i] for i in PLOT_PARAM_INDICES]
 OUTPUT_NAMES = ["GPP", "H", "LE"]
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
-def plot_jacobian(J_np: np.ndarray) -> None:
+def plot_jacobian(J_np: np.ndarray, param_names: list[str]) -> None:
     n_out, n_par = J_np.shape
     output_scale = np.abs(J_np).max(axis=1, keepdims=True) + 1e-30
     J_norm = J_np / output_scale
@@ -77,7 +79,7 @@ def plot_jacobian(J_np: np.ndarray) -> None:
     im0 = axes[0].imshow(log_J, aspect="auto", cmap="RdYlBu_r",
                           vmin=-vmax, vmax=vmax)
     axes[0].set_xticks(range(n_par))
-    axes[0].set_xticklabels(PARAM_NAMES, fontsize=10)
+    axes[0].set_xticklabels(param_names, fontsize=10)
     axes[0].set_yticks(range(n_out))
     axes[0].set_yticklabels(OUTPUT_NAMES, fontsize=10)
     for i in range(n_out):
@@ -92,7 +94,7 @@ def plot_jacobian(J_np: np.ndarray) -> None:
     divnorm = mcolors.TwoSlopeNorm(vmin=-1.0, vcenter=0.0, vmax=1.0)
     im1 = axes[1].imshow(J_norm, aspect="auto", cmap="RdBu_r", norm=divnorm)
     axes[1].set_xticks(range(n_par))
-    axes[1].set_xticklabels(PARAM_NAMES, fontsize=10)
+    axes[1].set_xticklabels(param_names, fontsize=10)
     axes[1].set_yticks(range(n_out))
     axes[1].set_yticklabels(OUTPUT_NAMES, fontsize=10)
     for i in range(n_out):
@@ -103,11 +105,11 @@ def plot_jacobian(J_np: np.ndarray) -> None:
                       fontsize=11, fontweight="bold")
     plt.colorbar(im1, ax=axes[1], ticks=[-1, -0.5, 0, 0.5, 1])
 
-    fig.suptitle(
-        r"CLM-ml-jax: 7-parameter Jacobian $\partial(\mathrm{GPP},H,\mathrm{LE})/\partial\boldsymbol{\theta}$"
-        "\nWUE stomatal model · CHATS7 · 1 May 2007 · GPU · jax.jacrev",
-        fontsize=9, y=1.02,
-    )
+    #fig.suptitle(
+    #    r"CLM-ml-jax: 7-parameter Jacobian $\partial(\mathrm{GPP},H,\mathrm{LE})/\partial\boldsymbol{\theta}$"
+    #    "\nWUE stomatal model · CHATS7 · 1 May 2007 · GPU · jax.jacrev",
+    #    fontsize=9, y=1.02,
+    #)
     fig.tight_layout()
 
     for fmt in ("png", "pdf"):
@@ -122,13 +124,14 @@ if _PLOT_ONLY:
     csv_path = FIGURES_DIR / "sensitivity_jacobian_v2.csv"
     if not csv_path.exists():
         sys.exit(f"ERROR: {csv_path} not found.")
-    J_np = np.zeros((N_OUTPUTS, N_PARAMS), dtype=np.float64)
+    J_np = np.zeros((N_OUTPUTS, len(PLOT_PARAM_INDICES)), dtype=np.float64)
     with open(csv_path, newline="") as f:
         for i, row in enumerate(csv.reader(f)):
             if i == 0:
                 continue
-            J_np[i - 1] = [float(v) for v in row[1:]]
-    plot_jacobian(J_np)
+            values = [float(v) for v in row[1:]]
+            J_np[i - 1] = [values[j] for j in PLOT_PARAM_INDICES]
+    plot_jacobian(J_np, PLOT_PARAM_NAMES)
     sys.exit(0)
 
 
@@ -258,5 +261,5 @@ with open(csv_path, "w", newline="") as f:
 print(f"\nCSV saved: {csv_path}", flush=True)
 
 # ── Figure ────────────────────────────────────────────────────────────────────
-plot_jacobian(J_np)
+plot_jacobian(J_np, PARAM_NAMES)
 print("\n=== sensitivity_analysis_v2.py complete ===", flush=True)

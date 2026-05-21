@@ -9,12 +9,15 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --account=glab
+#SBATCH --exclusive
 
 # Multi-parameter calibration experiment (p=10, all active): AD vs FD vs Nelder-Mead.
 #
 # Redesigned experiment (Session 42):
 #   - Multi-timestep loss: T=8 midday steps spread across May — breaks equifinality
 #     (single-step was under-determined: 10 params, 3 outputs → equifinal solutions)
+#     Step offset: 39 ≈ noon PDT (CHATS7 lon=-121.84°, PDT=UTC-7; data starts 00:00 UTC
+#     May 1; local noon = 19:00 UTC = 1-based step 39).  Old offset 24 was nighttime.
 #   - Adam: cosine-annealing LR 0.01→1e-4 over 500 steps (was fixed 0.005, oscillated)
 #   - Combined loss: normalized MSE over (GPP, H, LE) — all params have active gradients
 #   - p=10 all active: SW split into 4 waveband components

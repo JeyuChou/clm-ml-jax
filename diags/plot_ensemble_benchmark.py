@@ -137,84 +137,90 @@ def main():
                          for r in gpu if r["N"] in fort_seq_by_N]
 
     fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(11, 4.5))
-    fig.suptitle("Parameter Ensemble Benchmark: GPU vs CPU vmap (NVIDIA A40, Euler 1-substep)",
-                 fontsize=11, fontweight="bold")
 
     # ── Panel A: ms/sample ─────────────────────────────────────────────────────
-    ax_a.plot(gpu_Ns, gpu_mss, "o-", color=C_GPU, lw=2, ms=7, label="JAX GPU (A40)", zorder=3)
+    ax_a.plot(gpu_Ns, gpu_mss, "o-", color=C_GPU, lw=2, ms=7, label="JAX GPU (Quadro RTX 8000)", zorder=3)
     ax_a.plot(cpu_Ns, cpu_mss, "s-", color=C_CPU, lw=2, ms=7, label="JAX CPU", zorder=3)
-    for n, m in zip(gpu_Ns, gpu_mss):
+    for i, (n, m) in enumerate(zip(gpu_Ns, gpu_mss)):
+        xoff = -8 if i == len(gpu_Ns) - 1 else 6
+        yoff = 10 if i == len(gpu_Ns) - 1 else 3
         ax_a.annotate(f"{m:.1f}", (n, m), textcoords="offset points",
-                      xytext=(6, 3), fontsize=7.5, color=C_GPU)
-    for n, m in zip(cpu_Ns, cpu_mss):
+                      xytext=(xoff, yoff), fontsize=7.5, color=C_GPU)
+    for i, (n, m) in enumerate(zip(cpu_Ns, cpu_mss)):
+        xoff = -8 if i == 0 else 6
+        yoff = -16 if i == 0 else -10
         ax_a.annotate(f"{m:.1f}", (n, m), textcoords="offset points",
-                      xytext=(6, -10), fontsize=7.5, color=C_CPU)
+                      xytext=(xoff, yoff), fontsize=7.5, color=C_CPU)
 
     # Optional Fortran lines
     if fortran["seq"]:
         fort_seq_Ns  = [r["N"] for r in fortran["seq"]]
         fort_seq_mss = [r["ms_per_sample"] for r in fortran["seq"]]
-        ax_a.plot(fort_seq_Ns, fort_seq_mss, "s--", color=C_FORT_SEQ, lw=1.8, ms=6,
+        ax_a.plot(fort_seq_Ns, fort_seq_mss, "D--", color=C_FORT_SEQ, lw=1.8, ms=6,
                   label="Fortran sequential (N runs)", zorder=3, alpha=0.9)
-        for n, m in zip(fort_seq_Ns, fort_seq_mss):
+        for i, (n, m) in enumerate(zip(fort_seq_Ns, fort_seq_mss)):
+            xoff = -8 if i == len(fort_seq_Ns) - 1 else 6
+            yoff = 10 if i == len(fort_seq_Ns) - 1 else 5
             ax_a.annotate(f"{m:.1f}", (n, m), textcoords="offset points",
-                          xytext=(6, 5), fontsize=7, color=C_FORT_SEQ)
-
-    if fortran["par"]:
-        fort_par_Ns  = [r["N"] for r in fortran["par"]]
-        fort_par_mss = [r["ms_per_sample"] for r in fortran["par"]]
-        ax_a.plot(fort_par_Ns, fort_par_mss, "^:", color=C_FORT_PAR, lw=1.8, ms=6,
-                  label="Fortran parallel (N procs)", zorder=3, alpha=0.9)
-        for n, m in zip(fort_par_Ns, fort_par_mss):
-            ax_a.annotate(f"{m:.1f}", (n, m), textcoords="offset points",
-                          xytext=(6, -11), fontsize=7, color=C_FORT_PAR)
+                          xytext=(xoff, yoff), fontsize=7, color=C_FORT_SEQ)
 
     ax_a.set_xscale("log", base=2)
     ax_a.set_yscale("log")
-    xticks = sorted(set(gpu_Ns + cpu_Ns + [r["N"] for r in fortran["seq"]]
-                        + [r["N"] for r in fortran["par"]]))
+    xticks = sorted(set(gpu_Ns + cpu_Ns + [r["N"] for r in fortran["seq"]]))
     ax_a.set_xticks(xticks)
-    ax_a.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-    ax_a.set_xlabel("Ensemble size N (parameter samples)", fontsize=10)
+    ax_a.set_xticklabels([str(t) for t in xticks])
+    ax_a.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    ax_a.set_xlabel("Ensemble size N", fontsize=10)
     ax_a.set_ylabel("ms / sample", fontsize=10)
-    ax_a.set_title("A.  Amortized cost per sample", fontsize=10, fontweight="bold")
+    ax_a.set_title("(a) Amortized cost per sample", fontsize=13)
     ax_a.legend(fontsize=9)
-    ax_a.yaxis.grid(True, which="both", alpha=0.3)
-    ax_a.xaxis.grid(True, which="major", alpha=0.3)
-    ax_a.set_axisbelow(True)
+    ax_a.grid(False)
 
     # ── Panel B: speedup ───────────────────────────────────────────────────────
-    ax_b.plot(speedup_Ns, speedup_vals, "D-", color="#16A34A", lw=2, ms=7,
+    ax_b.plot(speedup_Ns, speedup_vals, "s-", color="#16A34A", lw=2, ms=7,
               label="JAX GPU speedup vs JAX CPU", zorder=3)
-    ax_b.axhline(1.0, color="gray", ls="--", lw=1.2, label="parity (1×)")
-    for n, s in zip(speedup_Ns, speedup_vals):
+    # Annotate first and last points only
+    for idx, (n, s) in [(0, (speedup_Ns[0], speedup_vals[0])),
+                         (-1, (speedup_Ns[-1], speedup_vals[-1]))]:
+        xoff = 6 if idx == 0 else -6
+        yoff = 18 if idx == 0 else 6
+        ha   = "left" if idx == 0 else "right"
         ax_b.annotate(f"{s:.2f}×", (n, s), textcoords="offset points",
-                      xytext=(6, 3), fontsize=8)
+                      xytext=(xoff, yoff), fontsize=8, color="#16A34A", ha=ha)
 
     # Optional: Fortran sequential / GPU speedup
     if fort_speedup_Ns:
-        ax_b.plot(fort_speedup_Ns, fort_speedup_vals, "s--", color=C_FORT_SEQ,
+        ax_b.plot(fort_speedup_Ns, fort_speedup_vals, "D--", color=C_FORT_SEQ,
                   lw=1.8, ms=6, label="JAX GPU speedup vs Fortran seq", zorder=3, alpha=0.9)
-        for n, s in zip(fort_speedup_Ns, fort_speedup_vals):
+        for idx, (n, s) in [(0, (fort_speedup_Ns[0], fort_speedup_vals[0])),
+                             (-1, (fort_speedup_Ns[-1], fort_speedup_vals[-1]))]:
+            xoff = 6 if idx == 0 else -6
+            ha   = "left" if idx == 0 else "right"
             ax_b.annotate(f"{s:.1f}×", (n, s), textcoords="offset points",
-                          xytext=(6, -12), fontsize=7.5, color=C_FORT_SEQ)
+                          xytext=(xoff, -14), fontsize=7.5, color=C_FORT_SEQ, ha=ha)
 
     all_speedup_Ns = sorted(set(speedup_Ns + fort_speedup_Ns))
     ax_b.set_xscale("log", base=2)
-    ax_b.set_xticks(all_speedup_Ns if all_speedup_Ns else speedup_Ns)
-    ax_b.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    b_ticks = all_speedup_Ns if all_speedup_Ns else speedup_Ns
+    ax_b.set_xticks(b_ticks)
+    ax_b.set_xticklabels([str(t) for t in b_ticks])
+    b_yticks = [1, 2, 3, 4, 5]
+    ax_b.set_yticks(b_yticks)
+    ax_b.set_yticklabels([str(t) for t in b_yticks])
     ax_b.set_xlabel("Ensemble size N", fontsize=10)
     ax_b.set_ylabel("Reference ms/sample  /  GPU ms/sample", fontsize=10)
-    ax_b.set_title("B.  GPU speedup over reference (per sample)", fontsize=10, fontweight="bold")
+    ax_b.set_title("(b) GPU speedup over reference (per sample)", fontsize=13)
     ax_b.legend(fontsize=9)
-    ax_b.yaxis.grid(True, alpha=0.3)
-    ax_b.xaxis.grid(True, which="major", alpha=0.3)
-    ax_b.set_axisbelow(True)
+    ax_b.grid(False)
 
     plt.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-    print(f"Saved: {out_path}")
+    _paper_figs = Path(__file__).resolve().parent.parent / "Paper" / "jaxes_paper" / "figures"
+    for dest_dir in [out_path.parent, _paper_figs]:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for ext in ("png", "pdf"):
+            p = dest_dir / out_path.with_suffix(f".{ext}").name
+            fig.savefig(p, dpi=300, bbox_inches="tight")
+            print(f"Saved: {p}")
 
     # Summary
     print("\n── JAX GPU/CPU speedup summary ──────────────────────────────────")
