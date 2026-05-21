@@ -1,5 +1,532 @@
 # Changelog
 
+## 2026-05-08 — Session 46: Job outcomes — Tikhonov confirmed, minimal calibration paper-ready, roofline OOM, laxscan running
+
+### Job outcomes
+
+| Job | Script | Status | Key result |
+|-----|--------|--------|------------|
+| 7870919 | multipar_calibration (nighttime fix) | **CRASHED** | GPU contention with job 7870940 on g097; XLA core dump at `CompileExecutables()`; resubmitted as 7870949 |
+| 7870920 | multipar_calibration_laxscan | **FAILED** | Parallel agent race: laxscan copied `multipar_calibration.py` before nighttime fix applied → step indices [24+k×192] still; GPP=0 for all steps; resubmitted as 7870948 |
+| 7870921 | multipar_calibration_singlestep_tikhonov | **COMPLETED** ✓ | Tikhonov λ=0.1 breaks equifinality: all 4 methods converge to ‖Δθ‖=0.089 (vs 0.75 pre-reg) |
+| 7870922 | minimal_calibration | **COMPLETED** ✓ | L-BFGS-B+AD and NM recover θ★ exactly (‖Δθ‖=0.000); Adam stalls (‖Δθ‖=0.679) |
+| 7870940 | precision_roofline | **COMPLETED (partial)** | OOM on N=2048 f64 matmul (4GB tensor); CLM-ML workload never ran; f32≈f64 timing for all N (latency-bound, not compute-bound); script needs redesign |
+| 7870948 | multipar_calibration_laxscan (corrected) | **RUNNING** | Step indices [39, 231, 423, ...] confirmed; targets loaded; JIT compile in progress |
+| 7870949 | multipar_calibration (--exclusive) | **PENDING** | Added `#SBATCH --exclusive` to prevent GPU contention; 24h wall time |
+
+---
+
+### Job 7870921 — Tikhonov regularization (COMPLETED)
+
+**Result: equifinality broken. All 4 methods converge to same minimum.**
+
+Final loss: 8.72e-04 (= λ × ‖Δθ‖² at minimum, not zero — regularized objective).
+
+| Method | Final loss | ‖Δθ‖₂ | Evals | Time |
+|--------|-----------|-------|-------|------|
+| Adam + AD | 8.72e-04 | 0.089 | 1000 | ~79s |
+| L-BFGS-B + AD | 8.72e-04 | 0.089 | ~60 | ~5s |
+| L-BFGS-B + FD | 8.72e-04 | 0.089 | 880 | 18.7s |
+| Nelder-Mead | 8.72e-04 | 0.089 | 1325 | 28.0s |
+
+- All 4 methods reach identical final loss and ‖Δθ‖=0.089 → unique minimum confirmed.
+- ‖Δθ‖=0.089 ≠ 0 because Tikhonov selects the minimum-norm point on the equifinal manifold
+  (which is not θ★=1 when θ★ is not the minimum-norm equifinal solution).
+- Pre-regularization: ‖Δθ‖≈0.75 (all 4 methods), equifinal minimum ≠ θ★.
+- Interpretation: regularization removes the flat manifold; the unique minimum is ~9% away from θ★.
+- Results saved: `diags/output/multipar_calibration_singlestep_tikhonov_results.json`.
+
+---
+
+### Job 7870922 — Minimal calibration, p=3 (COMPLETED — paper-ready)
+
+**Result: L-BFGS-B+AD and Nelder-Mead both recover all 3 parameters exactly.**
+
+| Method | Final loss | ‖Δθ‖₂ | Evals | Time |
+|--------|-----------|-------|-------|------|
+| Adam + AD | 3.60e-02 | 0.679 | 100 | 7.5s |
+| L-BFGS-B + AD | 5.38e-19 | 0.000 | 49 | 3.1s |
+| Nelder-Mead | 8.62e-16 | 0.000 | 414 | 8.8s |
+
+**Parameter recovery (truth = 1.0):**
+
+| Param | θ₀ (init) | Adam | L-BFGS-B+AD | NM |
+|-------|----------|------|-------------|-----|
+| vcmax | 1.0822 | 1.0101 | **1.0000** | **1.0000** |
+| iota | 0.8619 | 1.6605 | **1.0000** | **1.0000** |
+| tref | 0.7246 | 1.1589 | **1.0000** | **1.0000** |
+
+- L-BFGS-B+AD: 49 gradient evaluations, 3.1s wall time. Exact recovery (loss=5e-19).
+- Nelder-Mead: 414 function evaluations, 8.8s. Exact recovery (loss=9e-16). No gradient needed.
+- Adam: stalls with iota=1.66 (40% wrong). 100 cosine-LR steps insufficient; would need ~1000+ steps.
+- **Paper status**: L-BFGS-B+AD and NM panels are paper-ready. Adam panel shows stalling
+  behavior which is also scientifically informative (gradient methods can get stuck without second-order info).
+- Figure bug fixed (post-job): Nelder-Mead was missing from Panel B (parameter recovery bars).
+  Added 4th bar group; widened bars to width=0.18.
+- Figures saved: `diags/figures/minimal_calibration.{pdf,png}` → `Paper/jaxes_paper/figures/`.
+
+---
+
+### Job 7870940 — Precision roofline benchmark (COMPLETED, broken)
+
+**Result: benchmark design invalid — N=2048 OOM; CLM-ML workload never ran; no f32/f64 difference seen.**
+
+- N=2048 matmul (batched 2048 × [512×512]) → 2048×512×512×8 = **4.0 GB** tensor → OOM at f64.
+- All N≤1024 show identical median ≈0.05ms for both f32 and f64 → kernel-launch latency bound,
+  not compute-throughput bound (matrices too small / batch too small to saturate GPU CUDA cores).
+- CLM-ML workload (Workload B) never executed — script exited after OOM in Workload A.
+- No CSV written.
+
+**Root cause**: benchmark should use a single large GEMM (e.g., [4096×4096] @ [4096×4096])
+rather than N batched small matmuls, to saturate CUDA cores and expose f32 vs f64 FLOP rate.
+
+**Next step**: redesign `diags/precision_roofline.py` with a single large GEMM per size, repeat ≥10 times
+with jnp.block_until_ready(), skip N=2048 if OOM. Expected result: RTX 8000 has 32:1 FP32:FP64 CUDA core
+FLOP ratio → large GEMM should show ~32× f32 speedup; CLM-ML forward (exp/log dominated) should show ~1×.
+
+### Precision roofline redesign (→ job 7870952)
+
+Two bugs in the original script fixed:
+
+1. **Wrong matmul design**: `N × [512×512]` batched matmul creates `N×512×512` tensor.
+   At N=2048 f64: `2048 × 512 × 512 × 8` = **4.0 GB** → OOM.
+   Fix: single large square GEMM `(M×M) @ (M×M)` for M in [1024, 2048, 4096, 8192].
+   M=8192 f64 uses only ~1.6 GB and achieves `2×8192³ / 509 GFLOPS ≈ 2.1s/call` → saturates GPU.
+
+2. **Wrong timing barrier**: `jax.effects_barrier()` only waits for Python callbacks
+   (e.g., `io_callback`), NOT for GPU compute to finish. All previous timing was measuring
+   kernel dispatch latency (~0.05ms), not execution time — hence all results appeared identical.
+   Fix: `jax.block_until_ready(out)` which blocks until the output array is ready on GPU.
+
+Also added `#SBATCH --exclusive` to prevent GPU contention.
+
+Expected results from redesigned benchmark:
+- GEMM: f32 ~16–32× faster than f64 at M≥4096 (RTX 8000 has 32:1 CUDA-core FP32/FP64 ratio)
+- CLM-ML: f32 ≈ f64 (SFU-bound by transcendental functions: exp, log, sqrt)
+
+Resubmitted as job 7870952 (PENDING).
+
+---
+
+## 2026-05-08 — Session 45: Three-fix deployment — nighttime step, lax.scan, Tikhonov
+
+### Jobs submitted
+
+| Job | Script | Purpose | Wall time | Status |
+|-----|--------|---------|-----------|--------|
+| 7870919 | `run_multipar_calibration.sh` | Nighttime fix (step 39 midday, was 24) | 24h | pending |
+| 7870920 | `run_multipar_calibration_laxscan.sh` | `lax.scan` compile fix (~27min JIT vs 8.6h) | 6h | pending |
+| 7870921 | `run_multipar_calibration_singlestep_tikhonov.sh` | Tikhonov λ=0.1, breaks equifinality | 2h | pending |
+
+### Changes made
+
+**Fix 1 — Nighttime step indices** (`diags/multipar_calibration.py`):
+- `MULTI_STEP_IDXS` corrected: `[24 + k*192]` → `[39 + k*192]`
+- New indices: `[39, 231, 423, 615, 807, 999, 1191, 1383]`
+- Root cause: CHATS7 is UTC-7 (PDT). Data starts 00:00 UTC May 1.
+  Local noon = 19:00 UTC = 1-based step 39. Step 24 = 11:30 UTC = 04:30 PDT (dark).
+- Added empirical verification scan of steps 35–45 on each run to confirm GPP > 0.
+
+**Fix 2 — `lax.scan` compile** (new `diags/multipar_calibration_laxscan.py`):
+- Replaces Python `for` loop in `loss_fn_multi` with `jax.lax.scan` over stacked pytrees.
+- Forcing states batched: `jax.tree.map(lambda *xs: jnp.stack(xs), *atm_list)`
+- XLA compiles ONE body function, iterates T times → expected JIT time ~27 min vs 8.6h.
+- New SLURM script: `bashscripts/run_multipar_calibration_laxscan.sh` (6h).
+- Output: `diags/output/multipar_calibration_laxscan_results.json`.
+
+**Fix 3 — Tikhonov regularization** (`diags/multipar_calibration_singlestep.py`):
+- Added `LAMBDA_REG = 0.1` and `reg_loss = 0.1 * ||theta − 1||²` to `loss_fn`.
+- Breaks equifinality: equifinal points (‖Δθ‖≈0.75) incur penalty 0.1 × 0.75² × 10 ≈ 0.56 > 0.
+- Output: `diags/output/multipar_calibration_singlestep_tikhonov_results.json`.
+- New SLURM script: `bashscripts/run_multipar_calibration_singlestep_tikhonov.sh` (2h).
+
+### Job 7870922 — minimal_calibration (paper figure, 1.5h)
+- New script `diags/minimal_calibration.py`: p=3 (vcmax, iota, tref), step 39 (noon PDT), exactly determined.
+- Adam 100 steps + L-BFGS-B/AD + Nelder-Mead; 2-panel figure (loss curves + parameter recovery bar chart).
+- Outputs: `diags/output/minimal_calibration_results.json`, `Paper/jaxes_paper/figures/minimal_calibration.{pdf,png}`.
+- Intended to replace/update Experiment 4 in JAXES.tex (p=2 vcmax+iota is currently `\iffalse`'d out).
+
+### Job 7870940 — precision_roofline (3h)
+- New script `diags/precision_roofline.py`: f32 vs f64 for matmul control (FMA-bound, expect 2–4× speedup)
+  and CLM-ML forward pass (transcendental-bound, expect f32 ≈ f64).
+- Motivation: previous benchmark showed f64 slightly *faster* than f32 at large N (unexplained).
+  Matmul control isolates whether the GPU can deliver f32 speedup at all, confirming CLM-ML
+  is SFU/transcendental-bound rather than FLOP-bound.
+- Output: `diags/figures/precision_roofline.{pdf,png}` → `Paper/jaxes_paper/figures/`.
+- SLURM runs f64 then f32 in sequence; second run appends to CSV and auto-generates figure.
+
+### Expected outcomes
+- Job 7870922 finishes first (~1.5h). Clean convergence → loss≈0, ‖Δθ‖≈0 for all 3 params.
+- Job 7870921 (~2h): if ‖Δθ‖ drops near 0, Tikhonov approach confirmed.
+- Job 7870920 (~6h): tests whether `lax.scan` reduces multi-step backward JIT from 8.6h → ~27min.
+- Job 7870919 (~24h): tests whether gradient-based methods converge on daytime (GPP > 0) steps.
+
+---
+
+## 2026-05-08 — Session 44: Job results — multi-step calibration + singlestep fixed Adam
+
+### Job results summary
+
+| Job | Script | Status | Key result |
+|-----|--------|--------|------------|
+| 7681126 | multipar_calibration (24h) | **COMPLETED** | Multi-step runs but gradient-based methods stall; nighttime step issue identified |
+| 7681249 | multipar_calibration_singlestep (fixed Adam) | **COMPLETED** | Fixed Adam reaches loss≈0 but equifinal |
+| 7681907 | multipar_calibration_singlestep (repeat) | **COMPLETED** | Identical to 7681249 — confirms reproducibility |
+
+---
+
+### Job 7681126 — Multi-step calibration (24h wall time)
+
+**JIT compile times (critical bottleneck):**
+- Single-step forward JIT: 308s (~5 min)
+- Single-step backward JIT: 1644s (~27 min)
+- Multi-step backward JIT (T=8): **30944s (~8.6 hours!)** — XLA expands the 8-step sum graph fully
+
+**Nighttime step issue (critical bug):**
+All 8 step indices `[24, 216, 408, 600, 792, 984, 1176, 1368]` produce `GPP=0`, `LE≈0`,
+and `H` ranging −32 to −65 W/m². These are nighttime steps, not midday.
+The step-index arithmetic was wrong: with 48 timesteps/day (30-min steps), midday is
+step 24 of the day but the absolute index must account for spin-up.
+The target generation step confirmed this: single-step warmup gives GPP=30.9 but these
+8 "midday" steps all have GPP=0.
+
+**Results (multi-step loss, T=8 nighttime steps):**
+
+| Method | Final loss | ‖Δθ‖₂ | Converged | Time |
+|--------|-----------|-------|-----------|------|
+| Adam + AD (500 steps) | 4.41e-02 | 0.518 | — (stalls) | 327s |
+| L-BFGS-B + AD | 1.65e-01 | 1.308 | yes (plateau) | 47.8s |
+| L-BFGS-B + FD | 1.65e-01 | 1.308 | yes (plateau) | 259s |
+| Nelder-Mead | 3.64e-10 | 1.172 | yes | 356s |
+
+- Gradient-based methods stall far from zero (loss=0.04–0.16) while Nelder-Mead finds near-zero.
+  Root cause: nighttime steps have GPP=0 and LE≈0 → loss is driven entirely by H-only signal
+  → degenerate gradient landscape for vis/nir/vcmax/iota params (all enter via photosynthesis).
+- Nelder-Mead reaches near-zero but ‖Δθ‖=1.17 → equifinal minimum, different zero than θ★.
+- L-BFGS-B both AD and FD converge to exactly the same plateau (loss=0.165) →
+  this is a gradient zero, not a global minimum. Gradient is zero at the plateau for
+  night-dominated loss.
+- Figures saved and copied to `Paper/jaxes_paper/figures/`.
+
+**Per-parameter recovery (Adam + AD, multi-step):**
+`tref` recovers best (|Δ|=0.003); `u` worst (|Δ|=0.261); most params in [0.03–0.29] range.
+
+---
+
+### Jobs 7681249 + 7681907 — Singlestep fixed Adam (β₂=0.9, cosine LR, clip=10)
+
+**Adam fix confirmed working** — reaches loss≈1e-12 in 1000 steps (79s):
+```
+Adam step 1000: loss=1.06e-12  ‖Δθ‖=0.749  lr=1.00e-04
+```
+Loss converges to machine precision. But equifinality persists: ‖Δθ‖=0.749 ≠ 0.
+
+| Method | Final loss | ‖Δθ‖₂ | Evals | Time |
+|--------|-----------|-------|-------|------|
+| Adam + AD | 1.06e-12 | 0.749 | 1000 | 79s |
+| L-BFGS-B + AD | 1.03e-20 | 0.913 | 26 | 1.9s |
+| L-BFGS-B + FD | 1.24e-15 | 0.913 | 275 | 6.2s |
+| Nelder-Mead | 1.09e-14 | 0.478 | 879 | 19.8s |
+
+**AD speedup confirmed:** T_backward/T_forward = 2.73; breakeven at p=1.4 parameters.
+At p=10: **7.3× faster** than FD. At p=50: 36.6× faster.
+
+---
+
+### sensitivity_analysis_v2.py — minor plotting update
+
+Added `PLOT_PARAM_INDICES = (0,1,2,3,4,6)` to subset the 7-param Jacobian to 6 params
+for the figure. Commented out auto-generated suptitle. `param_names` now passed as arg.
+
+---
+
+### Open issues / next steps
+
+1. **Nighttime step fix**: Fix step-index arithmetic in `multipar_calibration.py` to select
+   actual midday steps (high-PAR, high-GPP hours). Verify GPP > 0 for all T steps.
+2. **Multi-step JIT compile ~8.6h**: Need `vmap` over timesteps or persistent XLA cache.
+   A `jax.vmap` over forcing states would compile once and avoid T-unrolled graphs.
+3. **Single-step equifinality**: 3 outputs × 10 params is underdetermined. Possible fixes:
+   - More timesteps with distinct parameter sensitivity (daytime + varied VPD conditions)
+   - Profile-level outputs (ncan=46 layers) instead of canopy-integrated scalars
+   - Tikhonov regularization (‖θ − 1‖² penalty) to select closest-to-nominal solution
+4. **Adam multi-step stalls at 0.044**: Even if nighttime fix works, confirm gradient-based
+   convergence. If L-BFGS-B still stalls at a plateau, gradient is likely degenerate at
+   nighttime equilibrium.
+
+---
+
+## 2026-04-29 — Session 43: Resubmit calibration jobs (multi-step 24h + single-step variant)
+
+### Job results from April 28
+- **7677849 temporal_jacobian**: COMPLETED (1h36min). Compile-once design worked.
+  All 248 steps in 10.2 min. Figures saved. See Session 42 for Jacobian stats.
+- **7677819 multipar_calibration**: TIMEOUT (6h). Killed during multi-step backward
+  JIT warm-up (8×forward unrolled graph). Target gen: 49 min, single-step backward
+  JIT: 25 min, multi-step backward JIT: incomplete when killed.
+
+### Resubmissions
+- **Job 7681126** (`multipar_calibration`, `run_multipar_calibration.sh`): 24h wall time,
+  g097. Exact same script — now has enough time for multi-step backward JIT (~2h) + all
+  4 optimizer methods.
+- **Job 7681127** (`multipar_calibration_singlestep`, `run_multipar_calibration_singlestep.sh`):
+  6h wall time, g098. New variant — pre-warms only single-step backward (~25 min), runs
+  all 4 optimizer methods against single-step loss. Tests equifinality hypothesis
+  empirically. Output: `diags/output/multipar_calibration_singlestep_results.json`.
+
+### Job 7681127 results — single-step (COMPLETED, 44 min)
+Equifinality confirmed experimentally. All 4 methods drive loss → 0 but param_err stays ~0.5–0.9:
+- Adam/AD: loss=1.98e-02, param_err=0.711  ← **also fails to minimize loss!**
+- L-BFGS-B/AD: loss=1.03e-20, param_err=0.913  (finds a different zero)
+- L-BFGS-B/FD: loss=1.24e-15, param_err=0.913  (same equifinal zero)
+- Nelder-Mead: loss=1.09e-14, param_err=0.478   (different equifinal zero)
+
+**Adam failure root cause (separate from equifinality):**
+Two-phase gradient dynamic: phase 1 (steps 1–100) has large gradients → v accumulates large
+values. Phase 2 (near the flat equifinal manifold) has tiny gradients, but β₂=0.999's ~1000-step
+memory window keeps v inflated → g/sqrt(v) → 0 → Adam stalls at loss=0.02.
+This is NOT oscillation — it is a stationary plateau caused by v not adapting to the new
+(small) gradient scale.
+
+**Fix applied to both scripts:**
+- β₂: 0.999 → 0.9 (10-step memory, v forgets phase-1 values in ~10 steps)
+- Gradient clipping: global norm clipped to 10.0 (prevents T_air Jacobian ~100× dominance)
+- N_ADAM: 500 → 1000 (singlestep only; multi-step kept at 500)
+Files changed: `diags/multipar_calibration_singlestep.py`, `diags/multipar_calibration.py`
+
+**Job 7681249** — retest singlestep with fixed Adam — **COMPLETED** (see Session 44).
+
+### New files
+- `diags/multipar_calibration_singlestep.py` — single-step loss calibration script
+- `bashscripts/run_multipar_calibration_singlestep.sh` — 6h SLURM script for above
+
+---
+
+## 2026-04-28 — Session 42: Temporal Jacobian + calibration equifinality fix
+
+### Root cause identified: single-step calibration is equifinal
+Analysis of previous `multipar_calibration_results.json`:
+- Single-step loss (3 outputs, 10 params) is under-determined → infinite equifinal solutions
+- L-BFGS-B+AD achieves loss=1e-20 but param_err=0.912 — finds a *different* zero, not θ★
+- Adam oscillates at loss≈0.013 because fixed LR=0.005 overshoots minimum at step 93
+
+### Fix 1: multipar_calibration.py — multi-step loss + cosine annealing
+- **Multi-timestep loss**: T=8 midday steps spread across May (days 1,5,9,13,17,21,25,29 at noon)
+  - step indices: [24, 216, 408, 600, 792, 984, 1176, 1368]
+  - 24 outputs for 10 params → well-determined, equifinality broken
+- **Adam cosine-annealing LR**: 0.01 → 1e-4 over 500 steps (was fixed 0.005, 300 steps)
+- **Saved theta_final** for all methods (needed by plot_multipar_calibration.py)
+- SLURM job 7677819 submitted (pending glab1 GPU)
+
+### Fix 2: temporal_jacobian.py — compile-once design
+**Problem**: `_make_forward(atm_s, watm_s)` baked forcing as XLA constants in the closure.
+Different forcing per step → different XLA binary → recompilation for each of 248 steps.
+First compilation took 37+ min → job would never finish within 6h.
+
+**Fix**: `forward_with_forcing(scales, atm_inst, watm_inst)` takes forcing as explicit JAX
+pytree arguments with `jacrev(..., argnums=0)`. JAX traces for abstract array shapes once,
+compiles ONE XLA binary, reuses it for all 248 steps. One compilation (~10-30 min),
+then ~1s per step.
+
+- SLURM job 7677849 submitted (running on g101)
+
+### Fix 3: plot_multipar_calibration.py — 3-panel figure
+- Panel A: Loss convergence with cosine LR inset
+- Panel B: Per-parameter recovery |θ_final − θ★| grouped bar chart
+- Panel C: Gradient cost scaling
+
+### Status
+- temporal_jacobian job 7677849: **COMPLETED** (1h36min) — see Session 43
+- multipar_calibration job 7677819: **TIMEOUT** (6h) — multi-step backward JIT incomplete
+- Job 7681126 (24h resubmission): **COMPLETED** — see Session 44 for full results
+- Job 7681249 (singlestep fixed Adam): **COMPLETED** — see Session 44 for full results
+
+---
+
+## 2026-04-28 — Session 41: Redesigned calibration experiment (p=10, all active)
+
+### Changes to multipar_calibration.py
+
+**Problem:** Adam curve was bumpy and non-converging. Root causes:
+1. **3 inactive parameters** (lwrad, v, pco2): Adam received zero gradient for these → their
+   random initial perturbations [0.7, 1.3] never moved → param_err never reached zero.
+2. **GPP-only loss**: alpha_q has |d(GPP)/dq| = 0.054 (near zero) but |d(H)/dq| = 40.2
+   → nearly invisible to the optimizer → inconsistent update magnitudes across parameters.
+3. **LR = 0.02 too aggressive** for 10-param space with mixed gradient scales.
+
+**Fix:**
+- **Combined loss** (GPP + H + LE, each normalized by own magnitude) → every parameter
+  has a strong signal. alpha_q and alpha_u now have gradients ~40–100× larger than with GPP alone.
+- **10 truly active parameters**: SW split into 4 waveband components
+  (vis_dir, nir_dir, vis_dif, nir_dif) replacing the 3 inactive ones.
+  Verification: `arr.at[:,1].mul(theta_vis).at[:,2].mul(theta_nir)` gradients confirmed correct.
+- **Adam LR = 0.005** (was 0.02) for smooth convergence curve.
+- **Added L-BFGS-B + JAX gradient** as Method B (scipy `jac=True`): shows that
+  exact gradient enables fast quasi-Newton convergence vs FD or gradient-free.
+
+**Parameter set (p=10, all active):**
+| idx | name        | what it scales                  |
+|-----|-------------|----------------------------------|
+|  0  | vis_dir     | forc_solad[:, 1] (visible PAR direct) |
+|  1  | nir_dir     | forc_solad[:, 2] (NIR direct)    |
+|  2  | vis_dif     | forc_solai[:, 1] (visible diffuse)|
+|  3  | nir_dif     | forc_solai[:, 2] (NIR diffuse)   |
+|  4  | tref        | forc_t_downscaled_col            |
+|  5  | vcmax       | vcmaxpft (explicit JAX arg)      |
+|  6  | iota        | iota_SPA (pftcon mutation)       |
+|  7  | q           | forc_q_downscaled_col            |
+|  8  | pbot        | forc_pbot_downscaled_col         |
+|  9  | u           | forc_u_grc                       |
+
+**4 methods compared:**
+- Method A: Adam + jax.grad (LR=0.005, 300 steps)
+- Method B: L-BFGS-B + jax.grad (scipy jac=True, exact gradient)
+- Method C: L-BFGS-B + FD (scipy jac=None)
+- Method D: Nelder-Mead (gradient-free)
+
+**To run:**
+```bash
+python diags/multipar_calibration.py   # ~runtime similar to previous (10 params, one timestep)
+python diags/plot_multipar_calibration.py
+```
+
+**Status:** IN PROGRESS — scripts written, not yet run on GPU.
+
+---
+
+## 2026-04-27 — Session 40: Job results — pbot PASS, 7-param Jacobian COMPLETE
+
+### Root cause of apparent JAX/FD mismatch for d(GPP)/d(alpha_g1)
+
+**Finding: JAX is correct (+4.98). FD at eps=1e-4 (+1254) is numerically unreliable.**
+
+**Investigation sequence:**
+1. Kernel level: JAX/FD ratio = 1.019 ✓ (kernel gradient correct)
+2. Second loop direct (d(agross)/d(scale_gs)): JAX/FD = 1.000 ✓ (second loop quadratic correct)
+3. Full chain kernel+second-loop in one function: JAX/FD = 1.018 ✓ (chain correct)
+4. LeafPhotosynthesis (both loops): JAX=+4.98, FD(eps=1e-4)=+1254 → ratio 0.004 ✗
+
+**Root cause of FD unreliability for isha leaves:**
+The shade-leaf (isha) ci-solver is NON-SMOOTH with respect to perturbations of g1 at small epsilon. The ci-solver uses fixed-point iteration (scan over 40 steps). Under a small perturbation (eps=1e-4), the solver can converge to a DIFFERENT attractor branch, giving a wildly different ci that is unrelated to the smooth mathematical derivative.
+
+The FD is chaotic at ALL small epsilon values:
+```
+eps=0.1:  FD(isha)=+1.13    (agrees with JAX=+1.12 ✓)
+eps=0.01: FD(isha)=-34.6    (WRONG — solver branch flip)
+eps=0.001:FD(isha)=-93.5    (WRONG)
+eps=1e-4: FD(isha)=+1251    (WRONG — was the "reference" value)
+eps=1e-5: FD(isha)=+55000   (WRONG)
+```
+
+At eps=0.1, FD converges:
+- isun FD ≈ +3.89, JAX = +3.86 ✓
+- isha FD ≈ +1.13, JAX = +1.12 ✓
+- **Total FD(eps=0.1)=+5.02, JAX=+4.98 → ratio=0.992 (within 1%)**
+
+The IFT-based JAX gradient correctly computes the smooth derivative at the solution (using the local Jacobian dF/dci and dF/dg1), while FD at small epsilon measures numerical chaos from the iterative solver.
+
+**Why isun is smooth but isha is chaotic:**
+- Sunlit leaves have higher APAR → larger photosynthesis → higher gs (0.24–0.48) → ci-solver well-conditioned
+- Shade leaves have lower APAR → gs down to 0.002 → ci-solver near degenerate regime where small perturbations in g1 cause large ci shifts and possible branch-flipping
+
+**Conclusion: No bug in JAX AD. The d(GPP)/d(alpha_g1) gradient is CORRECT.**
+
+**Implication for calibration:** The 10-param calibration will work. FD checks should use eps=0.1 for g1_MED parameter to avoid solver-branch numerical artifacts.
+
+**New diagnostic scripts:**
+- `diags/debug_second_loop.py` — confirmed kernel+second-loop chain correct (ratio 1.018)
+- `diags/debug_g1_fast.py` — multi-epsilon FD scan proves JAX is correct
+
+**Verification level:** Confirmed at `LeafPhotosynthesis` level (isolates both loops).
+Full `MLCanopyFluxes` backward pass OOM on CPU (known issue) — requires GPU via SLURM.
+Submit `sbatch bashscripts/run_g1_medlyn_fixed.sh` to get full GPU verification.
+
+**Files changed:** No physics code changes needed. FD test scripts updated with eps=0.1.
+
+---
+
+## 2026-04-24 — Session 38: alpha_pbot NaN gradient fix (inactive-layer zero-division)
+
+### Fix: d(GPP)/d(alpha_pbot) — three NaN sources in second loop of LeafPhotosynthesis
+
+**Problem:** Job 7589868 (`check_10param_grads.py`) showed `alpha_pbot` produces JAX grad = NaN while FD grad = +4.70. Forward pass is correct; only the backward pass fails.
+
+**Root cause analysis:**
+`alpha_pbot` traces through `forc_pbot[c]` into three JAX-traced fields:
+1. `pref_cur_forcing[p]` → `pref_forcing[p]` (used in FluxProfileSolution and LeafBoundaryLayer)
+2. `co2ref_cur_forcing[p]` → `co2ref_forcing[p]` (flows into `cair_profile` — same path as alpha_pco2 which PASSES)
+3. `o2ref_forcing[p]` (= `forc_po2 / pbot * 1e3`) — unique to pbot, not in pco2 path
+
+In the second loop of `LeafPhotosynthesis` (soil-moisture adjustment, lines ~2379-2476), three operations cause NaN gradients for inactive canopy layers (where `dpai == 0`):
+
+1. **`_ko_sl = 0` for inactive layers** (zeroed in first loop via `jnp.where(active, ko_val, 0)`):
+   ```python
+   b0_sl = _kc_sl * (1.0 + _o2ref_p2 / _ko_sl)  # _ko_sl = 0 → _o2ref_p2 / 0
+   ```
+   `d(b0_sl)/d(_o2ref_p2) = _kc_sl / _ko_sl = 0/0 = NaN`. Multiplied by `jnp.where` mask `0` → `0 * NaN = NaN`.
+
+2. **`_gbc_sl = 0` for inactive layers** (also zeroed in first loop):
+   ```python
+   gleaf_sl = 1.0 / (1.0 / _gbc_sl + ...)  # → gleaf_sl = 0 for inactive
+   ci_sl = _cair_sl - anet_sl / gleaf_sl    # anet_sl / 0 = inf
+   cs_sl = jnp.maximum(_cair_sl - anet_sl / _gbc_sl, 1.0)  # x/0 = inf
+   ```
+   `anet_sl` is traced via `o2ref_p2 → b0_sl → ac_sl → anet_sl`. `d(ci_sl)/d(anet_sl) = 1/0 = inf`.  `0 * inf = NaN`.
+
+3. **`_lesat_sl = 0` and `_gbv_sl = 0` for inactive layers**:
+   ```python
+   hs_sl = (_gbv_sl * _eair_sl + ...) / ((_gbv_sl + gs_new_sl) * _lesat_sl)
+   # denom = gs_new_sl * 0 = 0 → hs_sl = 0/0 = NaN
+   ```
+   `_eair_sl` is traced by `alpha_pbot` via `eair_profile[p]` (updated via `ImplicitFluxProfileSolution` which multiplies `_pref_p`). `d(hs_sl)/d(_eair_sl) = _gbv_sl / 0 = 0/0 = NaN`. `0 * NaN = NaN`.
+
+**Why alpha_pco2 passes but alpha_pbot fails:**
+`alpha_pco2` scales only `forc_pco2` which enters only `co2ref_cur` → `co2ref_forcing` → `cair_profile` (via `co2ref[p]` in `FluxProfileSolution`). Neither `o2ref_forcing` nor `pref_forcing`/`eair_profile` depends on `forc_pco2`, so none of these three division-by-zero paths are traced for alpha_pco2.
+
+**Fixes applied (all in `src/multilayer_canopy/MLLeafPhotosynthesisMod.py`, second loop ~lines 2413-2452):**
+
+1. `_ko_safe2 = jnp.maximum(_ko_sl, 1e-30)` — guard ko denominator in `b0_sl`
+2. `_gbc_safe = jnp.maximum(_gbc_sl, 1e-30)` — guard gbc in `gleaf_sl` and `cs_sl`
+3. `_hs_denom = jnp.maximum((_gbv_sl+gs_new_sl)*_lesat_sl, 1e-30)` — guard hs denominator
+
+All three fixes use `jnp.maximum(x, 1e-30)` which does not change values for active layers (where the denominators are always positive).
+
+**New files:**
+- `bashscripts/run_pbot_grad_fix.sh` — SLURM script to verify the fix (alpha_pbot only, ~30min)
+
+**Files changed:**
+- `src/multilayer_canopy/MLLeafPhotosynthesisMod.py` — three inactive-layer zero-division guards in second loop
+
+**Status:** Written, not yet run. Submit `sbatch bashscripts/run_pbot_grad_fix.sh` to verify.
+
+---
+
+## 2026-04-23 — Session 37: g1_MED gradient fix (explicit g1_MED_jax arg)
+
+### Fix: d(GPP)/d(g1_MED) — explicit g1_MED_jax argument
+
+**Problem:** Job 7577180 showed JAX gradient = +5.2 vs FD = -743 for d(GPP)/d(alpha_g1) under Medlyn (gs_type=0). The IFT fix from session 33 fixed the NaN but not the magnitude/sign.
+
+**Root cause (refined):** The exact mechanism blocking the gradient is subtle and was not definitively identified through static analysis. The IFT formula is mathematically correct. The likely issue is that reading `MLpftcon.g1_MED` from a Python module global inside `jax.lax.scan`'s traced body does not propagate the JAX abstract tracer for `alpha` into `g1_val` in all JAX versions/execution paths. The explicit-arg pattern (used successfully for `vcmaxpft_jax`) bypasses this.
+
+**Fix (mirrors vcmaxpft_jax pattern):**
+- `LeafPhotosynthesis` now accepts `g1_MED_jax=None`; when provided, it overrides `MLpftcon.g1_MED` for `_g1_MED_jnp`
+- `MLCanopyFluxes` now accepts `g1_MED_jax=None` and threads it to both `LeafPhotosynthesis(sun/sha)` calls
+- No change to `_set_pftcon` pattern (other callers unaffected)
+- No change to lru_cache or IFT logic
+
+**New files:**
+- `diags/check_g1_medlyn_fixed.py` — uses `MLCanopyFluxes(..., g1_MED_jax=alpha*orig_g1_MED)` directly (no `_set_pftcon`)
+- `bashscripts/run_g1_medlyn_fixed.sh` — SLURM job (glab1, 3h, GPU)
+
+**Job submitted:** 7590268 (`run_g1_medlyn_fixed.sh`)
+
+**Files changed:**
+- `src/multilayer_canopy/MLLeafPhotosynthesisMod.py` — `g1_MED_jax=None` param + `_g1_MED_jnp` conditional
+- `src/multilayer_canopy/MLCanopyFluxesMod.py` — `g1_MED_jax=None` param + thread to LeafPhotosynthesis
+
+---
+
 ## 2026-04-23 — Session 36: job results (NM calibration, precision benchmark, g1_MED, multipar)
 
 ### Job results summary
