@@ -1,0 +1,96 @@
+{
+  "generated_utc": "2026-05-22T00:28:21.979070+00:00",
+  "executable": "test_MLMathToolsMod_beta_distribution_cdf.exe",
+  "cases": [
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 3.0,
+        "x": 0.0
+      },
+      "outputs": {
+        "beta_cdf": 0.0
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 3.0,
+        "x": 1.0
+      },
+      "outputs": {
+        "beta_cdf": 1.0
+      }
+    },
+    {
+      "inputs": {
+        "a": 3.0,
+        "b": 3.0,
+        "x": 0.5
+      },
+      "outputs": {
+        "beta_cdf": 0.49999999999999944
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 2.0,
+        "x": 0.1
+      },
+      "outputs": {
+        "beta_cdf": 0.02799999999999999
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 2.0,
+        "x": 0.3
+      },
+      "outputs": {
+        "beta_cdf": 0.21599999999999978
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 2.0,
+        "x": 0.5
+      },
+      "outputs": {
+        "beta_cdf": 0.5000000000000002
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 2.0,
+        "x": 0.7
+      },
+      "outputs": {
+        "beta_cdf": 0.7840000000000001
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 2.0,
+        "x": 0.9
+      },
+      "outputs": {
+        "beta_cdf": 0.972
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 2.0,
+        "x": 0.25
+      },
+      "outputs": {
+        "beta_cdf": 0.15624999999999997
+      }
+    }
+  ]
+}

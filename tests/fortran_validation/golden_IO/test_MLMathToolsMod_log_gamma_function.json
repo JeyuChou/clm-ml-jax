@@ -1,0 +1,62 @@
+{
+  "generated_utc": "2026-05-22T00:28:21.536825+00:00",
+  "executable": "test_MLMathToolsMod_log_gamma_function.exe",
+  "cases": [
+    {
+      "inputs": {
+        "x": 1.0
+      },
+      "outputs": {
+        "gammaln": -4.440892098500626e-16
+      }
+    },
+    {
+      "inputs": {
+        "x": 2.0
+      },
+      "outputs": {
+        "gammaln": -8.881784197001252e-16
+      }
+    },
+    {
+      "inputs": {
+        "x": 3.0
+      },
+      "outputs": {
+        "gammaln": 0.6931471805599445
+      }
+    },
+    {
+      "inputs": {
+        "x": 0.5
+      },
+      "outputs": {
+        "gammaln": 0.5723649429247448
+      }
+    },
+    {
+      "inputs": {
+        "x": 0.3
+      },
+      "outputs": {
+        "gammaln": 1.09579799481814
+      }
+    },
+    {
+      "inputs": {
+        "x": 5.0
+      },
+      "outputs": {
+        "gammaln": 3.1780538303479453
+      }
+    },
+    {
+      "inputs": {
+        "x": 10.0
+      },
+      "outputs": {
+        "gammaln": 12.801827480081963
+      }
+    }
+  ]
+}

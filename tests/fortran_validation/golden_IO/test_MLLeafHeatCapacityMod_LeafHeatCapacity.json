@@ -1,0 +1,46 @@
+{
+  "generated_utc": "2026-05-22T00:28:24.237074+00:00",
+  "executable": "test_MLLeafHeatCapacityMod_LeafHeatCapacity.exe",
+  "cases": [
+    {
+      "inputs": {
+        "sla": 0.04
+      },
+      "outputs": {
+        "cpleaf": 558.4
+      }
+    },
+    {
+      "inputs": {
+        "sla": 0.02
+      },
+      "outputs": {
+        "cpleaf": 1116.8
+      }
+    },
+    {
+      "inputs": {
+        "sla": 0.06
+      },
+      "outputs": {
+        "cpleaf": 372.2666666666667
+      }
+    },
+    {
+      "inputs": {
+        "sla": 0.01
+      },
+      "outputs": {
+        "cpleaf": 2233.6
+      }
+    },
+    {
+      "inputs": {
+        "sla": 0.1
+      },
+      "outputs": {
+        "cpleaf": 223.35999999999996
+      }
+    }
+  ]
+}

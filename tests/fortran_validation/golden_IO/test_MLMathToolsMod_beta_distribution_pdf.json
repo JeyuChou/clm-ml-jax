@@ -1,0 +1,76 @@
+{
+  "generated_utc": "2026-05-22T00:28:21.799574+00:00",
+  "executable": "test_MLMathToolsMod_beta_distribution_pdf.exe",
+  "cases": [
+    {
+      "inputs": {
+        "a": 1.0,
+        "b": 1.0,
+        "x": 0.1
+      },
+      "outputs": {
+        "beta_pdf": 1.0
+      }
+    },
+    {
+      "inputs": {
+        "a": 1.0,
+        "b": 1.0,
+        "x": 0.5
+      },
+      "outputs": {
+        "beta_pdf": 1.0
+      }
+    },
+    {
+      "inputs": {
+        "a": 1.0,
+        "b": 1.0,
+        "x": 0.9
+      },
+      "outputs": {
+        "beta_pdf": 1.0
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 3.0,
+        "x": 0.3
+      },
+      "outputs": {
+        "beta_pdf": 1.764000000000002
+      }
+    },
+    {
+      "inputs": {
+        "a": 3.0,
+        "b": 2.0,
+        "x": 0.7
+      },
+      "outputs": {
+        "beta_pdf": 1.7640000000000025
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 5.0,
+        "x": 0.4
+      },
+      "outputs": {
+        "beta_pdf": 1.5552000000000312
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 2.0,
+        "x": 0.5
+      },
+      "outputs": {
+        "beta_pdf": 1.4999999999999996
+      }
+    }
+  ]
+}

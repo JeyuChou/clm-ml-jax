@@ -1,0 +1,76 @@
+{
+  "generated_utc": "2026-05-22T00:28:23.859510+00:00",
+  "executable": "test_MLCanopyTurbulenceMod_GetPrSc.exe",
+  "cases": [
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": 0.0,
+        "sparse_canopy_type_in": 0
+      },
+      "outputs": {
+        "PrSc": 0.5
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": 1.0,
+        "sparse_canopy_type_in": 0
+      },
+      "outputs": {
+        "PrSc": 0.7892082740227451
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": -1.0,
+        "sparse_canopy_type_in": 0
+      },
+      "outputs": {
+        "PrSc": 0.21079172597725493
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": 0.5,
+        "sparse_canopy_type_in": 0
+      },
+      "outputs": {
+        "PrSc": 0.7284782467867295
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": -0.5,
+        "sparse_canopy_type_in": 0
+      },
+      "outputs": {
+        "PrSc": 0.27152175321327054
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": 0.0,
+        "sparse_canopy_type_in": 1
+      },
+      "outputs": {
+        "PrSc": 0.5714285714285714
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.35,
+        "LcL": 0.5,
+        "sparse_canopy_type_in": 1
+      },
+      "outputs": {
+        "PrSc": 0.7284782467867295
+      }
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "generated_utc": "2026-05-22T00:28:21.657470+00:00",
+  "executable": "test_MLMathToolsMod_beta_function.exe",
+  "cases": [
+    {
+      "inputs": {
+        "a": 1.0,
+        "b": 1.0
+      },
+      "outputs": {
+        "beta": 1.0
+      }
+    },
+    {
+      "inputs": {
+        "a": 0.5,
+        "b": 0.5
+      },
+      "outputs": {
+        "beta": 3.1415926535900756
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 3.0
+      },
+      "outputs": {
+        "beta": 0.08333333333333322
+      }
+    },
+    {
+      "inputs": {
+        "a": 2.0,
+        "b": 5.0
+      },
+      "outputs": {
+        "beta": 0.03333333333333267
+      }
+    },
+    {
+      "inputs": {
+        "a": 5.0,
+        "b": 2.0
+      },
+      "outputs": {
+        "beta": 0.03333333333333267
+      }
+    },
+    {
+      "inputs": {
+        "a": 3.7,
+        "b": 2.1
+      },
+      "outputs": {
+        "beta": 0.05097453276102976
+      }
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 Fortran validation tests for CLM-ML-JAX.
 
 For each Fortran subroutine that has a golden JSON file in
-clm-ml-fortran/golden_IO/, this module loads the reference inputs/outputs
+tests/fortran_validation/golden_IO/, this module loads the reference inputs/outputs
 from the Fortran build and verifies that the JAX implementation produces
 the same values within a tight numerical tolerance.
 
@@ -40,7 +40,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 _HERE       = Path(__file__).resolve().parent
-_GOLDEN_DIR = _HERE.parent.parent / "clm-ml-fortran" / "golden_IO"
+_GOLDEN_DIR = _HERE / "golden_IO"
 
 # ---------------------------------------------------------------------------
 # Tolerance
@@ -516,7 +516,7 @@ _ALL_CASES = _load_all_cases()
 
 if not _ALL_CASES:
     pytest.skip(
-        "No golden data found in clm-ml-fortran/golden_IO/. "
+        "No golden data found in tests/fortran_validation/golden_IO/. "
         "Ensure the golden_IO/ directory contains JSON files.",
         allow_module_level=True,
     )

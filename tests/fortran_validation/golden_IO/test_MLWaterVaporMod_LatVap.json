@@ -1,0 +1,70 @@
+{
+  "generated_utc": "2026-05-22T00:28:22.324303+00:00",
+  "executable": "test_MLWaterVaporMod_LatVap.exe",
+  "cases": [
+    {
+      "inputs": {
+        "t": 300.0
+      },
+      "outputs": {
+        "lambda": 45068.020000000004
+      }
+    },
+    {
+      "inputs": {
+        "t": 260.0
+      },
+      "outputs": {
+        "lambda": 51081.294
+      }
+    },
+    {
+      "inputs": {
+        "t": 273.16
+      },
+      "outputs": {
+        "lambda": 45068.020000000004
+      }
+    },
+    {
+      "inputs": {
+        "t": 273.14
+      },
+      "outputs": {
+        "lambda": 51081.294
+      }
+    },
+    {
+      "inputs": {
+        "t": 280.0
+      },
+      "outputs": {
+        "lambda": 45068.020000000004
+      }
+    },
+    {
+      "inputs": {
+        "t": 320.0
+      },
+      "outputs": {
+        "lambda": 45068.020000000004
+      }
+    },
+    {
+      "inputs": {
+        "t": 250.0
+      },
+      "outputs": {
+        "lambda": 51081.294
+      }
+    },
+    {
+      "inputs": {
+        "t": 200.0
+      },
+      "outputs": {
+        "lambda": 51081.294
+      }
+    }
+  ]
+}

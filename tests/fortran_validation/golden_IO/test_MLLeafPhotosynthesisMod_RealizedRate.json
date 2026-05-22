@@ -1,0 +1,102 @@
+{
+  "generated_utc": "2026-05-22T00:28:23.560273+00:00",
+  "executable": "test_MLLeafPhotosynthesisMod_RealizedRate.exe",
+  "cases": [
+    {
+      "inputs": {
+        "c3psn": 1.0,
+        "ac": 5.0,
+        "aj": 15.0,
+        "ap": 20.0,
+        "colim_type_in": 0
+      },
+      "outputs": {
+        "agross": 5.0
+      }
+    },
+    {
+      "inputs": {
+        "c3psn": 1.0,
+        "ac": 15.0,
+        "aj": 8.0,
+        "ap": 20.0,
+        "colim_type_in": 0
+      },
+      "outputs": {
+        "agross": 8.0
+      }
+    },
+    {
+      "inputs": {
+        "c3psn": 1.0,
+        "ac": 10.0,
+        "aj": 10.0,
+        "ap": 20.0,
+        "colim_type_in": 0
+      },
+      "outputs": {
+        "agross": 10.0
+      }
+    },
+    {
+      "inputs": {
+        "c3psn": 0.0,
+        "ac": 10.0,
+        "aj": 12.0,
+        "ap": 4.0,
+        "colim_type_in": 0
+      },
+      "outputs": {
+        "agross": 4.0
+      }
+    },
+    {
+      "inputs": {
+        "c3psn": 1.0,
+        "ac": 10.0,
+        "aj": 10.0,
+        "ap": 20.0,
+        "colim_type_in": 1
+      },
+      "outputs": {
+        "agross": 8.761006569007046
+      }
+    },
+    {
+      "inputs": {
+        "c3psn": 1.0,
+        "ac": 10.0,
+        "aj": 5.0,
+        "ap": 20.0,
+        "colim_type_in": 1
+      },
+      "outputs": {
+        "agross": 4.905528159625253
+      }
+    },
+    {
+      "inputs": {
+        "c3psn": 1.0,
+        "ac": 1.0,
+        "aj": 20.0,
+        "ap": 30.0,
+        "colim_type_in": 1
+      },
+      "outputs": {
+        "agross": 0.9989496366175405
+      }
+    },
+    {
+      "inputs": {
+        "c3psn": 0.0,
+        "ac": 10.0,
+        "aj": 8.0,
+        "ap": 6.0,
+        "colim_type_in": 1
+      },
+      "outputs": {
+        "agross": 4.9419588413958175
+      }
+    }
+  ]
+}

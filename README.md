@@ -57,6 +57,18 @@ Output files are written to the `output_files/` directory.
 
 ---
 
+## Validation Tests
+
+We compare every JAX routine against golden reference values of the Fortran build:
+
+```bash
+/path/to/conda/envs/clm-ml-jax/bin/python -m pytest tests/fortran_validation/ -q
+```
+
+Golden JSON files live in `tests/fortran_validation/golden_IO/`.
+
+---
+
 ## Development
 
 ### Adding a New Physics Module

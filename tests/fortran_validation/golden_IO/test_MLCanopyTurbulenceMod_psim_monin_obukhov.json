@@ -1,0 +1,87 @@
+{
+  "generated_utc": "2026-05-22T00:28:23.133806+00:00",
+  "executable": "test_MLCanopyTurbulenceMod_psim_monin_obukhov.exe",
+  "cases": [
+    {
+      "inputs": {
+        "zeta": 0.0
+      },
+      "outputs": {
+        "psim": -0.0,
+        "psic": -0.0
+      }
+    },
+    {
+      "inputs": {
+        "zeta": 0.5
+      },
+      "outputs": {
+        "psim": -2.5,
+        "psic": -2.5
+      }
+    },
+    {
+      "inputs": {
+        "zeta": 1.0
+      },
+      "outputs": {
+        "psim": -5.0,
+        "psic": -5.0
+      }
+    },
+    {
+      "inputs": {
+        "zeta": 2.0
+      },
+      "outputs": {
+        "psim": -10.0,
+        "psic": -10.0
+      }
+    },
+    {
+      "inputs": {
+        "zeta": -0.1
+      },
+      "outputs": {
+        "psim": 0.2836137114178845,
+        "psic": 0.5342837819484253
+      }
+    },
+    {
+      "inputs": {
+        "zeta": -0.5
+      },
+      "outputs": {
+        "psim": 0.7933591215316211,
+        "psic": 1.3862943611198904
+      }
+    },
+    {
+      "inputs": {
+        "zeta": -1.0
+      },
+      "outputs": {
+        "psim": 1.1162322499734296,
+        "psic": 1.881227284214417
+      }
+    },
+    {
+      "inputs": {
+        "zeta": -2.0
+      },
+      "outputs": {
+        "psim": 1.4946911233446611,
+        "psic": 2.431178931723096
+      }
+    },
+    {
+      "inputs": {
+        "zeta": 0.3
+      },
+      "outputs": {
+        "psim": -1.5,
+        "psic": -1.5
+      }
+    }
+  ]
+}

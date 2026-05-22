@@ -1,0 +1,72 @@
+{
+  "generated_utc": "2026-05-22T00:28:24.128213+00:00",
+  "executable": "test_MLCanopyWaterMod_WettedFraction.exe",
+  "cases": [
+    {
+      "inputs": {
+        "h2ocan": 0.0,
+        "dpai": 1.0,
+        "dlai": 0.8
+      },
+      "outputs": {
+        "fwet": 0.0,
+        "fdry": 0.8
+      }
+    },
+    {
+      "inputs": {
+        "h2ocan": 1e-05,
+        "dpai": 1.0,
+        "dlai": 0.8
+      },
+      "outputs": {
+        "fwet": 0.0020892961308540386,
+        "fdry": 0.7983285630953167
+      }
+    },
+    {
+      "inputs": {
+        "h2ocan": 0.1,
+        "dpai": 1.0,
+        "dlai": 0.8
+      },
+      "outputs": {
+        "fwet": 0.05,
+        "fdry": 0.76
+      }
+    },
+    {
+      "inputs": {
+        "h2ocan": 1.0,
+        "dpai": 1.0,
+        "dlai": 0.8
+      },
+      "outputs": {
+        "fwet": 0.05,
+        "fdry": 0.76
+      }
+    },
+    {
+      "inputs": {
+        "h2ocan": 0.0,
+        "dpai": 0.5,
+        "dlai": 0.5
+      },
+      "outputs": {
+        "fwet": 0.0,
+        "fdry": 1.0
+      }
+    },
+    {
+      "inputs": {
+        "h2ocan": 0.0,
+        "dpai": 0.0,
+        "dlai": 0.0
+      },
+      "outputs": {
+        "fwet": 0.0,
+        "fdry": 0.0
+      }
+    }
+  ]
+}

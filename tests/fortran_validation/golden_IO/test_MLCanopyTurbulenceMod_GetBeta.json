@@ -1,0 +1,78 @@
+{
+  "generated_utc": "2026-05-22T00:28:23.720034+00:00",
+  "executable": "test_MLCanopyTurbulenceMod_GetBeta.exe",
+  "cases": [
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": 0.0
+      },
+      "outputs": {
+        "beta": 0.3
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": -1.0
+      },
+      "outputs": {
+        "beta": 0.4191670752401665
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": 1.0
+      },
+      "outputs": {
+        "beta": 0.23506049748961924
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": -0.5
+      },
+      "outputs": {
+        "beta": 0.35784686367246843
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": 0.5
+      },
+      "outputs": {
+        "beta": 0.2573766591876911
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.25,
+        "LcL": 0.0
+      },
+      "outputs": {
+        "beta": 0.25
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.35,
+        "LcL": -2.0
+      },
+      "outputs": {
+        "beta": 0.7138939289374236
+      }
+    },
+    {
+      "inputs": {
+        "beta_neutral": 0.3,
+        "LcL": 2.0
+      },
+      "outputs": {
+        "beta": 0.20887301451017942
+      }
+    }
+  ]
+}

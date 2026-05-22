@@ -1,0 +1,102 @@
+{
+  "generated_utc": "2026-05-22T00:28:24.482789+00:00",
+  "executable": "test_MLCanopyNitrogenProfileMod_NitrogenScale.exe",
+  "cases": [
+    {
+      "inputs": {
+        "kn": 0.3,
+        "pai_above": 0.0,
+        "dpai": 0.5,
+        "kb": 0.5,
+        "clump_fac": 0.8,
+        "fracsun": 0.4,
+        "tbi": 1.0,
+        "leaf_optics_type_in": 0
+      },
+      "outputs": {
+        "nscale_sun": 1.6874966301787804,
+        "nscale_sha": 0.4226913973801707
+      }
+    },
+    {
+      "inputs": {
+        "kn": 0.3,
+        "pai_above": 1.0,
+        "dpai": 0.4,
+        "kb": 0.5,
+        "clump_fac": 0.8,
+        "fracsun": 0.3,
+        "tbi": 0.607,
+        "leaf_optics_type_in": 0
+      },
+      "outputs": {
+        "nscale_sun": 1.0458890614152736,
+        "nscale_sha": 0.5490404125679914
+      }
+    },
+    {
+      "inputs": {
+        "kn": 0.3,
+        "pai_above": 2.0,
+        "dpai": 0.4,
+        "kb": 0.5,
+        "clump_fac": 0.8,
+        "fracsun": 0.2,
+        "tbi": 0.368,
+        "leaf_optics_type_in": 0
+      },
+      "outputs": {
+        "nscale_sun": 0.704608151196854,
+        "nscale_sha": 0.4702998385971906
+      }
+    },
+    {
+      "inputs": {
+        "kn": 0.3,
+        "pai_above": 0.0,
+        "dpai": 0.5,
+        "kb": 0.5,
+        "clump_fac": 0.8,
+        "fracsun": 0.4,
+        "tbi": 1.0,
+        "leaf_optics_type_in": 1
+      },
+      "outputs": {
+        "nscale_sun": 0.9286134904996146,
+        "nscale_sha": 0.9286134904996146
+      }
+    },
+    {
+      "inputs": {
+        "kn": 0.5,
+        "pai_above": 0.0,
+        "dpai": 0.5,
+        "kb": 0.5,
+        "clump_fac": 0.8,
+        "fracsun": 0.4,
+        "tbi": 1.0,
+        "leaf_optics_type_in": 0
+      },
+      "outputs": {
+        "nscale_sun": 1.6105415483476742,
+        "nscale_sha": 0.400967080625518
+      }
+    },
+    {
+      "inputs": {
+        "kn": 0.3,
+        "pai_above": 0.0,
+        "dpai": 0.5,
+        "kb": 0.7,
+        "clump_fac": 0.9,
+        "fracsun": 0.6,
+        "tbi": 1.0,
+        "leaf_optics_type_in": 0
+      },
+      "outputs": {
+        "nscale_sun": 1.1995641768076102,
+        "nscale_sha": 0.5221874610376211
+      }
+    }
+  ]
+}

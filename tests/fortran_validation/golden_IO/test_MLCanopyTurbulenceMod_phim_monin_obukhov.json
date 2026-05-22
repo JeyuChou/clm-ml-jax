@@ -1,0 +1,78 @@
+{
+  "generated_utc": "2026-05-22T00:28:22.951726+00:00",
+  "executable": "test_MLCanopyTurbulenceMod_phim_monin_obukhov.exe",
+  "cases": [
+    {
+      "inputs": {
+        "zeta": 0.0
+      },
+      "outputs": {
+        "phim": 1.0,
+        "phic": 1.0
+      }
+    },
+    {
+      "inputs": {
+        "zeta": 0.5
+      },
+      "outputs": {
+        "phim": 3.5,
+        "phic": 3.5
+      }
+    },
+    {
+      "inputs": {
+        "zeta": 1.0
+      },
+      "outputs": {
+        "phim": 6.0,
+        "phic": 6.0
+      }
+    },
+    {
+      "inputs": {
+        "zeta": 2.0
+      },
+      "outputs": {
+        "phim": 11.0,
+        "phic": 11.0
+      }
+    },
+    {
+      "inputs": {
+        "zeta": -0.5
+      },
+      "outputs": {
+        "phim": 0.5773502691896258,
+        "phic": 0.3333333333333333
+      }
+    },
+    {
+      "inputs": {
+        "zeta": -1.0
+      },
+      "outputs": {
+        "phim": 0.49247906050545237,
+        "phic": 0.24253562503633297
+      }
+    },
+    {
+      "inputs": {
+        "zeta": -2.0
+      },
+      "outputs": {
+        "phim": 0.4172261448611506,
+        "phic": 0.17407765595569785
+      }
+    },
+    {
+      "inputs": {
+        "zeta": 0.2
+      },
+      "outputs": {
+        "phim": 2.0,
+        "phic": 2.0
+      }
+    }
+  ]
+}

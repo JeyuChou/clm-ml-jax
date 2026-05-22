@@ -22,7 +22,7 @@ jax.config.update("jax_enable_x64", True)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SRC_DIR = PROJECT_ROOT / "src"
-GOLDEN_DIR = PROJECT_ROOT / "clm-ml-fortran" / "golden_IO"
+GOLDEN_DIR = PROJECT_ROOT / "tests" / "fortran_validation" / "golden_IO"
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
