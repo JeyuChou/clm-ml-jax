@@ -113,15 +113,6 @@ flux_profile_type = 1    # Flux-profile: -1=dataset, 0=well-mixed, 1=implicit
 runge_kutta_type = 41    # Time integration: 10=Euler, 21=2nd-order, 41=4th-order
 dtime_ml = 60.0          # Sub-step interval (s); must divide CLM timestep
 ```
-### Debug a Single Timestep
-
-Use the provided debug template:
-
-```bash
-python src/offline_executable/debug_physics.py
-```
-
-This script manually initializes model state and calls physics functions directly for inspection.
 
 ---
 
