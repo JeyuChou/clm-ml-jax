@@ -24,59 +24,59 @@ from __future__ import annotations
 
 from functools import partial
 from typing import Any, List, Sequence, Tuple
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.clm_varctl import iulog  # noqa: F401
 from clm_src_main.clm_varcon import grav, spval  # noqa: F401
-from clm_src_main.clm_varpar import ivis, inir  # noqa: F401
-from clm_src_utils.spmdMod import masterproc  # noqa: F401
-from multilayer_canopy.MLclm_varcon import mmh2o, rgas  # noqa: F401
-from multilayer_canopy.MLclm_varctl import (  # noqa: F401
-    mlcan_to_clm,
-    dtime_ml,
-    ml_vert_init,
-    runge_kutta_type,
-    nrk,
-    met_type,
-    GridInfo,
-)
-from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan, nleaf  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
+from clm_src_main.clm_varpar import inir, ivis  # noqa: F401
 from clm_src_main.PatchType import patch  # noqa: F401
+from clm_src_utils.spmdMod import masterproc  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 
 # Physics modules (translated elsewhere)
 from multilayer_canopy.MLCanopyNitrogenProfileMod import CanopyNitrogenProfile  # noqa: F401
 from multilayer_canopy.MLCanopyTurbulenceMod import CanopyTurbulence  # noqa: F401
-from multilayer_canopy.MLFluxProfileSolutionMod import FluxProfileSolution  # noqa: F401
 from multilayer_canopy.MLCanopyWaterMod import (  # noqa: F401
-    CanopyWettedFraction,
-    CanopyInterception,
     CanopyEvaporation,
+    CanopyInterception,
+    CanopyWettedFraction,
 )
+from multilayer_canopy.MLclm_varcon import mmh2o, rgas  # noqa: F401
+from multilayer_canopy.MLclm_varctl import (  # noqa: F401
+    GridInfo,
+    dtime_ml,
+    met_type,
+    ml_vert_init,
+    mlcan_to_clm,
+    nrk,
+    runge_kutta_type,
+)
+from multilayer_canopy.MLclm_varpar import isha, isun, nleaf, nlevmlcan  # noqa: F401
+from multilayer_canopy.MLFluxProfileSolutionMod import FluxProfileSolution  # noqa: F401
+from multilayer_canopy.MLGetAtmForcingMod import GetAtmForcing  # noqa: F401
 from multilayer_canopy.MLinitVerticalMod import (  # noqa: F401
+    getPADparameters,
     initVerticalProfiles,
     initVerticalStructure,
-    getPADparameters,
 )
 from multilayer_canopy.MLLeafBoundaryLayerMod import (
-    LeafBoundaryLayer,
     LeafBoundaryLayerBoth,
 )  # noqa: F401
 from multilayer_canopy.MLLeafHeatCapacityMod import LeafHeatCapacity  # noqa: F401
 from multilayer_canopy.MLLeafPhotosynthesisMod import LeafPhotosynthesis  # noqa: F401
 from multilayer_canopy.MLLongwaveRadiationMod import LongwaveRadiation  # noqa: F401
 from multilayer_canopy.MLPlantHydraulicsMod import (  # noqa: F401
-    SoilResistance,
-    PlantResistance,
     LeafWaterPotential,
+    PlantResistance,
+    SoilResistance,
 )
+from multilayer_canopy.MLRungeKuttaMod import RungeKuttaIni, RungeKuttaUpdate  # noqa: F401
 from multilayer_canopy.MLSolarRadiationMod import SolarRadiation  # noqa: F401
 from multilayer_canopy.MLWaterVaporMod import LatVap  # noqa: F401
-from multilayer_canopy.MLGetAtmForcingMod import GetAtmForcing  # noqa: F401
-from multilayer_canopy.MLRungeKuttaMod import RungeKuttaIni, RungeKuttaUpdate  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Module-level cache for Runge-Kutta coefficients (computed once on first
@@ -290,12 +290,12 @@ def MLCanopyFluxes(
         Updated :class:`mlcanopy_type` holding end-of-timestep state
         and CLM-timestep-mean fluxes.
     """
+    import multilayer_canopy.MLclm_varctl as _ml_ctl  # for ml_vert_init mutation
     from clm_src_utils.clm_time_manager import (
+        get_curr_calday,
         get_nstep,
         get_step_size,
-        get_curr_calday,
     )  # noqa: F401
-    import multilayer_canopy.MLclm_varctl as _ml_ctl  # for ml_vert_init mutation
 
     _diff_mode = grid is not None
 
@@ -502,7 +502,6 @@ def MLCanopyFluxes(
         nvar1d = 23
         nvar2d = 14
         nvar3d = 12
-        begp = bounds.begp
         endp = bounds.endp
         flux_accumulator = jnp.zeros((endp + 1, nvar1d))
         flux_accumulator_profile = jnp.zeros((endp + 1, nlevmlcan + 2, nvar2d))
@@ -941,15 +940,18 @@ def _GetCLMVar(
         ``*_soil``, and ``solar_zen_forcing`` fields set for the
         current CLM timestep.
     """
-    from clm_src_main.clm_varpar import ivis, inir  # noqa: F401
-    from clm_src_main.clm_varpar import nlevsno  # noqa: F401
+    from clm_share.shr_orb_mod import shr_orb_cosz, shr_orb_decl  # noqa: F401
     from clm_src_main.clm_varcon import pi  # noqa: F401 (pi = rpi)
-    from clm_src_utils.clm_time_manager import get_curr_calday  # noqa: F401
-    from clm_src_utils.clm_varorb import eccen, obliqr, lambm0, mvelpp  # noqa: F401
-    from clm_share.shr_orb_mod import shr_orb_decl, shr_orb_cosz  # noqa: F401
+    from clm_src_main.clm_varpar import (  # noqa: F401
+        inir,
+        ivis,
+        nlevsno,  # noqa: F401
+    )
     from clm_src_main.ColumnType import col  # noqa: F401
     from clm_src_main.GridcellType import grc  # noqa: F401
     from clm_src_main.PatchType import patch  # noqa: F401
+    from clm_src_utils.clm_time_manager import get_curr_calday  # noqa: F401
+    from clm_src_utils.clm_varorb import eccen, lambm0, mvelpp, obliqr  # noqa: F401
 
     # ------------------------------------------------------------------
     # Unpack CLM inputs (mirrors Fortran associate block)
@@ -1155,7 +1157,7 @@ def _MLAccumulateFluxes(
         Updated ``(flux_accumulator, flux_accumulator_profile,
         flux_accumulator_leaf)`` tuple.
     """
-    from clm_src_main.clm_varpar import ivis, inir  # noqa: F401
+    from clm_src_main.clm_varpar import inir, ivis  # noqa: F401
 
     nvar1d = 23
     nvar2d = 14
@@ -1298,8 +1300,8 @@ def _MLScaleAndWriteBack(
         flux_accumulator_leaf, mlcanopy_inst)`` with scaled accumulators
         and updated canopy container.
     """
-    from clm_src_main.clm_varpar import ivis, inir  # noqa: F401
     from clm_src_main.abortutils import endrun  # noqa: F401
+    from clm_src_main.clm_varpar import inir, ivis  # noqa: F401
 
     nvar1d = 23
     nvar2d = 14
@@ -1392,7 +1394,7 @@ def _MLScaleAndWriteBack(
         swskyd = swskyd.at[p, inir].set(_wb1())
         lwsky = lwsky.at[p].set(_wb1())
 
-        assert (i + 1) == nvar1d, f"_MLScaleAndWriteBack: nvar1d mismatch"
+        assert (i + 1) == nvar1d, "_MLScaleAndWriteBack: nvar1d mismatch"
 
         j = -1
 
@@ -1421,7 +1423,7 @@ def _MLScaleAndWriteBack(
         lwupw = lwupw.at[p, 0 : _ncan + 1].set(_wb2_rad())
         lwdwn = lwdwn.at[p, 0 : _ncan + 1].set(_wb2_rad())
 
-        assert (j + 1) == nvar2d, f"_MLScaleAndWriteBack: nvar2d mismatch"
+        assert (j + 1) == nvar2d, "_MLScaleAndWriteBack: nvar2d mismatch"
 
         k = -1
 
@@ -1443,7 +1445,7 @@ def _MLScaleAndWriteBack(
         agross = agross.at[p, :, :].set(_wb3())
         gs = gs.at[p, :, :].set(_wb3())
 
-        assert (k + 1) == nvar3d, f"_MLScaleAndWriteBack: nvar3d mismatch"
+        assert (k + 1) == nvar3d, "_MLScaleAndWriteBack: nvar3d mismatch"
 
     mlcanopy_inst = mlcanopy_inst._replace(
         ustar_canopy=ustar,
@@ -1571,11 +1573,10 @@ def _CanopyFluxesDiagnostics(
     Returns:
         Updated :class:`mlcanopy_type`.
     """
-    from clm_src_main.clm_varpar import numrad, ivis, inir  # noqa: F401
-    from multilayer_canopy.MLclm_varctl import flux_profile_type  # noqa: F401
-    from multilayer_canopy.MLclm_varpar import isun, isha  # noqa: F401
-    from multilayer_canopy.MLWaterVaporMod import LatVap  # noqa: F401
     from clm_src_main.abortutils import endrun  # noqa: F401
+    from clm_src_main.clm_varpar import inir, ivis, numrad  # noqa: F401
+    from multilayer_canopy.MLclm_varctl import flux_profile_type  # noqa: F401
+    from multilayer_canopy.MLclm_varpar import isha, isun  # noqa: F401
 
     # ------------------------------------------------------------------
     # Extract mutable arrays (all output fields)

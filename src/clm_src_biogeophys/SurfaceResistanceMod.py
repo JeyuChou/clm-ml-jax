@@ -12,16 +12,15 @@ Fortran lines 1-130
 
 import jax.numpy as jnp
 import numpy as np
-from jax import Array
 
+from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
+from clm_src_biogeophys.TemperatureType import temperature_type  # noqa: F401
+from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type  # noqa: F401
 from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.decompMod import bounds_type  # noqa: F401
 from clm_src_main.clm_varcon import denh2o, denice  # noqa: F401
 from clm_src_main.clm_varpar import nlevsno  # noqa: F401
 from clm_src_main.ColumnType import col  # noqa: F401
-from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
-from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type  # noqa: F401
-from clm_src_biogeophys.TemperatureType import temperature_type  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public entry point

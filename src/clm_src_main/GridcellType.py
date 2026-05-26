@@ -9,9 +9,11 @@ Original Fortran module: GridcellType
 """
 
 from __future__ import annotations
+
 from typing import NamedTuple
 
 import numpy as np
+
 from clm_src_main.clm_varcon import spval as nan  # nan => spval
 
 # ---------------------------------------------------------------------------

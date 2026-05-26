@@ -26,24 +26,27 @@ from __future__ import annotations
 
 from typing import Sequence
 
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varcon import rpi as pi  # noqa: F401
 from clm_src_main.clm_varctl import iulog  # noqa: F401
+from clm_src_main.clm_varpar import ivis, numrad  # noqa: F401
 from clm_src_main.decompMod import bounds_type  # noqa: F401
 from clm_src_main.PatchType import patch  # noqa: F401
 from clm_src_main.pftconMod import pftcon  # noqa: F401
-from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
-from clm_src_main.clm_varcon import rpi as pi  # noqa: F401
-from clm_src_main.clm_varpar import numrad, ivis  # noqa: F401
-from multilayer_canopy.MLclm_varcon import chil_max, chil_min, kb_max, J_to_umol  # noqa: F401
-from multilayer_canopy.MLclm_varctl import light_type, leaf_optics_type  # noqa: F401
-from multilayer_canopy.MLclm_varpar import nlevmlcan, isun, isha  # noqa: F401
+from multilayer_canopy.MLclm_varcon import J_to_umol, chil_max, chil_min, kb_max  # noqa: F401
+from multilayer_canopy.MLclm_varctl import (  # noqa: F401
+    GridInfo,  # noqa: F401
+    leaf_optics_type,
+    light_type,
+)
+from multilayer_canopy.MLclm_varpar import isha, isun, nlevmlcan  # noqa: F401
 from multilayer_canopy.MLMathToolsMod import tridiag  # noqa: F401
-from multilayer_canopy.MLclm_varctl import GridInfo  # noqa: F401
+from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public driver
@@ -702,9 +705,6 @@ def _TwoStream(
     Returns:
         Updated :class:`mlcanopy_type`.
     """
-    unitb: float = 1.0  # Fortran: parameter unitb = 1.0
-    unitd: float = 1.0  # Fortran: parameter unitd = 1.0
-
     swskyb = mlcanopy_inst.swskyb_forcing
     swskyd = mlcanopy_inst.swskyd_forcing
     ncan = mlcanopy_inst.ncan_canopy

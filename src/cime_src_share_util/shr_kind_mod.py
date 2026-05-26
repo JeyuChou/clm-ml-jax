@@ -13,8 +13,9 @@ These constants are used throughout CTSM to ensure consistent numeric precision
 and portability across different computing platforms.
 """
 
-import jax.numpy as jnp
 from typing import Final
+
+import jax.numpy as jnp
 
 # =============================================================================
 # PRECISION/KIND CONSTANTS

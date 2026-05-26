@@ -34,51 +34,51 @@ Fortran lines 1-560
 
 from __future__ import annotations
 
+import math
 from typing import Sequence, Tuple
 
-import math
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varcon import grav, vkc  # noqa: F401
+from clm_src_main.clm_varcon import pi as rpi
 from clm_src_main.clm_varctl import iulog, rslfile  # noqa: F401
-from clm_src_main.clm_varcon import grav, vkc, pi as rpi  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 from multilayer_canopy.MLclm_varcon import (  # noqa: F401
-    mmh2o,
-    mmdry,
-    cd,
-    eta_max,
-    beta_neutral_max,
-    cr,
-    z0mg,
-    LcL_min,
     LcL_max,
-    aH12,
-    c2,
-    dtLgridM,
-    zdtgridM,
-    psigridM,
-    dtLgridH,
-    zdtgridH,
-    psigridH,
-    nZ,
-    nL,
+    LcL_min,
     Pr0,
     Pr1,
     Pr2,
-    z0mg,
+    aH12,
+    beta_neutral_max,
+    c2,
+    cd,
+    cr,
+    dtLgridH,
+    dtLgridM,
+    eta_max,
+    mmdry,
+    mmh2o,
+    nL,
+    nZ,
+    psigridH,
+    psigridM,
     ra_max,
+    z0mg,
+    zdtgridH,
+    zdtgridM,
 )
 from multilayer_canopy.MLclm_varctl import (  # noqa: F401
-    turb_type,
-    sparse_canopy_type,
-    HF_extension_type,
-    GridInfo,
     DIFFERENTIABLE_MODE,
+    GridInfo,
+    HF_extension_type,
+    sparse_canopy_type,
+    turb_type,
 )
 from multilayer_canopy.MLMathToolsMod import hybrid, hybrid_scalar  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 
 # Python-float aliases for aH12 elements — used inside _ObuFuncPure which is called
 # on every solver iteration; accessing aH12[i] (a JAX array) would force an XLA sync
@@ -1483,12 +1483,7 @@ def _obu_writeback_jax(p, obu_val, kwargs, mlcanopy_inst):
     sai_p = kwargs["sai_p"]
     zref_p = kwargs["zref_p"]
     uref_p = kwargs["uref_p"]
-    thref_p = kwargs["thref_p"]
-    thvref_p = kwargs["thvref_p"]
-    qref_p = kwargs["qref_p"]
     rhomol_p = kwargs["rhomol_p"]
-    taf_p = kwargs["taf_p"]
-    qaf_p = kwargs["qaf_p"]
 
     obu_min_stable = Lc_p / LcL_max
     obu_max_unstable = Lc_p / LcL_min
@@ -2222,7 +2217,7 @@ def _HF2008(
         lm = 2.0 * beta_p**3 * Lc_val
         eta = beta_p / lm * ztop_p
         if eta >= eta_max:
-            print(f" Warning: HF2008: lm/beta error")
+            print(" Warning: HF2008: lm/beta error")
             print(f" nstep = {nstep}  nstep_ml = {nstep_ml}")
             print(f" eta = {eta}")
         lm_over_beta = ztop_p / eta
@@ -2411,7 +2406,7 @@ def LookupPsihatINI() -> None:
 
     import netCDF4 as nc  # noqa: F401 — defer import
 
-    print(f"Attempting to read RSL look-up table .....")
+    print("Attempting to read RSL look-up table .....")
 
     with nc.Dataset(rslfile, "r") as ncid:
 
@@ -2439,7 +2434,7 @@ def LookupPsihatINI() -> None:
         zdtgridH_nc = np.asarray(_read("zdtgridH"), dtype=float)
         psigridH_nc = np.asarray(_read("psigridH"), dtype=float)
 
-    print(f"Successfully read RSL look-up table")
+    print("Successfully read RSL look-up table")
 
     # Copy into module-level arrays with Fortran index conventions —
     # Fortran lines 522-530:

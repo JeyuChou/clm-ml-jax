@@ -17,11 +17,10 @@ JIT-compatible checking if needed).
 """
 
 import jax
-import jax.numpy as jnp
 
-from multilayer_canopy.MLWaterVaporMod import SatVap, LatVap  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 from clm_src_main.abortutils import endrun  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLWaterVaporMod import LatVap, SatVap  # noqa: F401
 
 
 def SoilFluxes(

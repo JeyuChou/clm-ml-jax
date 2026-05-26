@@ -1,5 +1,9 @@
 # Claude-specific files
 .claude/
+CLAUDE.md
+CLM-ml_v1/
+clubb_ML/
+tests/integration/
 
 # Internal development tools (not part of the land model)
 jax-agents/

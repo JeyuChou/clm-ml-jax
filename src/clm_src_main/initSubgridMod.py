@@ -7,11 +7,12 @@ including patch-level array management and subgrid hierarchy setup.
 Translation of CLM-ml_v1/clm_src_main/initSubgridMod.F90 to Python/JAX.
 """
 
-import jax
-import jax.numpy as jnp
-from typing import Optional, Tuple, Dict, Any, List
 import logging
 from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+import jax
+import jax.numpy as jnp
 
 # Import related modules (these would need to be implemented)
 try:
@@ -467,7 +468,7 @@ def print_subgrid_summary() -> None:
 
         # Get statistics
         stats = get_patch_statistics(_subgrid_structure.patch_types, _subgrid_structure.active_mask)
-        print(f"Patch Statistics:")
+        print("Patch Statistics:")
         for key, value in stats.items():
             print(f"  {key}: {value:.2f}")
 

@@ -13,13 +13,15 @@ Fortran lines 1-110
 from typing import Tuple
 
 from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_utils.clm_time_manager import start_date_ymd, start_date_tod, dtstep  # noqa: F401
 from clm_src_main.clm_varctl import iulog  # noqa: F401
-from offline_driver import clmSoilOptionMod  # noqa: F401
-from offline_driver.TowerDataMod import ntower, tower_id, tower_num, tower_time  # noqa: F401
-from multilayer_canopy import MLclm_varctl  # noqa: F401
 from clm_src_utils import clm_time_manager  # noqa: F401
-from offline_driver import TowerDataMod  # noqa: F401
+from clm_src_utils.clm_time_manager import dtstep, start_date_tod, start_date_ymd  # noqa: F401
+from multilayer_canopy import MLclm_varctl  # noqa: F401
+from offline_driver import (
+    TowerDataMod,  # noqa: F401
+    clmSoilOptionMod,  # noqa: F401
+)
+from offline_driver.TowerDataMod import ntower, tower_id, tower_num, tower_time  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Module-level control variables for offline executable

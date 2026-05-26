@@ -13,19 +13,19 @@ Fortran lines 1-110
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.ColumnType import col  # noqa: F401
-from clm_src_main.decompMod import bounds_type  # noqa: F401
-from clm_src_main.clm_varpar import nlevgrnd, nlevsno  # noqa: F401
 import clm_src_main.clm_instMod as clm_instMod  # noqa: F401
-from offline_driver.clmDataMod import clmData  # noqa: F401
 import offline_driver.clmSoilOptionMod as _clmSoilOpt  # noqa: F401
-from clm_src_main.filterMod import filter, setExposedvegpFilter  # noqa: F401
+from clm_src_biogeophys.SoilWaterMovementMod import SoilWater  # noqa: F401
 from clm_src_biogeophys.SurfaceAlbedoMod import SoilAlbedo  # noqa: F401
 from clm_src_biogeophys.SurfaceResistanceMod import calc_soilevap_resis  # noqa: F401
-from multilayer_canopy.MLSoilTemperatureMod import SoilTemperature, SoilThermProp  # noqa: F401
-from clm_src_biogeophys.SoilWaterMovementMod import SoilWater  # noqa: F401
+from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varpar import nlevgrnd, nlevsno  # noqa: F401
+from clm_src_main.ColumnType import col  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
+from clm_src_main.filterMod import filter, setExposedvegpFilter  # noqa: F401
 from multilayer_canopy.MLCanopyFluxesMod import MLCanopyFluxes  # noqa: F401
+from multilayer_canopy.MLSoilTemperatureMod import SoilTemperature, SoilThermProp  # noqa: F401
+from offline_driver.clmDataMod import clmData  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -81,7 +81,6 @@ def clm_drv(
     # Read all state instances live from clm_instMod to avoid stale
     # module-level aliases (singletons are rebound during initialize2)
     # ------------------------------------------------------------------
-    from clm_src_main.ColumnType import col
 
     canopystate_inst = clm_instMod.canopystate_inst
     waterdiagnosticbulk_inst = clm_instMod.waterdiagnosticbulk_inst
@@ -191,7 +190,6 @@ def clm_drv(
         h2osfc = h2osfc.at[c - bounds.begc].set(0.0)
 
     # Write zeroed arrays back into their containers
-    col = col._replace(snl=snl)
     waterdiagnosticbulk_inst = waterdiagnosticbulk_inst._replace(frac_sno_eff_col=frac_sno_eff)
     water_inst = water_inst._replace(h2osno_col=h2osno)
     waterstatebulk_inst = waterstatebulk_inst._replace(h2osfc_col=h2osfc)

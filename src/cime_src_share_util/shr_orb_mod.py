@@ -15,9 +15,10 @@ References:
 Translated from: shr_orb_mod.F90, lines 1-467
 """
 
-import jax.numpy as jnp
-from jax import jit, lax, Array
 from typing import NamedTuple, Tuple
+
+import jax.numpy as jnp
+from jax import Array, jit, lax
 
 # =============================================================================
 # Constants

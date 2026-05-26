@@ -8,6 +8,7 @@ Original Fortran module: abortutils
 """
 
 from __future__ import annotations
+
 from typing import Optional
 
 from .clm_varctl import iulog
@@ -66,7 +67,6 @@ def handle_err(status: int, errmsg: str) -> None:
 
     if status != nf_noerr:
         try:
-            import netCDF4
 
             # Get error message using netCDF4's error handling
             nc_msg = f"NetCDF error {status}"

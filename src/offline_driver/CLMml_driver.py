@@ -12,52 +12,54 @@ Fortran lines 1-200
 """
 
 from __future__ import annotations
-import jax.numpy as jnp
+
 import math
 import os
 from typing import IO
 
+import jax.numpy as jnp
+
+from clm_share.shr_orb_mod import shr_orb_params  # noqa: F401
+from clm_src_biogeophys.CanopyStateType import canopystate_type  # noqa: F401
+from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type  # noqa: F401
+from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
+from clm_src_biogeophys.TemperatureType import temperature_type  # noqa: F401
+from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type  # noqa: F401
+from clm_src_cpl.lnd_comp_nuopc import InitializeRealize, ModelAdvance, bounds_type  # noqa: F401
+from clm_src_main import clm_instMod  # noqa: F401
 from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.clm_varctl import iulog  # noqa: F401
-from clm_src_main.clm_instMod import (  # noqa: F401
-    atm2lnd_inst,
-    wateratm2lndbulk_inst,
-    soilstate_inst,
-    waterstatebulk_inst,
-    canopystate_inst,
-    temperature_inst,
-    frictionvel_inst,
-    mlcanopy_inst,
-)
 
 # Type imports for function signatures
 from clm_src_main.atm2lndType import atm2lnd_type  # noqa: F401
+from clm_src_main.clm_instMod import (  # noqa: F401
+    atm2lnd_inst,
+    canopystate_inst,
+    frictionvel_inst,
+    mlcanopy_inst,
+    soilstate_inst,
+    temperature_inst,
+    wateratm2lndbulk_inst,
+    waterstatebulk_inst,
+)
+from clm_src_main.clm_varctl import iulog  # noqa: F401
+from clm_src_main.filterMod import filter, setFilters  # noqa: F401
+from clm_src_main.PatchType import patch  # noqa: F401
 from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type  # noqa: F401
-from clm_src_biogeophys.TemperatureType import temperature_type  # noqa: F401
-from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type  # noqa: F401
-from clm_src_biogeophys.CanopyStateType import canopystate_type  # noqa: F401
-from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
-from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
-from clm_src_main import clm_instMod  # noqa: F401
-from multilayer_canopy.MLclm_varctl import flux_profile_type, met_type  # noqa: F401
 from clm_src_utils import clm_time_manager  # noqa: F401
 from clm_src_utils.clm_time_manager import (  # noqa: F401
-    start_date_ymd,
-    start_date_tod,
     curr_date_tod,
     dtstep,
-    itim,
-    get_curr_date,
     get_curr_calday,
+    get_curr_date,
     get_curr_time,
+    itim,
+    start_date_tod,
+    start_date_ymd,
 )
-from clm_src_utils.clm_varorb import eccen, mvelpp, lambm0, obliqr  # noqa: F401
+from clm_src_utils.clm_varorb import eccen, lambm0, mvelpp, obliqr  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLclm_varctl import flux_profile_type, met_type  # noqa: F401
 from offline_driver.controlMod import control  # noqa: F401
-from clm_src_main.filterMod import setFilters, filter  # noqa: F401
-from clm_src_cpl.lnd_comp_nuopc import InitializeRealize, ModelAdvance, bounds_type  # noqa: F401
-from clm_src_main.PatchType import patch  # noqa: F401
-from clm_share.shr_orb_mod import shr_orb_params  # noqa: F401
 from offline_driver.TowerDataMod import tower_id, tower_num  # noqa: F401
 from offline_driver.TowerMetMod import TowerMetCurr, TowerMetNext  # noqa: F401
 
@@ -124,7 +126,6 @@ def CLMml_drv(bounds: bounds_type) -> None:
     # ------------------------------------------------------------------
     # Orbital parameters for this year — Fortran lines 80-81
     # ------------------------------------------------------------------
-    from clm_src_utils import clm_varorb
 
     obliq, mvelp = shr_orb_params(yr)  # obliq, mvelp are local (not used further)
 
@@ -313,11 +314,11 @@ def init_acclim(
     ntim: int,
     begp: int,
     endp: int,
-    atm2lnd_inst: atm2lnd_type,
-    wateratm2lndbulk_inst: wateratm2lndbulk_type,
-    temperature_inst: temperature_type,
-    frictionvel_inst: frictionvel_type,
-    mlcanopy_inst: mlcanopy_type,
+    atm2lnd_inst: atm2lnd_type,  # noqa: F811
+    wateratm2lndbulk_inst: wateratm2lndbulk_type,  # noqa: F811
+    temperature_inst: temperature_type,  # noqa: F811
+    frictionvel_inst: frictionvel_type,  # noqa: F811
+    mlcanopy_inst: mlcanopy_type,  # noqa: F811
 ) -> tuple[atm2lnd_type, wateratm2lndbulk_type, temperature_type, frictionvel_type, mlcanopy_type]:
     """
     Read tower meteorology data once over all time slices to derive
@@ -419,8 +420,8 @@ def TowerVeg(
     it: int,
     begp: int,
     endp: int,
-    canopystate_inst: canopystate_type,
-    mlcanopy_inst: mlcanopy_type,
+    canopystate_inst: canopystate_type,  # noqa: F811
+    mlcanopy_inst: mlcanopy_type,  # noqa: F811
 ) -> tuple[canopystate_type, mlcanopy_type]:
     """
     Initialize tower vegetation properties for each patch.
@@ -470,11 +471,11 @@ def TowerVeg(
     from clm_src_main.clm_varpar import mxpft  # noqa: F401
     from clm_src_main.PatchType import patch  # noqa: F401
     from offline_driver.TowerDataMod import (  # noqa: F401
-        tower_pft,
         tower_canht,
-        tower_root,
         tower_pbeta_lai,
         tower_pbeta_sai,
+        tower_pft,
+        tower_root,
     )
 
     # ------------------------------------------------------------------
@@ -556,9 +557,9 @@ def SoilInit(
     strt: int,
     begc: int,
     endc: int,
-    soilstate_inst: soilstate_type,
-    waterstatebulk_inst: waterstatebulk_type,
-    temperature_inst: temperature_type,
+    soilstate_inst: soilstate_type,  # noqa: F811
+    waterstatebulk_inst: waterstatebulk_type,  # noqa: F811
+    temperature_inst: temperature_type,  # noqa: F811
 ) -> tuple[waterstatebulk_type, temperature_type]:
     """
     Initialize soil temperature and volumetric soil moisture profiles
@@ -607,7 +608,7 @@ def SoilInit(
 
     from clm_src_main.abortutils import handle_err  # noqa: F401
     from clm_src_main.clm_varcon import denh2o, spval  # noqa: F401
-    from clm_src_main.clm_varpar import nlevgrnd, nlevsoi, nlevsno  # noqa: F401
+    from clm_src_main.clm_varpar import nlevgrnd, nlevsno, nlevsoi  # noqa: F401
     from clm_src_main.ColumnType import col  # noqa: F401
     from offline_driver.clmSoilOptionMod import clm_phys  # noqa: F401
 
@@ -705,7 +706,7 @@ def output(
     nout5: IO,
     nout6: IO,
     mlcan: mlcanopy_type,
-    temperature_inst: temperature_type,
+    temperature_inst: temperature_type,  # noqa: F811
 ) -> None:
     """
     Write per-timestep model output to six ASCII files.
@@ -749,14 +750,13 @@ def output(
     """
     from clm_src_main.abortutils import endrun  # noqa: F401
     from clm_src_main.clm_varcon import tfrz  # noqa: F401
-    from clm_src_main.clm_varpar import ivis, inir, nlevsno  # noqa: F401
+    from clm_src_main.clm_varpar import inir, ivis, nlevsno  # noqa: F401
     from clm_src_main.ColumnType import col  # noqa: F401
     from clm_src_utils.clm_time_manager import dtstep  # noqa: F401
     from multilayer_canopy.MLclm_varcon import mmdry, mmh2o  # noqa: F401
     from multilayer_canopy.MLclm_varctl import met_type  # noqa: F401
-    from multilayer_canopy.MLclm_varpar import isun, isha  # noqa: F401
+    from multilayer_canopy.MLclm_varpar import isha, isun  # noqa: F401
     from multilayer_canopy.MLWaterVaporMod import LatVap  # noqa: F401
-    import math
 
     missing_value: float = -999.0
     zero_value: float = 0.0
@@ -1044,10 +1044,10 @@ def _fmt10(val) -> str:
 
 
 def ReadCanopyProfiles(
-    itim: int,
+    itim: int,  # noqa: F811
     curr_calday: float,
     nin1: IO,
-    mlcanopy_inst: mlcanopy_type,
+    mlcanopy_inst: mlcanopy_type,  # noqa: F811
 ) -> mlcanopy_type:
     """
     Read T, Q, U vertical profile data for the current time step from
@@ -1105,7 +1105,7 @@ def ReadCanopyProfiles(
         Updated :class:`mlcanopy_type`.
     """
     from clm_src_main.abortutils import endrun  # noqa: F401
-    from multilayer_canopy.MLclm_varcon import mmh2o, mmdry  # noqa: F401
+    from multilayer_canopy.MLclm_varcon import mmdry, mmh2o  # noqa: F401
 
     # Unpack mutable arrays (Fortran associate block)
     ncan = mlcanopy_inst.ncan_canopy  # Number of aboveground layers

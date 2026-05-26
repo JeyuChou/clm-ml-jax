@@ -33,12 +33,11 @@ from __future__ import annotations
 from typing import NamedTuple
 
 import jax.numpy as jnp
-import numpy as np
 
 from clm_src_main.clm_varcon import ispval, spval  # noqa: F401
 from clm_src_main.clm_varpar import nlevgrnd, numrad  # noqa: F401
-from multilayer_canopy.MLclm_varpar import nlevmlcan, nleaf, isun, isha  # noqa: F401
 from multilayer_canopy.MLclm_varctl import nrk  # noqa: F401
+from multilayer_canopy.MLclm_varpar import isha, isun, nleaf, nlevmlcan  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # NamedTuple definition

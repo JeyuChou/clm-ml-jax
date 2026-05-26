@@ -12,12 +12,12 @@ Fortran lines 1-115
 
 import jax.numpy as jnp
 
-from clm_src_main.decompMod import bounds_type  # noqa: F401
-from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.clm_varpar import nlevsoi, nlevgrnd  # noqa: F401
-from clm_src_main.clm_varcon import zmin_bedrock  # noqa: F401
-from offline_driver.clmSoilOptionMod import clm_phys  # noqa: F401
 import offline_driver.TowerDataMod as TowerDataMod
+from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varcon import zmin_bedrock  # noqa: F401
+from clm_src_main.clm_varpar import nlevgrnd, nlevsoi  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
+from offline_driver.clmSoilOptionMod import clm_phys  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Module-level constant (Fortran line 38)

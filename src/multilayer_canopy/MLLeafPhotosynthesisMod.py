@@ -24,68 +24,65 @@ import functools
 import math
 from typing import Tuple
 
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.clm_varctl import iulog  # noqa: F401
 from clm_src_main.clm_varcon import tfrz  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
 from clm_src_main.PatchType import patch  # noqa: F401
 from clm_src_main.pftconMod import pftcon  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 from multilayer_canopy.MLclm_varcon import (  # noqa: F401
-    rgas,
-    kc25,
-    ko25,
-    cp25,
-    kcha,
-    koha,
-    cpha,
-    vcmaxha_noacclim,
-    vcmaxha_acclim,
-    jmaxha_noacclim,
-    jmaxha_acclim,
-    vcmaxhd_noacclim,
-    vcmaxhd_acclim,
-    jmaxhd_noacclim,
-    jmaxhd_acclim,
-    vcmaxse_noacclim,
-    vcmaxse_acclim,
-    jmaxse_noacclim,
-    jmaxse_acclim,
-    rdha,
-    rdhd,
-    rdse,
-    phi_psII,
-    theta_j,
-    vpd_min_MED,
-    rh_min_BB,
-    dh2o_to_dco2,
-    qe_c4,
     colim_c3a,
     colim_c4a,
     colim_c4b,
+    cp25,
+    cpha,
+    dh2o_to_dco2,
+    jmaxha_acclim,
+    jmaxha_noacclim,
+    jmaxhd_acclim,
+    jmaxhd_noacclim,
+    jmaxse_acclim,
+    jmaxse_noacclim,
+    kc25,
+    kcha,
+    ko25,
+    koha,
+    phi_psII,
+    qe_c4,
+    rdha,
+    rdhd,
+    rdse,
+    rgas,
+    rh_min_BB,
+    theta_j,
+    vcmaxha_acclim,
+    vcmaxha_noacclim,
+    vcmaxhd_acclim,
+    vcmaxhd_noacclim,
+    vcmaxse_acclim,
+    vcmaxse_noacclim,
+    vpd_min_MED,
 )
 from multilayer_canopy.MLclm_varctl import (  # noqa: F401
-    gs_type,
     acclim_type,
-    gspot_type,
     colim_type,
     gs_solver,
+    gs_type,
+    gspot_type,
 )
-from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: F401
 from multilayer_canopy.MLMathToolsMod import (
-    hybrid,
+    bisection,  # noqa: F401
+    bisection_scalar,
     quadratic,
     quadratic_py,
-    zbrent,
-    bisection,  # noqa: F401
-    hybrid_scalar,
     zbrent_scalar,
-    bisection_scalar,
 )
+from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: F401
 from multilayer_canopy.MLWaterVaporMod import SatVap, SatVap_py  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Private: temperature response functions
@@ -2296,9 +2293,6 @@ def LeafPhotosynthesis(
     Returns:
         Updated :class:`mlcanopy_type`.
     """
-    tol_ci: float = 0.1  # Fortran: parameter tol = 0.1_r8
-    tol_gs: float = 0.001  # tolerance for _StomataOptimization
-
     c3psn_pft = pftcon.c3psn
 
     # Pre-materialise patch.itype, pftcon, and MLpftcon arrays as numpy once so

@@ -8,17 +8,17 @@ Python-based NetCDF operations using xarray and netCDF4.
 Translation of CLM-ml_v1/clm_src_main/ncdio_pio.F90 to Python/JAX.
 """
 
-import jax
-import jax.numpy as jnp
-from typing import Optional, Union, Tuple, Dict, Any, List
 import logging
-from dataclasses import dataclass, field
-from enum import Enum
-from pathlib import Path
-import numpy as np
 
 # NetCDF handling libraries
 import warnings
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple, Union
+
+import jax.numpy as jnp
+import numpy as np
 
 try:
     # Suppress specific warnings during netCDF4/xarray import
@@ -815,13 +815,13 @@ def print_netcdf_summary(ncid: file_desc_t) -> None:
     print(f"Variables: {info.get('num_variables', 0)}")
 
     if "dimensions" in info:
-        print(f"\nDimensions:")
+        print("\nDimensions:")
         for dim_name in info["dimensions"]:
             dim_len = ncd_inqdlen(ncid, dim_name)
             print(f"  {dim_name}: {dim_len}")
 
     if "variables" in info:
-        print(f"\nVariables:")
+        print("\nVariables:")
         for var_name in info["variables"][:10]:  # Show first 10
             var = ncid.nc_file.variables[var_name]
             print(f"  {var_name}: {var.shape} ({var.dtype})")

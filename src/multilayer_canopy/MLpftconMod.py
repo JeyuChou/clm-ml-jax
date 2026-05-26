@@ -15,9 +15,9 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_utils.spmdMod import masterproc  # noqa: F401
 from clm_src_main.clm_varctl import iulog  # noqa: F401
 from clm_src_main.clm_varpar import mxpft  # noqa: F401
+from clm_src_utils.spmdMod import masterproc  # noqa: F401
 from multilayer_canopy.MLclm_varctl import pftcon_val  # noqa: F401
 
 # ---------------------------------------------------------------------------

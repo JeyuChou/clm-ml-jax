@@ -43,6 +43,7 @@ Reference: SoilTemperatureMod.F90, lines 1-398
 """
 
 from typing import NamedTuple, Tuple
+
 import jax
 import jax.numpy as jnp
 from jax import lax

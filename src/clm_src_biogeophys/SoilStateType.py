@@ -5,12 +5,13 @@ Original Fortran module: SoilStateType
 """
 
 from __future__ import annotations
+
 from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from clm_src_main.clm_varpar import nlevgrnd, nlevsno, nlevsoi
 from clm_src_main.clm_varcon import spval as nan
+from clm_src_main.clm_varpar import nlevgrnd, nlevsno, nlevsoi
 from clm_src_main.decompMod import bounds_type
 
 # ---------------------------------------------------------------------------

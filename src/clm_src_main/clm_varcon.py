@@ -6,13 +6,12 @@ mathematical constants, physical constants, and special value flags.
 Translated from Fortran CLM code to Python JAX.
 """
 
-import jax
-import jax.numpy as jnp
-import numpy as np
 from typing import Final
 
+import jax
+import jax.numpy as jnp
+
 # Import dependencies
-from clm_share.shr_kind_mod import r8
 
 # Mathematical constants used in CLM
 rpi: Final[float] = 3.141592654  # pi

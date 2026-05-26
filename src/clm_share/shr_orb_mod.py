@@ -20,7 +20,9 @@ Original Fortran module: shr_orb_mod
 """
 
 from __future__ import annotations
+
 import math
+
 from clm_src_main.clm_varcon import pi  # pi = rpi
 
 # ---------------------------------------------------------------------------

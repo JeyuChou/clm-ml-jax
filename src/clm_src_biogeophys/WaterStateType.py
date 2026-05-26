@@ -20,6 +20,7 @@ Translation notes:
 """
 
 from typing import NamedTuple
+
 import jax.numpy as jnp
 from jax import Array
 

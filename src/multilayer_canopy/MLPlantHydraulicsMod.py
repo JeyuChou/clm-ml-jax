@@ -37,18 +37,19 @@ from typing import Sequence
 import jax
 import jax.numpy as jnp
 
+from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
+from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type  # noqa: F401
 from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varcon import denh2o, grav
+from clm_src_main.clm_varcon import rpi as pi  # noqa: F401
 from clm_src_main.clm_varctl import iulog  # noqa: F401
-from clm_src_main.clm_varcon import rpi as pi, denh2o, grav  # noqa: F401
 from clm_src_main.clm_varpar import nlevsoi  # noqa: F401
 from clm_src_main.ColumnType import col  # noqa: F401
 from clm_src_main.PatchType import patch  # noqa: F401
-from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 from multilayer_canopy.MLclm_varcon import mmh2o  # noqa: F401
 from multilayer_canopy.MLclm_varctl import dtime_ml  # noqa: F401
-from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
-from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # PlantResistance — per-layer kernel + vmap

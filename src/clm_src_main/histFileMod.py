@@ -13,7 +13,6 @@ Fortran lines 1-90
 
 from typing import Optional
 
-import jax.numpy as jnp
 from jax import Array
 
 # ---------------------------------------------------------------------------

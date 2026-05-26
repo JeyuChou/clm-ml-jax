@@ -24,8 +24,8 @@ import jax.numpy as jnp
 from clm_src_main.clm_varcon import cpliq  # noqa: F401
 from clm_src_main.PatchType import patch  # noqa: F401
 from clm_src_main.pftconMod import pftcon  # noqa: F401
-from multilayer_canopy.MLclm_varcon import cpbio, fcarbon, fwater  # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLclm_varcon import cpbio, fcarbon, fwater  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Per-layer kernel — vmapped over the layer axis

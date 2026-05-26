@@ -8,16 +8,17 @@ spatial resolution in the CLM hierarchy: gridcell → column → patch.
 Translation of CLM-ml_v1/clm_src_main/PatchType.F90 to Python/JAX.
 """
 
-import jax
-import jax.numpy as jnp
-from typing import Optional, Tuple, Dict, Any, List
 import logging
 from dataclasses import dataclass, field
 from enum import IntEnum
+from typing import Any, Dict, List, Tuple
+
+import jax.numpy as jnp
 
 # Import related modules
 try:
-    from .clm_varcon import ispval, spval as nan
+    from .clm_varcon import ispval
+    from .clm_varcon import spval as nan
 except ImportError:
     # Provide fallback values
     ispval = -9999
@@ -614,14 +615,14 @@ def print_patch_summary(patch_instance: patch_type) -> None:
     Args:
         patch_instance: Patch instance to summarize
     """
-    print(f"\n=== Patch Structure Summary ===")
+    print("\n=== Patch Structure Summary ===")
     print(f"Patch range: [{patch_instance.begp}, {patch_instance.endp}]")
     print(f"Max patches: {patch_instance.max_patches}")
     print(f"Valid structure: {patch_instance.is_valid()}")
 
     # Get statistics
     stats = get_pft_statistics(patch_instance)
-    print(f"\nPFT Statistics:")
+    print("\nPFT Statistics:")
     for key, value in stats.items():
         if key != "unique_pfts":
             print(f"  {key}: {value}")
@@ -632,7 +633,7 @@ def print_patch_summary(patch_instance: patch_type) -> None:
     # Show some example patches
     active_patches = patch_instance.get_active_patches()
     if len(active_patches) > 0:
-        print(f"\nExample patches:")
+        print("\nExample patches:")
         for i, patch_idx in enumerate(active_patches[:3]):  # Show first 3
             try:
                 info = patch_instance.get_patch_info(patch_idx)
@@ -641,7 +642,7 @@ def print_patch_summary(patch_instance: patch_type) -> None:
                 print(f"  Patch {patch_idx}: Error - {e}")
 
     if patch_instance.metadata:
-        print(f"\nMetadata:")
+        print("\nMetadata:")
         for key, value in patch_instance.metadata.items():
             print(f"  {key}: {value}")
 

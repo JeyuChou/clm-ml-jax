@@ -16,8 +16,6 @@ Reference: CLMml.F90, lines 1-24
 """
 
 from typing import NamedTuple
-import jax
-import jax.numpy as jnp
 
 # =============================================================================
 # Data Structures
@@ -321,7 +319,7 @@ TRANSLATION NOTES:
    - decompMod.bounds_type -> BoundsType NamedTuple
    - decompMod.get_clump_bounds -> get_clump_bounds function
    - CLMml_driver.CLMml_drv -> passed as driver_fn argument
-   
+
 3. **Data Structures**:
    - bounds_type (Fortran derived type) -> BoundsType (Python NamedTuple)
    - Added ClumpConfig for clump management

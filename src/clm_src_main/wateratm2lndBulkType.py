@@ -71,8 +71,6 @@ def InitAllocate(bounds: bounds_type) -> wateratm2lndbulk_type:
     """
     ival = jnp.float64(0.0)  # Fortran line 52: ival = 0.0_r8
 
-    begg = bounds.begg
-    endg = bounds.endg  # Fortran lines 55-56
     begc = bounds.begc
     endc = bounds.endc  # Fortran lines 55-56
 

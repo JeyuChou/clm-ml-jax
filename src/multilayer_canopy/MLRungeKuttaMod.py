@@ -11,16 +11,16 @@ Fortran lines 1-240
 
 from typing import Tuple
 
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.clm_varctl import iulog  # noqa: F401
 from clm_src_main.clm_varcon import spval  # noqa: F401
-from multilayer_canopy.MLclm_varpar import isun, isha  # noqa: F401
-from multilayer_canopy.MLclm_varctl import nrk, runge_kutta_type  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLclm_varctl import nrk, runge_kutta_type  # noqa: F401
+from multilayer_canopy.MLclm_varpar import isha, isun  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public: Runge-Kutta state update
@@ -35,7 +35,7 @@ def RungeKuttaUpdate(
     num_filter: int,
     filter: Array,
     mlcanopy_inst: mlcanopy_type,
-    grid: "GridInfo | None" = None,
+    grid: "GridInfo | None" = None,  # noqa: F821
 ) -> mlcanopy_type:
     """
     Runge-Kutta state update: update states for the next Runge-Kutta step.

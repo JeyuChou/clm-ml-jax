@@ -10,20 +10,20 @@ Fortran lines 1-430
 
 from functools import partial
 
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from clm_src_main.abortutils import endrun  # noqa: F401
 from clm_src_main.clm_varctl import iulog  # noqa: F401
-from multilayer_canopy.MLclm_varctl import flux_profile_type, dtime_ml  # noqa: F401
-from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan, nleaf  # noqa: F401
-from multilayer_canopy.MLWaterVaporMod import SatVap, LatVap  # noqa: F401
-from multilayer_canopy.MLMathToolsMod import tridiag_2eq  # noqa: F401
-from multilayer_canopy.MLLeafFluxesMod import LeafFluxes  # noqa: F401
-from multilayer_canopy.MLSoilFluxesMod import SoilFluxes  # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLclm_varctl import dtime_ml, flux_profile_type  # noqa: F401
+from multilayer_canopy.MLclm_varpar import isha, isun, nleaf, nlevmlcan  # noqa: F401
+from multilayer_canopy.MLLeafFluxesMod import LeafFluxes  # noqa: F401
+from multilayer_canopy.MLMathToolsMod import tridiag_2eq  # noqa: F401
+from multilayer_canopy.MLSoilFluxesMod import SoilFluxes  # noqa: F401
+from multilayer_canopy.MLWaterVaporMod import LatVap, SatVap  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Debug flag — set True to run ErrorCheck01 / ErrorCheck02 after every
@@ -497,7 +497,6 @@ def _implicit_fps_jit(
     # Vertical sensible heat and water vapor fluxes between layers
     # Fortran lines 363-370
     # ------------------------------------------------------------------
-    ics = jnp.arange(1, n + 1)
     # tair[ic+1] for ic=1..n-1, then thref at ic=n
     _tair_next_inner = _tair_final[2 : n + 2]  # length n
     _tair_next_inner = _tair_next_inner.at[n - 1].set(_thref_p)

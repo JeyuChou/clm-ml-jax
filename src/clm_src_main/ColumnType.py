@@ -9,13 +9,14 @@ Original Fortran module: ColumnType
 """
 
 from __future__ import annotations
+
 from typing import NamedTuple
 
 import jax.numpy as jnp
-import numpy as np
 
 from clm_src_main import clm_varpar  # Import module, not values
-from clm_src_main.clm_varcon import ispval, spval as nan
+from clm_src_main.clm_varcon import ispval
+from clm_src_main.clm_varcon import spval as nan
 
 # ---------------------------------------------------------------------------
 # column_type

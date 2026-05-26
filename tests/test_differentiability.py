@@ -22,15 +22,14 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
-
 # -----------------------------------------------------------------------
 # JAX must be configured before any import that touches jax arrays
 # -----------------------------------------------------------------------
 import jax
+import pytest
 
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp
+import jax.numpy as jnp  # noqa: E402
 
 # Project root on the path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -63,10 +62,10 @@ def _build_initialized_model():
     dirout_raw = str(params.get("dirout", "")).strip()
     dirout = _main_mod._resolve_path(dirout_raw) if dirout_raw else ""
 
-    from offline_driver import controlMod, TowerDataMod, clmSoilOptionMod
-    from multilayer_canopy import MLclm_varctl
     from clm_src_utils import clm_time_manager
     from clm_src_utils.clm_time_manager import get_curr_calday
+    from multilayer_canopy import MLclm_varctl
+    from offline_driver import TowerDataMod, clmSoilOptionMod, controlMod
 
     controlMod.tower_site = tower_name
     controlMod.iyear = iyear
@@ -107,10 +106,10 @@ def _build_initialized_model():
 
     _clm_driver_mod.filter = _new_filter
 
-    from offline_driver.CLMml_driver import init_acclim, TowerVeg, SoilInit
-    from offline_driver.TowerMetMod import TowerMetCurr, TowerMetNext
     from clm_share.shr_orb_mod import shr_orb_params
     from clm_src_utils import clm_varorb
+    from offline_driver.CLMml_driver import SoilInit, TowerVeg, init_acclim
+    from offline_driver.TowerMetMod import TowerMetCurr, TowerMetNext
 
     _eccen, _obliq, _mvelp, _obliqr, _lambm0, _mvelpp = shr_orb_params(iyear)
     clm_varorb.eccen = _eccen

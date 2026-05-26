@@ -14,8 +14,8 @@ import os
 import sys
 import time
 from pathlib import Path
-import f90nml  # pip install f90nml
 
+import f90nml  # pip install f90nml
 import jax
 
 # Enable 64-bit floats in JAX before any module-level array creation.
@@ -31,9 +31,9 @@ os.makedirs(_jax_cache_dir, exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", _jax_cache_dir)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 10.0)
 
-from clm_src_main.decompMod import bounds_type
-from clm_src_cpl.lnd_comp_nuopc import InitializeRealize, ModelAdvance
-from offline_driver import controlMod
+from clm_src_cpl.lnd_comp_nuopc import InitializeRealize, ModelAdvance  # noqa: E402
+from clm_src_main.decompMod import bounds_type  # noqa: E402
+from offline_driver import controlMod  # noqa: E402
 
 # Root of the Python source tree  (…/clm-ml-jax/src)
 _SRC_ROOT = Path(__file__).resolve().parent.parent
@@ -159,10 +159,10 @@ def main():
     # ------------------------------------------------------------------
     # 2b. Resolve tower index and propagate key settings to global modules
     # ------------------------------------------------------------------
-    from offline_driver import TowerDataMod, clmSoilOptionMod
-    from multilayer_canopy import MLclm_varctl
     from clm_src_utils import clm_time_manager
-    from clm_src_utils.clm_time_manager import get_curr_date, get_curr_calday
+    from clm_src_utils.clm_time_manager import get_curr_calday, get_curr_date
+    from multilayer_canopy import MLclm_varctl
+    from offline_driver import TowerDataMod, clmSoilOptionMod
 
     tower_num = 0
     for i in range(1, int(TowerDataMod.ntower) + 1):
@@ -237,18 +237,20 @@ def main():
     # ------------------------------------------------------------------
     # 6. Pre-loop setup  (mirrors CLMml_drv lines 84-120)
     # ------------------------------------------------------------------
+    from offline_driver.clmDataMod import close_cached_datasets as _close_clmdata_cache
     from offline_driver.CLMml_driver import (
-        init_acclim,
-        TowerVeg,
         SoilInit,
+        TowerVeg,
+        init_acclim,
         output,
     )
     from offline_driver.TowerMetMod import (
         TowerMetCurr,
         TowerMetNext,
+    )
+    from offline_driver.TowerMetMod import (
         close_cached_datasets as _close_towermet_cache,
     )
-    from offline_driver.clmDataMod import close_cached_datasets as _close_clmdata_cache
 
     # 6a. Acclimation temperature (reads full tower record once)
     (

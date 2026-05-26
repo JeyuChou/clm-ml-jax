@@ -20,6 +20,7 @@ Public Interface:
 """
 
 from typing import NamedTuple, Optional, Tuple
+
 import jax
 import jax.numpy as jnp
 from jax import Array

@@ -14,18 +14,18 @@ from jax import Array
 
 from clm_src_main.abortutils import endrun  # noqa: F401
 from clm_src_main.clm_varctl import iulog  # noqa: F401
-from clm_src_main.clm_varpar import ivis, inir  # noqa: F401
-from multilayer_canopy.MLclm_varctl import met_type, GridInfo  # noqa: F401
+from clm_src_main.clm_varpar import inir, ivis  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 from multilayer_canopy.MLclm_varcon import (  # noqa: F401
-    mmh2o,
-    mmdry,
     cpd,
     cpw,
-    rgas,
     lapse_rate,
+    mmdry,
+    mmh2o,
+    rgas,
     wind_forc_min,
 )
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLclm_varctl import GridInfo, met_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Private: 2-point linear interpolation

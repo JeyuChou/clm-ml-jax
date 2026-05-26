@@ -9,25 +9,22 @@ Original Fortran module: SoilStateInitTimeConstMod
 Fortran lines 1-230
 """
 
-import jax.numpy as jnp
-from jax import Array
-
+from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
 from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varcon import csol_bedrock  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
+from clm_src_main.clm_varpar import nlevgrnd, nlevsoi  # noqa: F401
 from clm_src_main.decompMod import bounds_type  # noqa: F401
 from clm_src_main.PatchType import patch  # noqa: F401
-from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
-from clm_src_main.clm_varcon import csol_bedrock  # noqa: F401
-from clm_src_main.clm_varpar import nlevsoi, nlevgrnd  # noqa: F401
-from clm_src_main.clm_varctl import iulog  # noqa: F401
 from offline_driver.SoilTexMod import (
-    ntex,
-    soil_tex,
-    clay_tex,
-    sand_tex,
-    watsat_tex,
-    smpsat_tex,
-    hksat_tex,
     bsw_tex,
+    clay_tex,
+    hksat_tex,
+    ntex,
+    sand_tex,
+    smpsat_tex,
+    soil_tex,
+    watsat_tex,
 )  # noqa: F401
 
 # ---------------------------------------------------------------------------

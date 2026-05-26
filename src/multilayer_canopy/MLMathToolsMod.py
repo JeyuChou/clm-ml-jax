@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import math
 from typing import Callable, Tuple
-from jax import Array
+
 import jax
 import jax.numpy as jnp
+from jax import Array
 
 from clm_src_main.abortutils import endrun  # noqa: F401
 from clm_src_main.clm_varctl import iulog  # noqa: F401

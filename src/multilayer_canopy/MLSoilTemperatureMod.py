@@ -10,20 +10,20 @@ Original Fortran module: MLSoilTemperatureMod
 
 from __future__ import annotations
 
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
-from clm_src_main.abortutils import endrun
-from clm_src_main.ColumnType import col
-from clm_src_main.decompMod import bounds_type
 from clm_src_biogeophys.SoilStateType import soilstate_type
 from clm_src_biogeophys.TemperatureType import temperature_type
 from clm_src_biogeophys.WaterDiagnosticBulkType import waterdiagnosticbulk_type
 from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type
 from clm_src_biogeophys.WaterType import water_type
-from multilayer_canopy.MLMathToolsMod import tridiag
+from clm_src_main.abortutils import endrun
+from clm_src_main.ColumnType import col
+from clm_src_main.decompMod import bounds_type
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type
+from multilayer_canopy.MLMathToolsMod import tridiag
 
 # Threshold for thin surface layer — Fortran line 33
 _thin_sfclayer: float = 1.0e-6
@@ -86,10 +86,9 @@ def SoilTemperature(
         Tuple ``(temperature_inst, soilstate_inst)`` with updated
         ``t_soisno_col`` and thermal properties.
     """
+    from clm_src_main.clm_varpar import nlevgrnd
     from clm_src_utils.clm_time_manager import get_step_size
-    from clm_src_main.clm_varpar import nlevgrnd, nlevsno
 
-    begc = bounds.begc
     endc = bounds.endc
     nc = endc + 1
     # State arrays (t_soisno_col, h2osoi_liq_col, z, etc.) use direct soil-layer
@@ -327,21 +326,18 @@ def SoilThermProp(
         Tuple ``(soilstate_inst, temperature_inst)`` with updated
         ``thk_col`` inside ``soilstate_inst``.
     """
-    from clm_src_main.clm_varpar import nlevsno, nlevgrnd
     from clm_src_main.clm_varcon import (
+        cpice,
+        cpliq,
+        csol_bedrock,
         denh2o,
         denice,
         tfrz,
-        tkwat,
-        tkice,
-        tkair,
-        cpice,
-        cpliq,
         thk_bedrock,
-        csol_bedrock,
+        tkice,
+        tkwat,
     )
-
-    nc = bounds.endc + 1
+    from clm_src_main.clm_varpar import nlevgrnd
 
     # ------------------------------------------------------------------
     # Aliases — mirror Fortran associate block (lines 175-203)
@@ -356,7 +352,6 @@ def SoilThermProp(
     zi = _fresh_col.zi
     z = _fresh_col.z
     t_soisno = temperature_inst.t_soisno_col
-    frac_sno = waterdiagnosticbulk_inst.frac_sno_eff_col
     h2osfc = waterstatebulk_inst.h2osfc_col
     h2osno = water_inst.h2osno_col
     h2osoi_liq = waterstatebulk_inst.h2osoi_liq_col

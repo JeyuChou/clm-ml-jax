@@ -13,8 +13,8 @@ Fortran source: lnd_comp_mct.F90, lines 1-63
 """
 
 from typing import NamedTuple, Protocol
+
 import jax.numpy as jnp
-from jax import Array
 
 # =============================================================================
 # Type Definitions

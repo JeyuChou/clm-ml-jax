@@ -21,13 +21,9 @@ Original Fortran dependencies:
 - shr_file_mod: Replaced with Python file handling
 """
 
-import os
 import logging
-from pathlib import Path
-from typing import Literal, Optional, Tuple, TextIO
-
-import jax.numpy as jnp
-from jax import jit
+import os
+from typing import Literal, Optional, TextIO, Tuple
 
 # Configure module logger
 logger = logging.getLogger(__name__)
@@ -209,11 +205,9 @@ def opnfil(locfn: str, iun: int, form: Literal["u", "U", "f", "F"]) -> Optional[
     if form in UNFORMATTED_FORMATS:
         # Unformatted = binary mode
         mode = "rb+"
-        ft = "unformatted"
     else:
         # Formatted = text mode
         mode = "r+"
-        ft = "formatted"
 
     # Line 130: Open file with error handling
     try:

@@ -4,8 +4,9 @@ This module provides utilities to configure and check GPU availability for JAX.
 """
 
 import os
+from typing import List, Optional
+
 import jax
-from typing import Optional, List
 
 
 def check_gpu_available() -> bool:

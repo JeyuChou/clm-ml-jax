@@ -32,16 +32,16 @@ from typing import Sequence
 import jax
 import jax.numpy as jnp
 
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 from multilayer_canopy.MLclm_varcon import (  # noqa: F401
     dewmx,
-    maximum_leaf_wetted_fraction,
     fwet_exponent,
     interception_fraction,
+    maximum_leaf_wetted_fraction,
     mmh2o,
 )
 from multilayer_canopy.MLclm_varctl import dtime_ml  # noqa: F401
-from multilayer_canopy.MLclm_varpar import isun, isha  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLclm_varpar import isha, isun  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public: wetted fraction of canopy

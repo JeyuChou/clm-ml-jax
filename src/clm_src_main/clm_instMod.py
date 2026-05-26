@@ -10,59 +10,83 @@ Original Fortran module: clm_instMod
 Fortran lines 1-105
 """
 
-from clm_src_main.decompMod import bounds_type  # noqa: F401
-
-from clm_src_main.atm2lndType import atm2lnd_type, Init as _atm2lnd_Init  # noqa: F401
-from clm_src_main.wateratm2lndBulkType import (
-    wateratm2lndbulk_type,
-    Init as _wateratm2lndbulk_Init,
-)  # noqa: F401
-from clm_src_biogeophys.SoilStateType import (
-    soilstate_type,
-    create_soilstate as _soilstate_Init,
-)  # noqa: F401
-from clm_src_biogeophys.WaterType import water_type, Init as _water_Init  # noqa: F401
-from clm_src_biogeophys.WaterStateBulkType import (
-    waterstatebulk_type,
-    Init as _waterstatebulk_Init,
-)  # noqa: F401
-from clm_src_biogeophys.WaterFluxBulkType import (
-    waterfluxbulk_type,
-    Init as _waterfluxbulk_Init,
-)  # noqa: F401
-from clm_src_biogeophys.WaterDiagnosticBulkType import (
-    waterdiagnosticbulk_type,
-    Init as _waterdiagnosticbulk_Init,
-)  # noqa: F401
 from clm_src_biogeophys.CanopyStateType import (
     canopystate_type,
+)  # noqa: F401
+from clm_src_biogeophys.CanopyStateType import (
     init_allocate_from_bounds as _canopystate_Init,
-)  # noqa: F401
-from clm_src_biogeophys.TemperatureType import (
-    temperature_type,
-    Init as _temperature_Init,
-)  # noqa: F401
+)
 from clm_src_biogeophys.EnergyFluxType import (
     energyflux_type,
-    init as _energyflux_Init,
 )  # noqa: F401
+from clm_src_biogeophys.EnergyFluxType import (
+    init as _energyflux_Init,
+)
 from clm_src_biogeophys.FrictionVelocityMod import (
     frictionvel_type,
-    init_friction_velocity as _frictionvel_Init,
 )  # noqa: F401
+from clm_src_biogeophys.FrictionVelocityMod import (
+    init_friction_velocity as _frictionvel_Init,
+)
+from clm_src_biogeophys.SoilStateInitTimeConstMod import SoilStateInitTimeConst  # noqa: F401
+from clm_src_biogeophys.SoilStateType import (
+    create_soilstate as _soilstate_Init,
+)
+from clm_src_biogeophys.SoilStateType import (
+    soilstate_type,
+)  # noqa: F401
+from clm_src_biogeophys.SolarAbsorbedType import init as _solarabs_Init
+from clm_src_biogeophys.SolarAbsorbedType import solarabs_type  # noqa: F401
+from clm_src_biogeophys.SurfaceAlbedoMod import SurfaceAlbedoInitTimeConst  # noqa: F401
+from clm_src_biogeophys.SurfaceAlbedoType import (
+    init_allocate as _surfalb_Init,
+)
 from clm_src_biogeophys.SurfaceAlbedoType import (
     surfalb_type,
-    init_allocate as _surfalb_Init,
 )  # noqa: F401
-from clm_src_biogeophys.SolarAbsorbedType import solarabs_type, init as _solarabs_Init  # noqa: F401
-from clm_src_biogeophys.SurfaceAlbedoMod import SurfaceAlbedoInitTimeConst  # noqa: F401
-from clm_src_biogeophys.SoilStateInitTimeConstMod import SoilStateInitTimeConst  # noqa: F401
+from clm_src_biogeophys.TemperatureType import (
+    Init as _temperature_Init,
+)
+from clm_src_biogeophys.TemperatureType import (
+    temperature_type,
+)  # noqa: F401
+from clm_src_biogeophys.WaterDiagnosticBulkType import (
+    Init as _waterdiagnosticbulk_Init,
+)
+from clm_src_biogeophys.WaterDiagnosticBulkType import (
+    waterdiagnosticbulk_type,
+)  # noqa: F401
+from clm_src_biogeophys.WaterFluxBulkType import (
+    Init as _waterfluxbulk_Init,
+)
+from clm_src_biogeophys.WaterFluxBulkType import (
+    waterfluxbulk_type,
+)  # noqa: F401
+from clm_src_biogeophys.WaterStateBulkType import (
+    Init as _waterstatebulk_Init,
+)
+from clm_src_biogeophys.WaterStateBulkType import (
+    waterstatebulk_type,
+)  # noqa: F401
+from clm_src_biogeophys.WaterType import Init as _water_Init
+from clm_src_biogeophys.WaterType import water_type  # noqa: F401
+from clm_src_main.atm2lndType import Init as _atm2lnd_Init
+from clm_src_main.atm2lndType import atm2lnd_type  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
 from clm_src_main.initVerticalMod import initVertical  # noqa: F401
+from clm_src_main.ncdio_pio import file_desc_t  # noqa: F401
+from clm_src_main.wateratm2lndBulkType import (
+    Init as _wateratm2lndbulk_Init,
+)
+from clm_src_main.wateratm2lndBulkType import (
+    wateratm2lndbulk_type,
+)  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import (
+    create_mlcanopy as _mlcanopy_Init,
+)
 from multilayer_canopy.MLCanopyFluxesType import (
     mlcanopy_type,
-    create_mlcanopy as _mlcanopy_Init,
 )  # noqa: F401  # CLMml
-from clm_src_main.ncdio_pio import file_desc_t  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Module-level singletons (Fortran lines 40-55)
@@ -127,8 +151,6 @@ def clm_instInit(bounds: bounds_type) -> None:
     global waterdiagnosticbulk_inst, canopystate_inst, temperature_inst
     global energyflux_inst, frictionvel_inst, surfalb_inst, solarabs_inst
     global mlcanopy_inst
-
-    from .clm_varpar import nlevgrnd, nlevsno
 
     # Fortran line 65
     initVertical(bounds)

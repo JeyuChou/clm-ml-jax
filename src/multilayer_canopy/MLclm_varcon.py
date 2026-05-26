@@ -11,8 +11,8 @@ Original Fortran module: MLclm_varcon
 Fortran lines 1-110
 """
 
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from clm_src_main.clm_varcon import spval  # noqa: F401

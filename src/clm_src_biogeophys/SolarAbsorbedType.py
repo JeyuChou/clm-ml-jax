@@ -16,6 +16,7 @@ Note:
 """
 
 from typing import NamedTuple
+
 import jax.numpy as jnp
 from jax import Array
 
@@ -151,7 +152,6 @@ def init(
         in place via InitAllocate.
     """
     # Create empty state to pass to init_allocate
-    n_patches = bounds.endp - bounds.begp + 1
     empty_state = SolarAbsState(fsa_patch=jnp.array([], dtype=jnp.float64))
     return init_allocate(empty_state, bounds)
 

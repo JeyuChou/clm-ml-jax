@@ -16,11 +16,9 @@ arrays (scalars or batched).  All branching on temperature uses
 ``jax.jit``-compatible.
 """
 
-from typing import Tuple, Union
-
 import jax.numpy as jnp
 
-from clm_src_main.clm_varcon import tfrz, hvap, hsub  # noqa: F401
+from clm_src_main.clm_varcon import hsub, hvap, tfrz  # noqa: F401
 from multilayer_canopy.MLclm_varcon import mmh2o  # noqa: F401
 
 # ---------------------------------------------------------------------------

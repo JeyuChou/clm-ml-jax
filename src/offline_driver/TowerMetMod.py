@@ -12,25 +12,24 @@ Original Fortran module: TowerMetMod
 Fortran lines 1-290
 """
 
-from typing import Dict, Tuple
 import atexit
+from typing import Dict, Tuple
 
 import jax.numpy as jnp
+import netCDF4 as nc  # noqa: F401
 from jax import Array
 
-import netCDF4 as nc  # noqa: F401
-
-from clm_src_main.abortutils import endrun, handle_err  # noqa: F401
-from clm_src_main.PatchType import patch  # noqa: F401
-from clm_src_main import GridcellType  # noqa: F401
-from clm_src_main.atm2lndType import atm2lnd_type  # noqa: F401
-from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type  # noqa: F401
 from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type  # noqa: F401
+from clm_src_main import GridcellType  # noqa: F401
+from clm_src_main.abortutils import endrun, handle_err  # noqa: F401
+from clm_src_main.atm2lndType import atm2lnd_type  # noqa: F401
 from clm_src_main.clm_varcon import sb  # noqa: F401
-from clm_src_main.clm_varpar import ivis, inir  # noqa: F401
-from multilayer_canopy.MLclm_varcon import mmh2o, mmdry  # noqa: F401
-from multilayer_canopy.MLWaterVaporMod import SatVap  # noqa: F401
+from clm_src_main.clm_varpar import inir, ivis  # noqa: F401
+from clm_src_main.PatchType import patch  # noqa: F401
+from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type  # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLclm_varcon import mmdry, mmh2o  # noqa: F401
+from multilayer_canopy.MLWaterVaporMod import SatVap  # noqa: F401
 from offline_driver.TowerDataMod import tower_ht, tower_lat, tower_lon  # noqa: F401
 
 # ---------------------------------------------------------------------------

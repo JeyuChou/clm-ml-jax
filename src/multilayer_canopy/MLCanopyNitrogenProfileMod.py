@@ -29,17 +29,17 @@ from clm_src_main.abortutils import endrun  # noqa: F401
 from clm_src_main.clm_varcon import tfrz  # noqa: F401
 from clm_src_main.PatchType import patch  # noqa: F401
 from clm_src_main.pftconMod import pftcon  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 from multilayer_canopy.MLclm_varcon import (  # noqa: F401
-    jmax25_to_vcmax25_noacclim,
     jmax25_to_vcmax25_acclim,
+    jmax25_to_vcmax25_noacclim,
+    kp25_to_vcmax25_c4,
     rd25_to_vcmax25_c3,
     rd25_to_vcmax25_c4,
-    kp25_to_vcmax25_c4,
 )
 from multilayer_canopy.MLclm_varctl import acclim_type, kn_val, leaf_optics_type  # noqa: F401
-from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan  # noqa: F401
+from multilayer_canopy.MLclm_varpar import isha, isun, nlevmlcan  # noqa: F401
 from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 
 
 @partial(jax.jit, static_argnums=(0, 1))

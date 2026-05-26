@@ -10,21 +10,21 @@ Original Fortran module: clmDataMod
 Fortran lines 1-250
 """
 
-import jax.numpy as jnp
-from jax import Array
-from typing import Dict
 import atexit
+from typing import Dict
 
+import jax.numpy as jnp
 import netCDF4 as nc  # noqa: F401
+from jax import Array
 
-from clm_src_main.abortutils import handle_err  # noqa: F401
-from clm_src_main.ColumnType import col  # noqa: F401
-from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
-from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type  # noqa: F401
 from clm_src_biogeophys.CanopyStateType import canopystate_type  # noqa: F401
+from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
 from clm_src_biogeophys.SurfaceAlbedoType import surfalb_type  # noqa: F401
-from clm_src_main.clm_varpar import nlevgrnd, nlevsoi  # noqa: F401
+from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type  # noqa: F401
+from clm_src_main.abortutils import handle_err  # noqa: F401
 from clm_src_main.clm_varcon import denh2o, spval  # noqa: F401
+from clm_src_main.clm_varpar import nlevgrnd, nlevsoi  # noqa: F401
+from clm_src_main.ColumnType import col  # noqa: F401
 from offline_driver.clmSoilOptionMod import clm_phys, nlev_soil_adjust  # noqa: F401
 
 # ---------------------------------------------------------------------------

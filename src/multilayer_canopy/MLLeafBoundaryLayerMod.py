@@ -24,13 +24,13 @@ import jax
 import jax.numpy as jnp
 
 from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.clm_varcon import tfrz, grav  # noqa: F401
+from clm_src_main.clm_varcon import grav, tfrz  # noqa: F401
 from clm_src_main.PatchType import patch  # noqa: F401
 from clm_src_main.pftconMod import pftcon  # noqa: F401
-from multilayer_canopy.MLclm_varcon import visc0, dh0, dv0, dc0, gb_factor, gbh_min  # noqa: F401
-from multilayer_canopy.MLclm_varctl import gb_type  # noqa: F401
-from multilayer_canopy.MLclm_varpar import isun, isha  # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLclm_varcon import dc0, dh0, dv0, gb_factor, gbh_min, visc0  # noqa: F401
+from multilayer_canopy.MLclm_varctl import gb_type  # noqa: F401
+from multilayer_canopy.MLclm_varpar import isha, isun  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Per-layer kernel — vmapped over layer axis

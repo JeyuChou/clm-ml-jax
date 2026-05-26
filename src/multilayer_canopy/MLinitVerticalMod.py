@@ -20,29 +20,28 @@ Fortran lines 1-260
 from typing import Sequence
 
 import jax.numpy as jnp
-from jax import Array
 
-from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.clm_varctl import iulog  # noqa: F401
-from clm_src_main.decompMod import bounds_type  # noqa: F401
-from clm_src_main.PatchType import patch  # noqa: F401
-from multilayer_canopy.MLclm_varctl import (  # noqa: F401
-    dz_tall,
-    dz_short,
-    dz_param,
-    nlayer_above,
-    nlayer_within,
-    dpai_min,
-)
-from multilayer_canopy.MLclm_varpar import nlevmlcan, isun, isha  # noqa: F401
-from multilayer_canopy.MLclm_varcon import mmh2o, mmdry  # noqa: F401
-from multilayer_canopy.MLMathToolsMod import beta_distribution_cdf  # noqa: F401
 from clm_src_biogeophys.CanopyStateType import canopystate_type  # noqa: F401
 from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from clm_src_main.abortutils import endrun  # noqa: F401
 from clm_src_main.atm2lndType import atm2lnd_type  # noqa: F401
-from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
 from clm_src_main.clm_varpar import mxpft  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
+from clm_src_main.PatchType import patch  # noqa: F401
+from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from multilayer_canopy.MLclm_varcon import mmdry, mmh2o  # noqa: F401
+from multilayer_canopy.MLclm_varctl import (  # noqa: F401
+    dpai_min,
+    dz_param,
+    dz_short,
+    dz_tall,
+    nlayer_above,
+    nlayer_within,
+)
+from multilayer_canopy.MLclm_varpar import isha, isun, nlevmlcan  # noqa: F401
+from multilayer_canopy.MLMathToolsMod import beta_distribution_cdf  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public: define canopy layer vertical structure

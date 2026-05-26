@@ -28,7 +28,7 @@ GOLDEN_DIR = PROJECT_ROOT / "tests" / "fortran_validation" / "golden_IO"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-import pytest
+import pytest  # noqa: E402
 
 # Session-level flag: True if RSL tables were loaded successfully.
 RSL_AVAILABLE: bool = False

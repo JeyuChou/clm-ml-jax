@@ -20,10 +20,10 @@ In JAX implementation:
 - Type-safe interfaces using NamedTuples and Protocols
 """
 
-from typing import Optional, Protocol, Tuple, Union, runtime_checkable
+from typing import NamedTuple, Optional, Protocol, Tuple, Union, runtime_checkable
+
 import jax.numpy as jnp
 from jax import Array
-from typing import NamedTuple
 
 # =============================================================================
 # Type Definitions

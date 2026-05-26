@@ -14,7 +14,8 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.clm_varcon import ispval, spval as nan  # noqa: F401
+from clm_src_main.clm_varcon import ispval  # noqa: F401
+from clm_src_main.clm_varcon import spval as nan
 from clm_src_main.decompMod import bounds_type  # noqa: F401
 
 # ---------------------------------------------------------------------------

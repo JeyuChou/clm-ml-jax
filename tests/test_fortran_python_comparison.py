@@ -15,9 +15,10 @@ Run after executing a 1-day CHATS7 May-2007 simulation:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
-from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -241,7 +242,6 @@ def _print_summary():
         if status == "FAIL":
             all_pass = False
 
-        coverage = f"{n_matched}/{n_ref} timesteps"
         incomplete = n_matched < n_ref
         tag_status = status if not incomplete else f"{status} (incomplete: {n_matched}/{n_ref} ts)"
         print(f"\n[{tag}]  {tag_status}")

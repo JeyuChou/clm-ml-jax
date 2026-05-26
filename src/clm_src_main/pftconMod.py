@@ -17,7 +17,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from clm_src_main.clm_varctl import iulog  # noqa: F401
-from clm_src_main.clm_varpar import mxpft, numrad, ivis, inir  # noqa: F401
+from clm_src_main.clm_varpar import inir, ivis, mxpft, numrad  # noqa: F401
 from multilayer_canopy.MLclm_varctl import pftcon_val  # noqa: F401
 
 # ---------------------------------------------------------------------------

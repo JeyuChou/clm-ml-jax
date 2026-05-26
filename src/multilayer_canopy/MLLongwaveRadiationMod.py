@@ -44,17 +44,17 @@ def _tridiag_py(a, b, c, r, n):
     return u
 
 
-from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.clm_varctl import iulog  # noqa: F401
-from clm_src_main.decompMod import bounds_type  # noqa: F401
-from clm_src_main.clm_varcon import sb  # noqa: F401
-from clm_src_main.PatchType import patch  # noqa: F401
-from multilayer_canopy.MLclm_varcon import emg  # noqa: F401
-from multilayer_canopy.MLclm_varctl import longwave_type, GridInfo  # noqa: F401
-from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan  # noqa: F401
-from multilayer_canopy.MLMathToolsMod import tridiag  # noqa: F401
-from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from clm_src_main.abortutils import endrun  # noqa: E402, F401
+from clm_src_main.clm_varcon import sb  # noqa: E402, F401
+from clm_src_main.clm_varctl import iulog  # noqa: E402, F401
+from clm_src_main.decompMod import bounds_type  # noqa: E402, F401
+from clm_src_main.PatchType import patch  # noqa: E402, F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: E402, F401
+from multilayer_canopy.MLclm_varcon import emg  # noqa: E402, F401
+from multilayer_canopy.MLclm_varctl import GridInfo, longwave_type  # noqa: E402, F401
+from multilayer_canopy.MLclm_varpar import isha, isun, nlevmlcan  # noqa: E402, F401
+from multilayer_canopy.MLMathToolsMod import tridiag  # noqa: E402, F401
+from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Public driver
