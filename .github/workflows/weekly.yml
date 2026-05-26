@@ -1,0 +1,75 @@
+name: Weekly Full Test Suite
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Every Monday at 06:00 UTC
+  workflow_dispatch:        # Allow manual trigger
+
+jobs:
+  full-test:
+    name: Full test suite + coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run full test suite
+        run: |
+          pytest tests/ -v \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=html:htmlcov \
+            --ignore=CLM-ml_v1 \
+            --ignore=clubb_ML \
+            --ignore=tests/integration \
+            --tb=short
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload HTML coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-${{ github.run_id }}
+          path: htmlcov/
+          retention-days: 30
+
+  integration:
+    name: Integration test (1-day CHATS7 simulation)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run 1-day CHATS7 simulation
+        run: |
+          cd src
+          clm-ml-offline ../input_files/nl.CHATS7.1day
+        timeout-minutes: 15
+
+      - name: Run integration comparison
+        run: |
+          cd tests/integration
+          PYTHONPATH=${{ github.workspace }}:${{ github.workspace }}/src \
+            pytest test_fortran_python_comparison.py -v --tb=short
+        timeout-minutes: 10
