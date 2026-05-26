@@ -10,26 +10,26 @@ Original Fortran module: clm_initializeMod
 Fortran lines 1-80
 """
 
-from clm_src_main.decompMod import bounds_type                                      # noqa: F401
-from clm_src_main.clm_varpar import clm_varpar_init   
-from clm_src_main import pftconMod # noqa: F401
-from clm_src_main.pftconMod import pftcon                                           # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
+from clm_src_main.clm_varpar import clm_varpar_init
+from clm_src_main import pftconMod  # noqa: F401
+from clm_src_main.pftconMod import pftcon  # noqa: F401
 from clm_src_main import GridcellType
-from clm_src_main.GridcellType import gridcell_type_Init                            # noqa: F401
+from clm_src_main.GridcellType import gridcell_type_Init  # noqa: F401
 from clm_src_main import ColumnType
-from clm_src_main.ColumnType import init_column                                     # noqa: F401
-from clm_src_main.PatchType import patch                                            # noqa: F401
-from clm_src_main.initGridCellsMod import initGridCells                             # noqa: F401
-from clm_src_main.filterMod import allocFilters, filter                             # noqa: F401
-from clm_src_main.clm_instMod import clm_instInit                                   # noqa: F401
-from multilayer_canopy.MLpftconMod import MLpftcon, Init                                       # noqa: F401
+from clm_src_main.ColumnType import init_column  # noqa: F401
+from clm_src_main.PatchType import patch  # noqa: F401
+from clm_src_main.initGridCellsMod import initGridCells  # noqa: F401
+from clm_src_main.filterMod import allocFilters, filter  # noqa: F401
+from clm_src_main.clm_instMod import clm_instInit  # noqa: F401
+from multilayer_canopy.MLpftconMod import MLpftcon, Init  # noqa: F401
 from multilayer_canopy.MLCanopyTurbulenceMod import LookupPsihatINI
-from multilayer_canopy import MLpftconMod                      # noqa: F401
-
+from multilayer_canopy import MLpftconMod  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public: phase one initialization
 # ---------------------------------------------------------------------------
+
 
 def initialize1() -> None:
     """
@@ -47,6 +47,7 @@ def initialize1() -> None:
 # ---------------------------------------------------------------------------
 # Public: phase two initialization
 # ---------------------------------------------------------------------------
+
 
 def initialize2(bounds: bounds_type) -> None:
     """
@@ -75,16 +76,16 @@ def initialize2(bounds: bounds_type) -> None:
             ``endp``.
     """
     # Read list of PFTs and their parameter values — Fortran lines 54-55
-    pftconMod.pftcon   = pftconMod.Init()
+    pftconMod.pftcon = pftconMod.Init()
     MLpftconMod.MLpftcon = MLpftconMod.Init()
 
     # Initialize CLMml roughness sublayer psihat look-up tables — Fortran line 59
-    LookupPsihatINI()      # CLMml
+    LookupPsihatINI()  # CLMml
 
     # Allocate memory for subgrid data structures — Fortran lines 61-63
     GridcellType.grc = gridcell_type_Init(bounds.begg, bounds.endg)
-    ColumnType.col     = init_column(bounds.begc, bounds.endc)
-    
+    ColumnType.col = init_column(bounds.begc, bounds.endc)
+
     patch.Init(bounds.begp, bounds.endp)
 
     # Build subgrid hierarchy of landunit, column, and patch — Fortran line 65
@@ -94,6 +95,7 @@ def initialize2(bounds: bounds_type) -> None:
     # Note: allocFilters returns a new filter instance (functional style)
     # but we're updating the global filter module variable
     from clm_src_main.filterMod import filter as filter_module
+
     global filter
     filter = allocFilters(bounds.begp, bounds.endp, bounds.begc, bounds.endc)
 

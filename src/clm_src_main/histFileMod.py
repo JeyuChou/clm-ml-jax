@@ -16,33 +16,33 @@ from typing import Optional
 import jax.numpy as jnp
 from jax import Array
 
-
 # ---------------------------------------------------------------------------
 # Public: register a 1-D single-level history field
 # ---------------------------------------------------------------------------
 
+
 def hist_addfld1d(
-    fname:           str,
-    units:           str,
-    avgflag:         str,
-    long_name:       str,
-    type1d_out:      Optional[str]   = None,   # Output type (from data type)
-    ptr_gcell:       Optional[Array] = None,   # Pointer to gridcell array
-    ptr_lunit:       Optional[Array] = None,   # Pointer to landunit array
-    ptr_col:         Optional[Array] = None,   # Pointer to column array
-    ptr_patch:       Optional[Array] = None,   # Pointer to patch array
-    ptr_lnd:         Optional[Array] = None,   # Pointer to lnd array
-    ptr_atm:         Optional[Array] = None,   # Pointer to atm array
-    p2c_scale_type:  Optional[str]   = None,   # Scale type: pfts -> column
-    c2l_scale_type:  Optional[str]   = None,   # Scale type: columns -> landunits
-    l2g_scale_type:  Optional[str]   = None,   # Scale type: landunits -> gridcells
-    set_lake:        Optional[float] = None,   # Value to set lakes to
-    set_nolake:      Optional[float] = None,   # Value to set non-lakes to
-    set_urb:         Optional[float] = None,   # Value to set urban to
-    set_nourb:       Optional[float] = None,   # Value to set non-urban to
-    set_noglc:       Optional[float] = None,   # Value to set non-glacier to
-    set_spec:        Optional[float] = None,   # Value to set special to
-    default:         Optional[str]   = None,   # 'inactive' to exclude from primary tape
+    fname: str,
+    units: str,
+    avgflag: str,
+    long_name: str,
+    type1d_out: Optional[str] = None,  # Output type (from data type)
+    ptr_gcell: Optional[Array] = None,  # Pointer to gridcell array
+    ptr_lunit: Optional[Array] = None,  # Pointer to landunit array
+    ptr_col: Optional[Array] = None,  # Pointer to column array
+    ptr_patch: Optional[Array] = None,  # Pointer to patch array
+    ptr_lnd: Optional[Array] = None,  # Pointer to lnd array
+    ptr_atm: Optional[Array] = None,  # Pointer to atm array
+    p2c_scale_type: Optional[str] = None,  # Scale type: pfts -> column
+    c2l_scale_type: Optional[str] = None,  # Scale type: columns -> landunits
+    l2g_scale_type: Optional[str] = None,  # Scale type: landunits -> gridcells
+    set_lake: Optional[float] = None,  # Value to set lakes to
+    set_nolake: Optional[float] = None,  # Value to set non-lakes to
+    set_urb: Optional[float] = None,  # Value to set urban to
+    set_nourb: Optional[float] = None,  # Value to set non-urban to
+    set_noglc: Optional[float] = None,  # Value to set non-glacier to
+    set_spec: Optional[float] = None,  # Value to set special to
+    default: Optional[str] = None,  # 'inactive' to exclude from primary tape
 ) -> None:
     """
     Register a 1-D single-level field on the master history field list.
@@ -103,29 +103,30 @@ def hist_addfld1d(
 # Public: register a 2-D multi-level history field
 # ---------------------------------------------------------------------------
 
+
 def hist_addfld2d(
-    fname:             str,
-    type2d:            str,
-    units:             str,
-    avgflag:           str,
-    long_name:         str,
-    type1d_out:        Optional[str]   = None,   # Output type (from data type)
-    ptr_gcell:         Optional[Array] = None,   # Pointer to gridcell array
-    ptr_lunit:         Optional[Array] = None,   # Pointer to landunit array
-    ptr_col:           Optional[Array] = None,   # Pointer to column array
-    ptr_patch:         Optional[Array] = None,   # Pointer to patch array
-    ptr_lnd:           Optional[Array] = None,   # Pointer to lnd array
-    ptr_atm:           Optional[Array] = None,   # Pointer to atm array
-    p2c_scale_type:    Optional[str]   = None,   # Scale type: pfts -> column
-    c2l_scale_type:    Optional[str]   = None,   # Scale type: columns -> landunits
-    l2g_scale_type:    Optional[str]   = None,   # Scale type: landunits -> gridcells
-    set_lake:          Optional[float] = None,   # Value to set lakes to
-    set_nolake:        Optional[float] = None,   # Value to set non-lakes to
-    set_urb:           Optional[float] = None,   # Value to set urban to
-    set_nourb:         Optional[float] = None,   # Value to set non-urban to
-    set_spec:          Optional[float] = None,   # Value to set special to
-    no_snow_behavior:  Optional[int]   = None,   # Special handling for multi-layer snow fields
-    default:           Optional[str]   = None,   # 'inactive' to exclude from primary tape
+    fname: str,
+    type2d: str,
+    units: str,
+    avgflag: str,
+    long_name: str,
+    type1d_out: Optional[str] = None,  # Output type (from data type)
+    ptr_gcell: Optional[Array] = None,  # Pointer to gridcell array
+    ptr_lunit: Optional[Array] = None,  # Pointer to landunit array
+    ptr_col: Optional[Array] = None,  # Pointer to column array
+    ptr_patch: Optional[Array] = None,  # Pointer to patch array
+    ptr_lnd: Optional[Array] = None,  # Pointer to lnd array
+    ptr_atm: Optional[Array] = None,  # Pointer to atm array
+    p2c_scale_type: Optional[str] = None,  # Scale type: pfts -> column
+    c2l_scale_type: Optional[str] = None,  # Scale type: columns -> landunits
+    l2g_scale_type: Optional[str] = None,  # Scale type: landunits -> gridcells
+    set_lake: Optional[float] = None,  # Value to set lakes to
+    set_nolake: Optional[float] = None,  # Value to set non-lakes to
+    set_urb: Optional[float] = None,  # Value to set urban to
+    set_nourb: Optional[float] = None,  # Value to set non-urban to
+    set_spec: Optional[float] = None,  # Value to set special to
+    no_snow_behavior: Optional[int] = None,  # Special handling for multi-layer snow fields
+    default: Optional[str] = None,  # 'inactive' to exclude from primary tape
 ) -> None:
     """
     Register a 2-D multi-level field on the master history field list.

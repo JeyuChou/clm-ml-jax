@@ -23,10 +23,10 @@ from typing import NamedTuple
 import numpy as np
 from jax import Array
 
-
 # ---------------------------------------------------------------------------
 # clumpfilter
 # ---------------------------------------------------------------------------
+
 
 class clumpfilter(NamedTuple):
     """
@@ -53,24 +53,26 @@ class clumpfilter(NamedTuple):
         num_hydrologyc:    Number of columns in the hydrology filter.
         hydrologyc:        Hydrology column indices.
     """
+
     # Counts — Fortran integer scalars inside clumpfilter
-    num_exposedvegp:  int
+    num_exposedvegp: int
     num_nolakeurbanp: int
-    num_nolakec:      int
-    num_nourbanc:     int
-    num_hydrologyc:   int
+    num_nolakec: int
+    num_nourbanc: int
+    num_hydrologyc: int
 
     # Index arrays — NumPy int32, 0-based storage, 1-based values
-    exposedvegp:  np.ndarray   # shape (endp - begp + 1,)
-    nolakeurbanp: np.ndarray   # shape (endp - begp + 1,)
-    nolakec:      np.ndarray   # shape (endc - begc + 1,)
-    nourbanc:     np.ndarray   # shape (endc - begc + 1,)
-    hydrologyc:   np.ndarray   # shape (endc - begc + 1,)
+    exposedvegp: np.ndarray  # shape (endp - begp + 1,)
+    nolakeurbanp: np.ndarray  # shape (endp - begp + 1,)
+    nolakec: np.ndarray  # shape (endc - begc + 1,)
+    nourbanc: np.ndarray  # shape (endc - begc + 1,)
+    hydrologyc: np.ndarray  # shape (endc - begc + 1,)
 
 
 # ---------------------------------------------------------------------------
 # allocFilters
 # ---------------------------------------------------------------------------
+
 
 def allocFilters(
     begp: int,
@@ -98,26 +100,27 @@ def allocFilters(
         A new :class:`clumpfilter` with all count fields set to 0 and
         all index arrays zero-initialised.
     """
-    np_size = endp - begp + 1   # number of patches
-    nc_size = endc - begc + 1   # number of columns
+    np_size = endp - begp + 1  # number of patches
+    nc_size = endc - begc + 1  # number of columns
 
     return clumpfilter(
-        num_exposedvegp  = 0,
-        num_nolakeurbanp = 0,
-        num_nolakec      = 0,
-        num_nourbanc     = 0,
-        num_hydrologyc   = 0,
-        exposedvegp  = np.zeros(np_size, dtype=np.int32),   # Fortran: (begp:endp)
-        nolakeurbanp = np.zeros(np_size, dtype=np.int32),   # Fortran: (begp:endp)
-        nolakec      = np.zeros(nc_size, dtype=np.int32),   # Fortran: (begc:endc)
-        nourbanc     = np.zeros(nc_size, dtype=np.int32),   # Fortran: (begc:endc)
-        hydrologyc   = np.zeros(nc_size, dtype=np.int32),   # Fortran: (begc:endc)
+        num_exposedvegp=0,
+        num_nolakeurbanp=0,
+        num_nolakec=0,
+        num_nourbanc=0,
+        num_hydrologyc=0,
+        exposedvegp=np.zeros(np_size, dtype=np.int32),  # Fortran: (begp:endp)
+        nolakeurbanp=np.zeros(np_size, dtype=np.int32),  # Fortran: (begp:endp)
+        nolakec=np.zeros(nc_size, dtype=np.int32),  # Fortran: (begc:endc)
+        nourbanc=np.zeros(nc_size, dtype=np.int32),  # Fortran: (begc:endc)
+        hydrologyc=np.zeros(nc_size, dtype=np.int32),  # Fortran: (begc:endc)
     )
 
 
 # ---------------------------------------------------------------------------
 # setFilters
 # ---------------------------------------------------------------------------
+
 
 def setFilters(filter: clumpfilter) -> clumpfilter:
     """
@@ -145,28 +148,33 @@ def setFilters(filter: clumpfilter) -> clumpfilter:
         index arrays set to 1; ``exposedvegp`` fields carried over
         unchanged.
     """
-    nolakeurbanp = filter.nolakeurbanp.copy(); nolakeurbanp[:] = 0  # 0-based index for single patch
-    nolakec      = filter.nolakec.copy();      nolakec[:]      = 0  # 0-based index for single column
-    nourbanc     = filter.nourbanc.copy();     nourbanc[:]     = 0  # 0-based index for single column
-    hydrologyc   = filter.hydrologyc.copy();   hydrologyc[:]   = 0  # 0-based index for single column
+    nolakeurbanp = filter.nolakeurbanp.copy()
+    nolakeurbanp[:] = 0  # 0-based index for single patch
+    nolakec = filter.nolakec.copy()
+    nolakec[:] = 0  # 0-based index for single column
+    nourbanc = filter.nourbanc.copy()
+    nourbanc[:] = 0  # 0-based index for single column
+    hydrologyc = filter.hydrologyc.copy()
+    hydrologyc[:] = 0  # 0-based index for single column
 
     return clumpfilter(
-        num_exposedvegp  = filter.num_exposedvegp,
-        num_nolakeurbanp = 1,
-        num_nolakec      = 1,
-        num_nourbanc     = 1,
-        num_hydrologyc   = 1,
-        exposedvegp  = filter.exposedvegp,
-        nolakeurbanp = nolakeurbanp,
-        nolakec      = nolakec,
-        nourbanc     = nourbanc,
-        hydrologyc   = hydrologyc,
+        num_exposedvegp=filter.num_exposedvegp,
+        num_nolakeurbanp=1,
+        num_nolakec=1,
+        num_nourbanc=1,
+        num_hydrologyc=1,
+        exposedvegp=filter.exposedvegp,
+        nolakeurbanp=nolakeurbanp,
+        nolakec=nolakec,
+        nourbanc=nourbanc,
+        hydrologyc=hydrologyc,
     )
 
 
 # ---------------------------------------------------------------------------
 # setExposedvegpFilter
 # ---------------------------------------------------------------------------
+
 
 def setExposedvegpFilter(
     filter: clumpfilter,
@@ -202,22 +210,22 @@ def setExposedvegpFilter(
     fe: int = 0
 
     for fp in range(1, filter.num_nolakeurbanp + 1):
-        p = int(filter.nolakeurbanp[fp - 1])   # 1-based fp → 0-based array slot
+        p = int(filter.nolakeurbanp[fp - 1])  # 1-based fp → 0-based array slot
         if frac_veg_nosno[p] > 0:
-            exposedvegp[fe] = p                # write into 0-based accumulator slot
+            exposedvegp[fe] = p  # write into 0-based accumulator slot
             fe += 1
 
     return clumpfilter(
-        num_exposedvegp  = fe,
-        num_nolakeurbanp = filter.num_nolakeurbanp,
-        num_nolakec      = filter.num_nolakec,
-        num_nourbanc     = filter.num_nourbanc,
-        num_hydrologyc   = filter.num_hydrologyc,
-        exposedvegp  = exposedvegp,
-        nolakeurbanp = filter.nolakeurbanp,
-        nolakec      = filter.nolakec,
-        nourbanc     = filter.nourbanc,
-        hydrologyc   = filter.hydrologyc,
+        num_exposedvegp=fe,
+        num_nolakeurbanp=filter.num_nolakeurbanp,
+        num_nolakec=filter.num_nolakec,
+        num_nourbanc=filter.num_nourbanc,
+        num_hydrologyc=filter.num_hydrologyc,
+        exposedvegp=exposedvegp,
+        nolakeurbanp=filter.nolakeurbanp,
+        nolakec=filter.nolakec,
+        nourbanc=filter.nourbanc,
+        hydrologyc=filter.hydrologyc,
     )
 
 

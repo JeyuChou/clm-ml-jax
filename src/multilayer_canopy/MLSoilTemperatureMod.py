@@ -14,16 +14,16 @@ import numpy as np
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.abortutils              import endrun
-from clm_src_main.ColumnType              import col
-from clm_src_main.decompMod               import bounds_type
-from clm_src_biogeophys.SoilStateType           import soilstate_type
-from clm_src_biogeophys.TemperatureType         import temperature_type
+from clm_src_main.abortutils import endrun
+from clm_src_main.ColumnType import col
+from clm_src_main.decompMod import bounds_type
+from clm_src_biogeophys.SoilStateType import soilstate_type
+from clm_src_biogeophys.TemperatureType import temperature_type
 from clm_src_biogeophys.WaterDiagnosticBulkType import waterdiagnosticbulk_type
-from clm_src_biogeophys.WaterStateBulkType      import waterstatebulk_type
-from clm_src_biogeophys.WaterType               import water_type
-from multilayer_canopy.MLMathToolsMod          import tridiag
-from multilayer_canopy.MLCanopyFluxesType      import mlcanopy_type
+from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type
+from clm_src_biogeophys.WaterType import water_type
+from multilayer_canopy.MLMathToolsMod import tridiag
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type
 
 # Threshold for thin surface layer — Fortran line 33
 _thin_sfclayer: float = 1.0e-6
@@ -33,16 +33,17 @@ _thin_sfclayer: float = 1.0e-6
 # SoilTemperature
 # ---------------------------------------------------------------------------
 
+
 def SoilTemperature(
-    bounds:                    bounds_type,
-    num_nolakec:               int,
-    filter_nolakec:            np.ndarray,
-    soilstate_inst:            soilstate_type,
-    temperature_inst:          temperature_type,
-    waterdiagnosticbulk_inst:  waterdiagnosticbulk_type,
-    waterstatebulk_inst:       waterstatebulk_type,
-    water_inst:                water_type,
-    mlcanopy_inst:             mlcanopy_type,
+    bounds: bounds_type,
+    num_nolakec: int,
+    filter_nolakec: np.ndarray,
+    soilstate_inst: soilstate_type,
+    temperature_inst: temperature_type,
+    waterdiagnosticbulk_inst: waterdiagnosticbulk_type,
+    waterstatebulk_inst: waterstatebulk_type,
+    water_inst: water_type,
+    mlcanopy_inst: mlcanopy_type,
 ) -> tuple:
     """
     Compute soil temperature via implicit tridiagonal solver.
@@ -86,21 +87,21 @@ def SoilTemperature(
         ``t_soisno_col`` and thermal properties.
     """
     from clm_src_utils.clm_time_manager import get_step_size
-    from clm_src_main.clm_varpar       import nlevgrnd, nlevsno
+    from clm_src_main.clm_varpar import nlevgrnd, nlevsno
 
     begc = bounds.begc
     endc = bounds.endc
-    nc   = endc + 1
+    nc = endc + 1
     # State arrays (t_soisno_col, h2osoi_liq_col, z, etc.) use direct soil-layer
     # indexing j = 1..nlevgrnd (same as SoilInit).  No nlevsno offset needed.
-    nth  = nlevgrnd + 1    # local tk/cv arrays: index 1..nlevgrnd
+    nth = nlevgrnd + 1  # local tk/cv arrays: index 1..nlevgrnd
 
     # ------------------------------------------------------------------
     # Aliases — mirror Fortran associate block (lines 76-80)
     # ------------------------------------------------------------------
-    z        = col.z                              # (nc, nlevsno+nlevgrnd) using direct index
-    t_soisno = temperature_inst.t_soisno_col      # JAX array — updated immutably with .at[].set()
-    gsoi     = mlcanopy_inst.gsoi_soil            # (nc,)
+    z = col.z  # (nc, nlevsno+nlevgrnd) using direct index
+    t_soisno = temperature_inst.t_soisno_col  # JAX array — updated immutably with .at[].set()
+    gsoi = mlcanopy_inst.gsoi_soil  # (nc,)
 
     # ------------------------------------------------------------------
     # pfilter: p→c identity map — Fortran lines 90-93
@@ -130,15 +131,22 @@ def SoilTemperature(
     # ------------------------------------------------------------------
     # Thermal conductivity and heat capacity — Fortran lines 107-110
     # ------------------------------------------------------------------
-    tk        = jnp.zeros((nc, nth),  dtype=jnp.float64)
-    cv        = jnp.zeros((nc, nth),  dtype=jnp.float64)
-    tk_h2osfc = jnp.zeros(nc,         dtype=jnp.float64)
+    tk = jnp.zeros((nc, nth), dtype=jnp.float64)
+    cv = jnp.zeros((nc, nth), dtype=jnp.float64)
+    tk_h2osfc = jnp.zeros(nc, dtype=jnp.float64)
 
     soilstate_inst, temperature_inst, tk, cv, tk_h2osfc = SoilThermProp(
-        bounds, num_nolakec, filter_nolakec,
-        tk, cv, tk_h2osfc,
-        temperature_inst, waterdiagnosticbulk_inst,
-        waterstatebulk_inst, water_inst, soilstate_inst,
+        bounds,
+        num_nolakec,
+        filter_nolakec,
+        tk,
+        cv,
+        tk_h2osfc,
+        temperature_inst,
+        waterdiagnosticbulk_inst,
+        waterstatebulk_inst,
+        water_inst,
+        soilstate_inst,
     )
 
     # ------------------------------------------------------------------
@@ -167,11 +175,10 @@ def SoilTemperature(
 
             elif j <= nlevgrnd - 1:
                 # Interior layers — Fortran lines 125-132
-                dzm = z[c, j]     - z[c, j - 1]
+                dzm = z[c, j] - z[c, j - 1]
                 dzp = z[c, j + 1] - z[c, j]
                 atri = atri.at[c, j].set(-fact * tk[c, j - 1] / dzm)
-                btri = btri.at[c, j].set(1.0 + fact * (tk[c, j - 1] / dzm
-                                                        + tk[c, j]     / dzp))
+                btri = btri.at[c, j].set(1.0 + fact * (tk[c, j - 1] / dzm + tk[c, j] / dzp))
                 ctri = ctri.at[c, j].set(-fact * tk[c, j] / dzp)
                 rtri = rtri.at[c, j].set(t_soisno[c, j])
 
@@ -191,10 +198,10 @@ def SoilTemperature(
     for fc in range(1, num_nolakec + 1):
         c = int(filter_nolakec[fc - 1])
         u_sol = tridiag(
-            atri[c, 0:nlevgrnd + 1],
-            btri[c, 0:nlevgrnd + 1],
-            ctri[c, 0:nlevgrnd + 1],
-            rtri[c, 0:nlevgrnd + 1],
+            atri[c, 0 : nlevgrnd + 1],
+            btri[c, 0 : nlevgrnd + 1],
+            ctri[c, 0 : nlevgrnd + 1],
+            rtri[c, 0 : nlevgrnd + 1],
             nlevgrnd,
         )
         # u_sol has shape (nlevgrnd+1,) with data at indices 1..nlevgrnd
@@ -210,10 +217,9 @@ def SoilTemperature(
         c = int(filter_nolakec[fc - 1])
         edif = 0.0
         for j in range(1, nlevgrnd + 1):
-            edif += float(cv[c, j]) * (float(t_soisno[c, j])
-                                       - tssbef[c, j]) / dtime
+            edif += float(cv[c, j]) * (float(t_soisno[c, j]) - tssbef[c, j]) / dtime
         if abs(float(gsoi[pfilter[c]]) - edif) >= 1.0e-6:
-            endrun(msg='ERROR: MLSoilTemperatureMod: soil temperature energy conservation error')
+            endrun(msg="ERROR: MLSoilTemperatureMod: soil temperature energy conservation error")
 
     # Write updated t_soisno back to temperature_inst
     temperature_inst = temperature_inst._replace(t_soisno_col=t_soisno)
@@ -225,18 +231,19 @@ def SoilTemperature(
 # SoilThermProp
 # ---------------------------------------------------------------------------
 
+
 def SoilThermProp(
-    bounds:                    bounds_type,
-    num_nolakec:               int,
-    filter_nolakec:            np.ndarray,
-    tk:                        Array,
-    cv:                        Array,
-    tk_h2osfc:                 Array,
-    temperature_inst:          temperature_type,
-    waterdiagnosticbulk_inst:  waterdiagnosticbulk_type,
-    waterstatebulk_inst:       waterstatebulk_type,
-    water_inst:                water_type,
-    soilstate_inst:            soilstate_type,
+    bounds: bounds_type,
+    num_nolakec: int,
+    filter_nolakec: np.ndarray,
+    tk: Array,
+    cv: Array,
+    tk_h2osfc: Array,
+    temperature_inst: temperature_type,
+    waterdiagnosticbulk_inst: waterdiagnosticbulk_type,
+    waterstatebulk_inst: waterstatebulk_type,
+    water_inst: water_type,
+    soilstate_inst: soilstate_type,
 ) -> tuple:
     """
     Compute thermal conductivities and heat capacities of snow/soil layers.
@@ -321,12 +328,20 @@ def SoilThermProp(
         ``thk_col`` inside ``soilstate_inst``.
     """
     from clm_src_main.clm_varpar import nlevsno, nlevgrnd
-    from clm_src_main.clm_varcon import (denh2o, denice, tfrz,
-                            tkwat, tkice, tkair,
-                            cpice, cpliq,
-                            thk_bedrock, csol_bedrock)
+    from clm_src_main.clm_varcon import (
+        denh2o,
+        denice,
+        tfrz,
+        tkwat,
+        tkice,
+        tkair,
+        cpice,
+        cpliq,
+        thk_bedrock,
+        csol_bedrock,
+    )
 
-    nc  = bounds.endc + 1
+    nc = bounds.endc + 1
 
     # ------------------------------------------------------------------
     # Aliases — mirror Fortran associate block (lines 175-203)
@@ -334,21 +349,22 @@ def SoilThermProp(
     # Re-read col from the ColumnType module so we always get the version
     # updated by initVertical (the module-level import binding is stale).
     from clm_src_main.ColumnType import col as _fresh_col
-    nbedrock   = _fresh_col.nbedrock
-    snl        = _fresh_col.snl
-    dz         = _fresh_col.dz
-    zi         = _fresh_col.zi
-    z          = _fresh_col.z
-    t_soisno   = temperature_inst.t_soisno_col
-    frac_sno   = waterdiagnosticbulk_inst.frac_sno_eff_col
-    h2osfc     = waterstatebulk_inst.h2osfc_col
-    h2osno     = water_inst.h2osno_col
+
+    nbedrock = _fresh_col.nbedrock
+    snl = _fresh_col.snl
+    dz = _fresh_col.dz
+    zi = _fresh_col.zi
+    z = _fresh_col.z
+    t_soisno = temperature_inst.t_soisno_col
+    frac_sno = waterdiagnosticbulk_inst.frac_sno_eff_col
+    h2osfc = waterstatebulk_inst.h2osfc_col
+    h2osno = water_inst.h2osno_col
     h2osoi_liq = waterstatebulk_inst.h2osoi_liq_col
     h2osoi_ice = waterstatebulk_inst.h2osoi_ice_col
-    tkmg       = soilstate_inst.tkmg_col
-    tkdry      = soilstate_inst.tkdry_col
-    csol       = soilstate_inst.csol_col
-    watsat     = soilstate_inst.watsat_col
+    tkmg = soilstate_inst.tkmg_col
+    tkdry = soilstate_inst.tkdry_col
+    csol = soilstate_inst.csol_col
+    watsat = soilstate_inst.watsat_col
 
     # Work arrays — JAX, updated via .at[c, j].set(...)
     # thk: per-layer thermal conductivity (W/m/K)
@@ -375,21 +391,21 @@ def SoilThermProp(
 
             # h2osoi_liq/ice are stored at [c, j-1] (clmDataMod convention: first
             # soil layer at index 0). Using [c, j] reads the next layer's moisture.
-            liq_j   = h2osoi_liq[c, j - 1]
-            ice_j   = h2osoi_ice[c, j - 1]
+            liq_j = h2osoi_liq[c, j - 1]
+            ice_j = h2osoi_ice[c, j - 1]
             liq_vol = liq_j / denh2o
             ice_vol = ice_j / denice
-            dz_j    = dz[c, j]
-            ws_j    = watsat[c, j]   # watsat indexed 1:nlevgrnd
+            dz_j = dz[c, j]
+            ws_j = watsat[c, j]  # watsat indexed 1:nlevgrnd
 
             # Safe denominator for satw (ws_j could be 0 for bedrock)
             ws_j_safe = jnp.where(ws_j > 0.0, ws_j, 1.0)
-            satw_raw  = (liq_vol + ice_vol) / (dz_j * ws_j_safe)
-            satw      = jnp.minimum(1.0, satw_raw)
+            satw_raw = (liq_vol + ice_vol) / (dz_j * ws_j_safe)
+            satw = jnp.minimum(1.0, satw_raw)
 
             # Wet-path (satw > 1e-7): compute fl, dksat, dke, thk_wet
             # Safe fl denominator: liq_vol/dz + ice_vol/dz could be zero
-            fl_num   = liq_vol / dz_j
+            fl_num = liq_vol / dz_j
             fl_denom = liq_vol / dz_j + ice_vol / dz_j
             fl_denom_safe = jnp.where(fl_denom > 0.0, fl_denom, 1.0)
             fl = fl_num / fl_denom_safe
@@ -398,7 +414,7 @@ def SoilThermProp(
 
             # dke depends on temperature: log10(satw)+1 (thawed) or satw (frozen)
             # Use satw_safe to avoid log10(0) in the thawed branch
-            satw_safe  = jnp.where(satw > 0.0, satw, 1.0e-10)
+            satw_safe = jnp.where(satw > 0.0, satw, 1.0e-10)
             dke_thawed = jnp.maximum(0.0, jnp.log10(satw_safe) + 1.0)
             dke_frozen = satw
             dke = jnp.where(t_soisno[c, j] >= tfrz, dke_thawed, dke_frozen)
@@ -423,14 +439,14 @@ def SoilThermProp(
     # tk uses direct j indexing (matches SoilTemperature)
     # ------------------------------------------------------------------
     for fc in range(1, num_nolakec + 1):
-        c   = int(filter_nolakec[fc - 1])
+        c = int(filter_nolakec[fc - 1])
 
-        for j in range(1, nlevgrnd):   # j = 1 .. nlevgrnd-1
-            thk_j   = thk[c, j]
+        for j in range(1, nlevgrnd):  # j = 1 .. nlevgrnd-1
+            thk_j = thk[c, j]
             thk_jp1 = thk[c, j + 1]
-            z_j     = z[c, j]
-            z_jp1   = z[c, j + 1]
-            zi_j    = zi[c, j]
+            z_j = z[c, j]
+            z_jp1 = z[c, j + 1]
+            zi_j = zi[c, j]
             # Safe denominator for interface conductivity formula
             denom = thk_j * (z_jp1 - zi_j) + thk_jp1 * (zi_j - z_j)
             denom_safe = jnp.where(jnp.abs(denom) > 0.0, denom, 1.0e-10)
@@ -446,9 +462,9 @@ def SoilThermProp(
     for fc in range(1, num_nolakec + 1):
         c = int(filter_nolakec[fc - 1])
         zh2osfc = 1.0e-3 * (0.5 * h2osfc[c])
-        z1      = z[c, 1]
-        thk1    = thk[c, 1]
-        denom   = tkwat * z1 + thk1 * zh2osfc
+        z1 = z[c, 1]
+        thk1 = thk[c, 1]
+        denom = tkwat * z1 + thk1 * zh2osfc
         # Avoid division by zero; fall back to tkwat when denom≈0
         denom_safe = jnp.where(jnp.abs(denom) > 0.0, denom, 1.0)
         tk_h2osfc_val = jnp.where(
@@ -466,10 +482,11 @@ def SoilThermProp(
         for fc in range(1, num_nolakec + 1):
             c = int(filter_nolakec[fc - 1])
             # h2osoi_liq/ice stored at [c, j-1] (clmDataMod convention)
-            cv_val = (csol[c, j] * (1.0 - watsat[c, j])
-                      * dz[c, j]
-                      + h2osoi_ice[c, j - 1] * cpice
-                      + h2osoi_liq[c, j - 1] * cpliq)
+            cv_val = (
+                csol[c, j] * (1.0 - watsat[c, j]) * dz[c, j]
+                + h2osoi_ice[c, j - 1] * cpice
+                + h2osoi_liq[c, j - 1] * cpliq
+            )
 
             # Bedrock override (static Python comparison)
             if j > int(nbedrock[c]):
@@ -494,5 +511,4 @@ def SoilThermProp(
     soilstate_inst = soilstate_inst._replace(thk_col=thk)
     # bw unchanged (no snow in standalone) — leave waterdiagnosticbulk_inst as-is
 
-    return (soilstate_inst, temperature_inst,
-            tk, cv, tk_h2osfc)
+    return (soilstate_inst, temperature_inst, tk, cv, tk_h2osfc)

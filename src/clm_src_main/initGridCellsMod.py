@@ -12,12 +12,12 @@ Original Fortran module: initGridCellsMod
 from __future__ import annotations
 
 import offline_driver.TowerDataMod as TowerDataMod
-from clm_src_main.initSubgridMod  import add_patch
-
+from clm_src_main.initSubgridMod import add_patch
 
 # ---------------------------------------------------------------------------
 # set_landunit_veg_compete  (private)
 # ---------------------------------------------------------------------------
+
 
 def _set_landunit_veg_compete() -> None:
     """
@@ -43,6 +43,7 @@ def _set_landunit_veg_compete() -> None:
 # ---------------------------------------------------------------------------
 # initGridcells  (public)
 # ---------------------------------------------------------------------------
+
 
 def initGridCells() -> None:
     """

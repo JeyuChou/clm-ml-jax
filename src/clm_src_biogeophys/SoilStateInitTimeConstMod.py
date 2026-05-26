@@ -12,30 +12,39 @@ Fortran lines 1-230
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.abortutils import endrun                            # noqa: F401
-from clm_src_main.decompMod import bounds_type                                      # noqa: F401
-from clm_src_main.PatchType import patch                                            # noqa: F401
-from clm_src_biogeophys.SoilStateType import soilstate_type                               # noqa: F401
-from clm_src_main.clm_varcon import csol_bedrock                                    # noqa: F401
-from clm_src_main.clm_varpar import nlevsoi, nlevgrnd                               # noqa: F401
-from clm_src_main.clm_varctl import iulog                                           # noqa: F401
-from offline_driver.SoilTexMod import ntex, soil_tex, clay_tex, sand_tex, watsat_tex, smpsat_tex, hksat_tex, bsw_tex  # noqa: F401
-
+from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
+from clm_src_main.PatchType import patch  # noqa: F401
+from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
+from clm_src_main.clm_varcon import csol_bedrock  # noqa: F401
+from clm_src_main.clm_varpar import nlevsoi, nlevgrnd  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
+from offline_driver.SoilTexMod import (
+    ntex,
+    soil_tex,
+    clay_tex,
+    sand_tex,
+    watsat_tex,
+    smpsat_tex,
+    hksat_tex,
+    bsw_tex,
+)  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Module-level constants (Fortran lines 58-65)
 # ---------------------------------------------------------------------------
 
-organic_max: float = 130.0    # Organic matter content where soil acts like peat (kg/m3)
-zsapric:     float = 0.5      # Depth (m) that organic matter takes on characteristics of sapric peat
-pcalpha:     float = 0.5      # Percolation threshold
-pcbeta:      float = 0.139    # Percolation exponent
-m_to_cm:     float = 1.0e2    # Conversion factor m -> cm
+organic_max: float = 130.0  # Organic matter content where soil acts like peat (kg/m3)
+zsapric: float = 0.5  # Depth (m) that organic matter takes on characteristics of sapric peat
+pcalpha: float = 0.5  # Percolation threshold
+pcbeta: float = 0.139  # Percolation exponent
+m_to_cm: float = 1.0e2  # Conversion factor m -> cm
 
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
 
 def SoilStateInitTimeConst(
     bounds: bounds_type,
@@ -87,17 +96,17 @@ def SoilStateInitTimeConst(
     # ------------------------------------------------------------------
     # Unpack output arrays (Fortran associate block, lines 70-86)
     # ------------------------------------------------------------------
-    rootfr   = soilstate_inst.rootfr_patch    # Fraction of roots in each soil layer
-    cellsand = soilstate_inst.cellsand_col    # Soil layer percent sand
-    cellclay = soilstate_inst.cellclay_col    # Soil layer percent clay
-    cellorg  = soilstate_inst.cellorg_col     # Soil layer organic matter (kg/m3)
-    watsat   = soilstate_inst.watsat_col      # Volumetric water content at saturation (porosity)
-    sucsat   = soilstate_inst.sucsat_col      # Suction at saturation (mm)
-    hksat    = soilstate_inst.hksat_col       # Hydraulic conductivity at saturation (mm H2O/s)
-    bsw      = soilstate_inst.bsw_col         # Clapp and Hornberger "b" parameter
-    tkmg     = soilstate_inst.tkmg_col        # Thermal conductivity, soil minerals (W/m/K)
-    tkdry    = soilstate_inst.tkdry_col       # Thermal conductivity, dry soil (W/m/K)
-    csol     = soilstate_inst.csol_col        # Heat capacity, soil solids (J/m3/K)
+    rootfr = soilstate_inst.rootfr_patch  # Fraction of roots in each soil layer
+    cellsand = soilstate_inst.cellsand_col  # Soil layer percent sand
+    cellclay = soilstate_inst.cellclay_col  # Soil layer percent clay
+    cellorg = soilstate_inst.cellorg_col  # Soil layer organic matter (kg/m3)
+    watsat = soilstate_inst.watsat_col  # Volumetric water content at saturation (porosity)
+    sucsat = soilstate_inst.sucsat_col  # Suction at saturation (mm)
+    hksat = soilstate_inst.hksat_col  # Hydraulic conductivity at saturation (mm H2O/s)
+    bsw = soilstate_inst.bsw_col  # Clapp and Hornberger "b" parameter
+    tkmg = soilstate_inst.tkmg_col  # Thermal conductivity, soil minerals (W/m/K)
+    tkdry = soilstate_inst.tkdry_col  # Thermal conductivity, dry soil (W/m/K)
+    csol = soilstate_inst.csol_col  # Heat capacity, soil solids (J/m3/K)
 
     # ------------------------------------------------------------------
     # Root fraction profiles — Fortran lines 90-111
@@ -116,22 +125,22 @@ def SoilStateInitTimeConst(
             )
 
         # Jackson (1996) root profile — Fortran lines 95-97
-        for j in range(1, nlevsoi + 1):                      # j = 1, nlevsoi
+        for j in range(1, nlevsoi + 1):  # j = 1, nlevsoi
             rootfr = rootfr.at[p, j].set(
                 beta ** (float(col.zi[c, j - 1]) * m_to_cm)
-                - beta ** (float(col.zi[c, j])   * m_to_cm)
+                - beta ** (float(col.zi[c, j]) * m_to_cm)
             )
 
         # Bedrock layers have no roots — Fortran lines 99-101
-        for j in range(nlevsoi + 1, nlevgrnd + 1):           # j = nlevsoi+1, nlevgrnd
+        for j in range(nlevsoi + 1, nlevgrnd + 1):  # j = nlevsoi+1, nlevgrnd
             rootfr = rootfr.at[p, j].set(0.0)
 
         # Adjust roots for depth of soil — Fortran lines 103-108
         nb = int(col.nbedrock[c])
         surplus = sum(float(rootfr[p, j]) for j in range(nb + 1, nlevsoi + 1))
-        for j in range(1, nb + 1):                           # j = 1, nbedrock(c)
+        for j in range(1, nb + 1):  # j = 1, nbedrock(c)
             rootfr = rootfr.at[p, j].add(surplus / float(nb))
-        for j in range(nb + 1, nlevsoi + 1):                 # rootfr(p,nbedrock+1:nlevsoi) = 0
+        for j in range(nb + 1, nlevsoi + 1):  # rootfr(p,nbedrock+1:nlevsoi) = 0
             rootfr = rootfr.at[p, j].set(0.0)
 
     # ------------------------------------------------------------------
@@ -145,35 +154,34 @@ def SoilStateInitTimeConst(
         # ------------------------------------------------------------------
         # Determine clay and sand — Fortran lines 122-145
         # ------------------------------------------------------------------
-        if (float(tower_clay[tower_num]) >= 0.0
-                and float(tower_sand[tower_num]) >= 0.0):
+        if float(tower_clay[tower_num]) >= 0.0 and float(tower_sand[tower_num]) >= 0.0:
             # Tower site clay/sand provided directly — Fortran lines 124-126
-            tex  = 0
+            tex = 0
             clay = float(tower_clay[tower_num])
             sand = float(tower_sand[tower_num])
 
         else:
             # Look up soil texture class — Fortran lines 130-145
             tex = 0
-            for m in range(ntex):                           # m = 0, 1, ..., 10
+            for m in range(ntex):  # m = 0, 1, ..., 10
                 if tower_tex[tower_num] == soil_tex[m]:
-                    tex = m + 1                             # keep tex 1-based 
+                    tex = m + 1  # keep tex 1-based
                     break
 
             if tex == 0:
                 print(
-                    f'{iulog}  ERROR: SoilStateInitTimeConst: '
-                    f'soil type = {tower_tex[tower_num]} not found for c = {c}'
+                    f"{iulog}  ERROR: SoilStateInitTimeConst: "
+                    f"soil type = {tower_tex[tower_num]} not found for c = {c}"
                 )
                 endrun()
 
-            clay = float(clay_tex[tex]) * 100.0              # fraction -> percent
-            sand = float(sand_tex[tex]) * 100.0              # fraction -> percent
+            clay = float(clay_tex[tex]) * 100.0  # fraction -> percent
+            sand = float(sand_tex[tex]) * 100.0  # fraction -> percent
 
         # --------------------------------------------------------------
         # Per-layer properties — Fortran lines 147-218
         # --------------------------------------------------------------
-        for j in range(1, nlevgrnd + 1):                     # j = 1, nlevgrnd
+        for j in range(1, nlevgrnd + 1):  # j = 1, nlevgrnd
 
             # Deep soil: zero organic fraction — Fortran lines 151-152
             if float(col.z[c, j]) > 0.5:
@@ -183,35 +191,35 @@ def SoilStateInitTimeConst(
             if j <= nlevsoi:
                 cellsand = cellsand.at[c, j].set(sand)
                 cellclay = cellclay.at[c, j].set(clay)
-                cellorg  = cellorg.at[c, j].set(om_frac * organic_max)
+                cellorg = cellorg.at[c, j].set(om_frac * organic_max)
 
             # ----------------------------------------------------------
             # Mineral hydraulic properties — Fortran lines 163-172
             # ----------------------------------------------------------
             if tex == 0:
                 # Sand/clay based (CLM5 method)
-                watsat = watsat.at[c, j].set(0.489  - 0.00126  * sand)
-                sucsat = sucsat.at[c, j].set(10.0   * (10.0 ** (1.88 - 0.0131 * sand)))
-                hksat  = hksat.at[c, j].set(0.0070556 * (10.0 ** (-0.884 + 0.0153 * sand)))
-                bsw    = bsw.at[c, j].set(2.91 + 0.159 * clay)
+                watsat = watsat.at[c, j].set(0.489 - 0.00126 * sand)
+                sucsat = sucsat.at[c, j].set(10.0 * (10.0 ** (1.88 - 0.0131 * sand)))
+                hksat = hksat.at[c, j].set(0.0070556 * (10.0 ** (-0.884 + 0.0153 * sand)))
+                bsw = bsw.at[c, j].set(2.91 + 0.159 * clay)
             else:
                 # Clapp and Hornberger (1978) texture class
                 watsat = watsat.at[c, j].set(float(watsat_tex[tex]))
                 sucsat = sucsat.at[c, j].set(-float(smpsat_tex[tex]))
-                hksat  = hksat.at[c, j].set(float(hksat_tex[tex]) / 60.0)   # mm/min -> mm/s
-                bsw    = bsw.at[c, j].set(float(bsw_tex[tex]))
+                hksat = hksat.at[c, j].set(float(hksat_tex[tex]) / 60.0)  # mm/min -> mm/s
+                bsw = bsw.at[c, j].set(float(bsw_tex[tex]))
 
             # ----------------------------------------------------------
             # Organic matter adjustments to hydraulic properties
             # Fortran lines 174-179
             # ----------------------------------------------------------
-            z_cj    = float(col.z[c, j])
+            z_cj = float(col.z[c, j])
             z_ratio = z_cj / zsapric
 
-            om_watsat = max(0.93  - 0.1    * z_ratio, 0.83)
-            om_sucsat = min(10.3  - 0.2    * z_ratio, 10.1)
-            om_hksat  = max(0.28  - 0.2799 * z_ratio, float(hksat[c, j]))
-            om_b      = min(2.7   + 9.3    * z_ratio, 12.0)
+            om_watsat = max(0.93 - 0.1 * z_ratio, 0.83)
+            om_sucsat = min(10.3 - 0.2 * z_ratio, 10.1)
+            om_hksat = max(0.28 - 0.2799 * z_ratio, float(hksat[c, j]))
+            om_b = min(2.7 + 9.3 * z_ratio, 12.0)
 
             watsat = watsat.at[c, j].set(
                 (1.0 - om_frac) * float(watsat[c, j]) + om_watsat * om_frac
@@ -219,9 +227,7 @@ def SoilStateInitTimeConst(
             sucsat = sucsat.at[c, j].set(
                 (1.0 - om_frac) * float(sucsat[c, j]) + om_sucsat * om_frac
             )
-            bsw = bsw.at[c, j].set(
-                (1.0 - om_frac) * float(bsw[c, j]) + om_frac * om_b
-            )
+            bsw = bsw.at[c, j].set((1.0 - om_frac) * float(bsw[c, j]) + om_frac * om_b)
 
             # ----------------------------------------------------------
             # Percolating fraction of organic soil — Fortran lines 182-188
@@ -239,37 +245,30 @@ def SoilStateInitTimeConst(
 
             if om_frac < 1.0:
                 uncon_hksat = uncon_frac / (
-                    (1.0 - om_frac) / float(hksat[c, j])
-                    + ((1.0 - perc_frac) * om_frac) / om_hksat
+                    (1.0 - om_frac) / float(hksat[c, j]) + ((1.0 - perc_frac) * om_frac) / om_hksat
                 )
             else:
                 uncon_hksat = 0.0
 
-            hksat = hksat.at[c, j].set(
-                uncon_frac * uncon_hksat + (perc_frac * om_frac) * om_hksat
-            )
+            hksat = hksat.at[c, j].set(uncon_frac * uncon_hksat + (perc_frac * om_frac) * om_hksat)
 
             # ----------------------------------------------------------
             # Thermal properties — Fortran lines 205-218
             # om_frac_therm: use om_frac (pre-CLM5 used 0.02)
             # ----------------------------------------------------------
-            om_frac_therm = om_frac                          # Fortran line 207 (active branch)
+            om_frac_therm = om_frac  # Fortran line 207 (active branch)
 
             # Dry thermal conductivity (W/m/K) — Fortran lines 210-216
             om_tkdry = 0.05
             if j <= nlevsoi:
                 bulk_dens_min = 2700.0 * (1.0 - float(watsat[c, j]))
-                tkdry_min = (0.135 * bulk_dens_min + 64.7) / (
-                    2700.0 - 0.947 * bulk_dens_min
-                )
+                tkdry_min = (0.135 * bulk_dens_min + 64.7) / (2700.0 - 0.947 * bulk_dens_min)
                 tkdry = tkdry.at[c, j].set(
                     (1.0 - om_frac_therm) * tkdry_min + om_frac_therm * om_tkdry
                 )
             else:
                 bulk_dens_min = 2700.0
-                tkdry_min = (0.135 * bulk_dens_min + 64.7) / (
-                    2700.0 - 0.947 * bulk_dens_min
-                )
+                tkdry_min = (0.135 * bulk_dens_min + 64.7) / (2700.0 - 0.947 * bulk_dens_min)
                 tkdry = tkdry.at[c, j].set(tkdry_min)
 
             # Soil solids thermal conductivity (W/m/K) — Fortran lines 219-228
@@ -289,9 +288,7 @@ def SoilStateInitTimeConst(
                 cvsol = 1.926e6
 
             if j <= nlevsoi:
-                csol = csol.at[c, j].set(
-                    (1.0 - om_frac_therm) * cvsol + om_frac_therm * om_cvsol
-                )
+                csol = csol.at[c, j].set((1.0 - om_frac_therm) * cvsol + om_frac_therm * om_cvsol)
             else:
                 csol = csol.at[c, j].set(csol_bedrock)
 
@@ -299,15 +296,15 @@ def SoilStateInitTimeConst(
     # Write all updated arrays back into the immutable state container
     # ------------------------------------------------------------------
     return soilstate_inst._replace(
-        rootfr_patch = rootfr,
-        cellsand_col = cellsand,
-        cellclay_col = cellclay,
-        cellorg_col  = cellorg,
-        watsat_col   = watsat,
-        sucsat_col   = sucsat,
-        hksat_col    = hksat,
-        bsw_col      = bsw,
-        tkmg_col     = tkmg,
-        tkdry_col    = tkdry,
-        csol_col     = csol,
+        rootfr_patch=rootfr,
+        cellsand_col=cellsand,
+        cellclay_col=cellclay,
+        cellorg_col=cellorg,
+        watsat_col=watsat,
+        sucsat_col=sucsat,
+        hksat_col=hksat,
+        bsw_col=bsw,
+        tkmg_col=tkmg,
+        tkdry_col=tkdry,
+        csol_col=csol,
     )

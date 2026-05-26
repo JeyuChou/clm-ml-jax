@@ -19,11 +19,10 @@ from jax import Array
 import jax
 import jax.numpy as jnp
 
-from clm_src_main.abortutils import endrun    # noqa: F401
-from clm_src_main.clm_varctl import iulog     # noqa: F401
+from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
-from multilayer_canopy.MLclm_varpar import nlevmlcan            # noqa: F401
-
+from multilayer_canopy.MLclm_varpar import nlevmlcan  # noqa: F401
 
 # Type alias for the function signature shared by all solvers.
 # Fortran abstract interface `func(p, ic, il, mlcanopy_inst, x, val)`
@@ -41,6 +40,7 @@ ScalarFuncType = Callable[[float], float]
 # ---------------------------------------------------------------------------
 # Public: hybrid secant / Brent root finder
 # ---------------------------------------------------------------------------
+
 
 def hybrid(
     msg: str,
@@ -79,7 +79,7 @@ def hybrid(
     Returns:
         Tuple ``(root, mlcanopy_inst)``.
     """
-    itmax: int = 40    # Fortran: parameter itmax = 40
+    itmax: int = 40  # Fortran: parameter itmax = 40
 
     x0 = xa
     f0, mlcanopy_inst = func(p, ic, il, mlcanopy_inst, x0)
@@ -102,7 +102,7 @@ def hybrid(
     while True:
         _iter += 1
         dx = -f1 * (x1 - x0) / (f1 - f0)
-        x  = x1 + dx
+        x = x1 + dx
         if abs(dx) < tol:
             x0 = x
             break
@@ -130,6 +130,7 @@ def hybrid(
 # ---------------------------------------------------------------------------
 # Public: hybrid secant / Brent root finder (stateless scalar variant)
 # ---------------------------------------------------------------------------
+
 
 def hybrid_scalar(
     msg: str,
@@ -166,7 +167,7 @@ def hybrid_scalar(
     while True:
         _iter += 1
         dx = -f1 * (x1 - x0) / (f1 - f0)
-        x  = x1 + dx
+        x = x1 + dx
         if abs(dx) < tol:
             x0 = x
             break
@@ -192,6 +193,7 @@ def hybrid_scalar(
 # ---------------------------------------------------------------------------
 # Public: Brent's method
 # ---------------------------------------------------------------------------
+
 
 def zbrent(
     msg: str,
@@ -224,23 +226,26 @@ def zbrent(
     Returns:
         Tuple ``(root, mlcanopy_inst)``.
     """
-    itmax: int   = 50      # Fortran: parameter itmax = 50
-    eps:   float = 1.0e-8  # Fortran: parameter eps = 1.e-08_r8
+    itmax: int = 50  # Fortran: parameter itmax = 50
+    eps: float = 1.0e-8  # Fortran: parameter eps = 1.e-08_r8
 
-    a = xa;  b = xb
+    a = xa
+    b = xb
     fa, mlcanopy_inst = func(p, ic, il, mlcanopy_inst, a)
     fb, mlcanopy_inst = func(p, ic, il, mlcanopy_inst, b)
 
     # Bracket check — Fortran lines 124-131
     if (fa > 0.0 and fb > 0.0) or (fa < 0.0 and fb < 0.0):
-        print(f'{iulog}: zbrent: Root must be bracketed')
-        print(f'{iulog}: called from: {msg}')
-        print(f'{iulog}: {xa} {fa}')
-        print(f'{iulog}: {xb} {fb}')
-        endrun(msg=' ERROR: zbrent error')
+        print(f"{iulog}: zbrent: Root must be bracketed")
+        print(f"{iulog}: called from: {msg}")
+        print(f"{iulog}: {xa} {fa}")
+        print(f"{iulog}: {xb} {fb}")
+        endrun(msg=" ERROR: zbrent error")
 
-    c = b;  fc = fb
-    d = 0.0;  e = 0.0    # Initialised before use in first iteration
+    c = b
+    fc = fb
+    d = 0.0
+    e = 0.0  # Initialised before use in first iteration
 
     _iter = 0
     while True:
@@ -249,14 +254,21 @@ def zbrent(
         _iter += 1
 
         if (fb > 0.0 and fc > 0.0) or (fb < 0.0 and fc < 0.0):
-            c = a;  fc = fa;  d = b - a;  e = d
+            c = a
+            fc = fa
+            d = b - a
+            e = d
 
         if abs(fc) < abs(fb):
-            a = b;  b = c;  c = a
-            fa = fb;  fb = fc;  fc = fa
+            a = b
+            b = c
+            c = a
+            fa = fb
+            fb = fc
+            fc = fa
 
         tol1 = 2.0 * eps * abs(b) + 0.5 * tol
-        xm   = 0.5 * (c - b)
+        xm = 0.5 * (c - b)
 
         if abs(xm) <= tol1 or fb == 0.0:
             break
@@ -265,35 +277,40 @@ def zbrent(
             s = fb / fa
             if a == c:
                 pp = 2.0 * xm * s
-                q  = 1.0 - s
+                q = 1.0 - s
             else:
-                q  = fa / fc;  r = fb / fc
+                q = fa / fc
+                r = fb / fc
                 pp = s * (2.0 * xm * q * (q - r) - (b - a) * (r - 1.0))
-                q  = (q - 1.0) * (r - 1.0) * (s - 1.0)
+                q = (q - 1.0) * (r - 1.0) * (s - 1.0)
             if pp > 0.0:
                 q = -q
             pp = abs(pp)
             if 2.0 * pp < min(3.0 * xm * q - abs(tol1 * q), abs(e * q)):
-                e = d;  d = pp / q
+                e = d
+                d = pp / q
             else:
-                d = xm;  e = d
+                d = xm
+                e = d
         else:
-            d = xm;  e = d
+            d = xm
+            e = d
 
-        a = b;  fa = fb
+        a = b
+        fa = fb
         if abs(d) > tol1:
             b = b + d
         else:
-            b = b + jnp.copysign(tol1, xm)    # Fortran: b + sign(tol1, xm)
+            b = b + jnp.copysign(tol1, xm)  # Fortran: b + sign(tol1, xm)
 
         fb, mlcanopy_inst = func(p, ic, il, mlcanopy_inst, b)
         if fb == 0.0:
             break
 
     if _iter == itmax:
-        print(f'{iulog}: zbrent: Maximum number of iterations exceeded')
-        print(f'{iulog}: called from: {msg}')
-        endrun(msg=' ERROR: zbrent error')
+        print(f"{iulog}: zbrent: Maximum number of iterations exceeded")
+        print(f"{iulog}: called from: {msg}")
+        endrun(msg=" ERROR: zbrent error")
 
     return b, mlcanopy_inst
 
@@ -301,6 +318,7 @@ def zbrent(
 # ---------------------------------------------------------------------------
 # Public: Brent's method (stateless scalar variant)
 # ---------------------------------------------------------------------------
+
 
 def zbrent_scalar(
     msg: str,
@@ -315,22 +333,25 @@ def zbrent_scalar(
     ``func`` is a pure Python callable ``func(x) -> float``.
     Returns the root as a float.
     """
-    itmax: int   = 50
-    eps:   float = 1.0e-8
+    itmax: int = 50
+    eps: float = 1.0e-8
 
-    a = xa;  b = xb
+    a = xa
+    b = xb
     fa = func(a)
     fb = func(b)
 
     if (fa > 0.0 and fb > 0.0) or (fa < 0.0 and fb < 0.0):
-        print(f'{iulog}: zbrent_scalar: Root must be bracketed')
-        print(f'{iulog}: called from: {msg}')
-        print(f'{iulog}: {xa} {fa}')
-        print(f'{iulog}: {xb} {fb}')
-        endrun(msg=' ERROR: zbrent_scalar error')
+        print(f"{iulog}: zbrent_scalar: Root must be bracketed")
+        print(f"{iulog}: called from: {msg}")
+        print(f"{iulog}: {xa} {fa}")
+        print(f"{iulog}: {xb} {fb}")
+        endrun(msg=" ERROR: zbrent_scalar error")
 
-    c = b;  fc = fb
-    d = 0.0;  e = 0.0
+    c = b
+    fc = fb
+    d = 0.0
+    e = 0.0
 
     _iter = 0
     while True:
@@ -339,14 +360,21 @@ def zbrent_scalar(
         _iter += 1
 
         if (fb > 0.0 and fc > 0.0) or (fb < 0.0 and fc < 0.0):
-            c = a;  fc = fa;  d = b - a;  e = d
+            c = a
+            fc = fa
+            d = b - a
+            e = d
 
         if abs(fc) < abs(fb):
-            a = b;  b = c;  c = a
-            fa = fb;  fb = fc;  fc = fa
+            a = b
+            b = c
+            c = a
+            fa = fb
+            fb = fc
+            fc = fa
 
         tol1 = 2.0 * eps * abs(b) + 0.5 * tol
-        xm   = 0.5 * (c - b)
+        xm = 0.5 * (c - b)
 
         if abs(xm) <= tol1 or fb == 0.0:
             break
@@ -355,22 +383,27 @@ def zbrent_scalar(
             s = fb / fa
             if a == c:
                 pp = 2.0 * xm * s
-                q  = 1.0 - s
+                q = 1.0 - s
             else:
-                q  = fa / fc;  r = fb / fc
+                q = fa / fc
+                r = fb / fc
                 pp = s * (2.0 * xm * q * (q - r) - (b - a) * (r - 1.0))
-                q  = (q - 1.0) * (r - 1.0) * (s - 1.0)
+                q = (q - 1.0) * (r - 1.0) * (s - 1.0)
             if pp > 0.0:
                 q = -q
             pp = abs(pp)
             if 2.0 * pp < min(3.0 * xm * q - abs(tol1 * q), abs(e * q)):
-                e = d;  d = pp / q
+                e = d
+                d = pp / q
             else:
-                d = xm;  e = d
+                d = xm
+                e = d
         else:
-            d = xm;  e = d
+            d = xm
+            e = d
 
-        a = b;  fa = fb
+        a = b
+        fa = fb
         if abs(d) > tol1:
             b = b + d
         else:
@@ -381,9 +414,9 @@ def zbrent_scalar(
             break
 
     if _iter == itmax:
-        print(f'{iulog}: zbrent_scalar: Maximum number of iterations exceeded')
-        print(f'{iulog}: called from: {msg}')
-        endrun(msg=' ERROR: zbrent_scalar error')
+        print(f"{iulog}: zbrent_scalar: Maximum number of iterations exceeded")
+        print(f"{iulog}: called from: {msg}")
+        endrun(msg=" ERROR: zbrent_scalar error")
 
     return b
 
@@ -391,6 +424,7 @@ def zbrent_scalar(
 # ---------------------------------------------------------------------------
 # Public: bisection root finder
 # ---------------------------------------------------------------------------
+
 
 def bisection(
     msg: str,
@@ -423,35 +457,38 @@ def bisection(
     Returns:
         Tuple ``(root, mlcanopy_inst)``.
     """
-    itmax: int = 100    # Fortran: parameter itmax = 100
+    itmax: int = 100  # Fortran: parameter itmax = 100
 
-    a = xa;  b = xb
+    a = xa
+    b = xb
     fa, mlcanopy_inst = func(p, ic, il, mlcanopy_inst, a)
     fb, mlcanopy_inst = func(p, ic, il, mlcanopy_inst, b)
 
     # Bracket check — Fortran lines 184-190
     if fa * fb > 0.0:
-        print(f'{iulog}: bisection error: Root must be bracketed')
-        print(f'{iulog}: called from: {msg}')
-        print(f'{iulog}: {xa} {fa}')
-        print(f'{iulog}: {xb} {fb}')
-        endrun(msg=' ERROR: bisection error')
+        print(f"{iulog}: bisection error: Root must be bracketed")
+        print(f"{iulog}: called from: {msg}")
+        print(f"{iulog}: {xa} {fa}")
+        print(f"{iulog}: {xb} {fb}")
+        endrun(msg=" ERROR: bisection error")
 
-    c = a    # Initialise before while-loop to satisfy type checker
+    c = a  # Initialise before while-loop to satisfy type checker
     _iter = 1
-    while abs(b - a) > tol and _iter <= itmax:    # Fortran: do while
+    while abs(b - a) > tol and _iter <= itmax:  # Fortran: do while
         c = (a + b) / 2.0
         fc, mlcanopy_inst = func(p, ic, il, mlcanopy_inst, c)
         if fa * fc < 0.0:
-            b = c;  fb = fc
+            b = c
+            fb = fc
         else:
-            a = c;  fa = fc
+            a = c
+            fa = fc
         _iter += 1
 
     if _iter > itmax:
-        print(f'{iulog}: bisection error: Maximum number of iterations exceeded')
-        print(f'{iulog}: called from: {msg}')
-        endrun(msg=' ERROR: bisection error')
+        print(f"{iulog}: bisection error: Maximum number of iterations exceeded")
+        print(f"{iulog}: called from: {msg}")
+        endrun(msg=" ERROR: bisection error")
 
     return c, mlcanopy_inst
 
@@ -459,6 +496,7 @@ def bisection(
 # ---------------------------------------------------------------------------
 # Public: bisection root finder (stateless scalar variant)
 # ---------------------------------------------------------------------------
+
 
 def bisection_scalar(
     msg: str,
@@ -475,16 +513,17 @@ def bisection_scalar(
     """
     itmax: int = 100
 
-    a = xa;  b = xb
+    a = xa
+    b = xb
     fa = func(a)
     fb = func(b)
 
     if fa * fb > 0.0:
-        print(f'{iulog}: bisection_scalar error: Root must be bracketed')
-        print(f'{iulog}: called from: {msg}')
-        print(f'{iulog}: {xa} {fa}')
-        print(f'{iulog}: {xb} {fb}')
-        endrun(msg=' ERROR: bisection_scalar error')
+        print(f"{iulog}: bisection_scalar error: Root must be bracketed")
+        print(f"{iulog}: called from: {msg}")
+        print(f"{iulog}: {xa} {fa}")
+        print(f"{iulog}: {xb} {fb}")
+        endrun(msg=" ERROR: bisection_scalar error")
 
     c = a
     _iter = 1
@@ -492,15 +531,17 @@ def bisection_scalar(
         c = (a + b) / 2.0
         fc = func(c)
         if fa * fc < 0.0:
-            b = c;  fb = fc
+            b = c
+            fb = fc
         else:
-            a = c;  fa = fc
+            a = c
+            fa = fc
         _iter += 1
 
     if _iter > itmax:
-        print(f'{iulog}: bisection_scalar error: Maximum number of iterations exceeded')
-        print(f'{iulog}: called from: {msg}')
-        endrun(msg=' ERROR: bisection_scalar error')
+        print(f"{iulog}: bisection_scalar error: Maximum number of iterations exceeded")
+        print(f"{iulog}: called from: {msg}")
+        endrun(msg=" ERROR: bisection_scalar error")
 
     return c
 
@@ -508,6 +549,7 @@ def bisection_scalar(
 # ---------------------------------------------------------------------------
 # Public: quadratic solver
 # ---------------------------------------------------------------------------
+
 
 def quadratic(a: float, b: float, c: float) -> Tuple[float, float]:
     """
@@ -587,22 +629,23 @@ def quadratic_py(a: float, b: float, c: float):
 # Public: scalar tridiagonal solver
 # ---------------------------------------------------------------------------
 
+
 def tridiag(a: Array, b: Array, c: Array, r: Array, n: int) -> Array:
     """
     Solve tridiagonal system of equations using Thomas algorithm.
-    
+
     Translated from Fortran TridiagonalMod.F90.
-    
+
     Args:
         a: Lower diagonal coefficients [1:n]
         b: Main diagonal coefficients [1:n]
         c: Upper diagonal coefficients [1:n]
         r: Right-hand side [1:n]
         n: System size
-        
+
     Returns:
         Solution vector [1:n]
-        
+
     Note:
         Arrays use 1-based indexing in the algorithm (index 0 unused).
         Input arrays should have shape (n+1,) to accommodate this.
@@ -631,16 +674,24 @@ def tridiag(a: Array, b: Array, c: Array, r: Array, n: int) -> Array:
 
     return u
 
+
 # ---------------------------------------------------------------------------
 # Public: coupled 2-equation tridiagonal solver
 # ---------------------------------------------------------------------------
 
+
 def _tridiag_2eq_fwd(
-    a1:  list[float], b11: list[float], b12: list[float],
-    c1:  list[float], d1:  list[float],
-    a2:  list[float], b21: list[float], b22: list[float],
-    c2:  list[float], d2:  list[float],
-    n:   int,
+    a1: list[float],
+    b11: list[float],
+    b12: list[float],
+    c1: list[float],
+    d1: list[float],
+    a2: list[float],
+    b21: list[float],
+    b22: list[float],
+    c2: list[float],
+    d2: list[float],
+    n: int,
 ) -> Tuple[list[float], list[float]]:
     """Forward-pass implementation of the coupled 2-equation tridiagonal solver.
 
@@ -656,11 +707,17 @@ def _tridiag_2eq_fwd(
 
 @jax.custom_vjp
 def tridiag_2eq(
-    a1:  list[float], b11: list[float], b12: list[float],
-    c1:  list[float], d1:  list[float],
-    a2:  list[float], b21: list[float], b22: list[float],
-    c2:  list[float], d2:  list[float],
-    n:   int,
+    a1: list[float],
+    b11: list[float],
+    b12: list[float],
+    c1: list[float],
+    d1: list[float],
+    a2: list[float],
+    b21: list[float],
+    b22: list[float],
+    c2: list[float],
+    d2: list[float],
+    n: int,
 ) -> Tuple[list[float], list[float]]:
     """
     Solve the coupled tridiagonal system for air temperature ``t`` and
@@ -696,17 +753,13 @@ def tridiag_2eq(
     Returns:
         Tuple ``(t, q)`` of solution vectors, each of length ``n``, 0-indexed.
     """
-    t, q = _tridiag_2eq_fwd(
-        a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n)
+    t, q = _tridiag_2eq_fwd(a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n)
     return t, q
 
 
-def _tridiag_2eq_fwd_rule(
-    a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n
-):
+def _tridiag_2eq_fwd_rule(a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n):
     """Forward rule for custom VJP: runs the solver and saves residuals."""
-    t, q = _tridiag_2eq_fwd(
-        a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n)
+    t, q = _tridiag_2eq_fwd(a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n)
     # Save the inputs and solution for the backward pass.
     residuals = (a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, t, q)
     return (t, q), residuals
@@ -751,7 +804,7 @@ def _tridiag_2eq_bwd_rule(residuals, g):
         dL/dc2[i]  = -z2[i] * q[i+1]   (q[n]  = 0 by boundary)
     """
     a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, _t, _q = residuals
-    g_t, g_q = g   # cotangents for t and q outputs (JAX arrays of length n)
+    g_t, g_q = g  # cotangents for t and q outputs (JAX arrays of length n)
 
     n = len(d1)
 
@@ -791,8 +844,7 @@ def _tridiag_2eq_bwd_rule(residuals, g):
     g2 = [g_q[i] for i in range(n)]
 
     # Solve A^T λ = g using the same Thomas algorithm as _tridiag_2eq_fwd.
-    z1_list, z2_list = _tridiag_2eq_solve(a1T, b11T, b12T, c1T, g1,
-                                           a2T, b21T, b22T, c2T, g2, n)
+    z1_list, z2_list = _tridiag_2eq_solve(a1T, b11T, b12T, c1T, g1, a2T, b21T, b22T, c2T, g2, n)
 
     # Gradient w.r.t. d1 and d2 is the adjoint λ = [z1; z2].
     g_d1 = jnp.stack(z1_list)
@@ -802,14 +854,14 @@ def _tridiag_2eq_bwd_rule(residuals, g):
     # where y = (t, q) is the primal solution.
     # Boundary ghost values: t[-1] = t[n] = q[-1] = q[n] = 0.
     _zero = jnp.zeros(())
-    g_a1_list  = []
+    g_a1_list = []
     g_b11_list = []
     g_b12_list = []
-    g_c1_list  = []
-    g_a2_list  = []
+    g_c1_list = []
+    g_a2_list = []
     g_b21_list = []
     g_b22_list = []
-    g_c2_list  = []
+    g_c2_list = []
     for i in range(n):
         t_prev = _t[i - 1] if i > 0 else _zero
         t_curr = _t[i]
@@ -829,23 +881,31 @@ def _tridiag_2eq_bwd_rule(residuals, g):
 
     # Cotangents must match the primal input pytree structure.
     return (
-        jnp.stack(g_a1_list),    # grad a1
-        jnp.stack(g_b11_list),   # grad b11
-        jnp.stack(g_b12_list),   # grad b12
-        jnp.stack(g_c1_list),    # grad c1
-        g_d1,                    # grad d1  =  λ_t
-        jnp.stack(g_a2_list),    # grad a2
-        jnp.stack(g_b21_list),   # grad b21
-        jnp.stack(g_b22_list),   # grad b22
-        jnp.stack(g_c2_list),    # grad c2
-        g_d2,                    # grad d2  =  λ_q
-        None,                    # grad n (static int)
+        jnp.stack(g_a1_list),  # grad a1
+        jnp.stack(g_b11_list),  # grad b11
+        jnp.stack(g_b12_list),  # grad b12
+        jnp.stack(g_c1_list),  # grad c1
+        g_d1,  # grad d1  =  λ_t
+        jnp.stack(g_a2_list),  # grad a2
+        jnp.stack(g_b21_list),  # grad b21
+        jnp.stack(g_b22_list),  # grad b22
+        jnp.stack(g_c2_list),  # grad c2
+        g_d2,  # grad d2  =  λ_q
+        None,  # grad n (static int)
     )
 
 
 def _tridiag_2eq_solve(
-    a1, b11, b12, c1, d1,
-    a2, b21, b22, c2, d2,
+    a1,
+    b11,
+    b12,
+    c1,
+    d1,
+    a2,
+    b21,
+    b22,
+    c2,
+    d2,
     n,
 ):
     """Core Thomas algorithm for the block-2x2 tridiagonal system.
@@ -860,12 +920,15 @@ def _tridiag_2eq_solve(
     e12 = [jnp.zeros(())] * n
     e21 = [jnp.zeros(())] * n
     e22 = [jnp.zeros(())] * n
-    f1  = [jnp.zeros(())] * n
-    f2  = [jnp.zeros(())] * n
+    f1 = [jnp.zeros(())] * n
+    f2 = [jnp.zeros(())] * n
 
-    e11_prev = jnp.zeros(());  e12_prev = jnp.zeros(())
-    e21_prev = jnp.zeros(());  e22_prev = jnp.zeros(())
-    f1_prev  = jnp.zeros(());  f2_prev  = jnp.zeros(())
+    e11_prev = jnp.zeros(())
+    e12_prev = jnp.zeros(())
+    e21_prev = jnp.zeros(())
+    e22_prev = jnp.zeros(())
+    f1_prev = jnp.zeros(())
+    f2_prev = jnp.zeros(())
 
     _eps_det = jnp.asarray(1.0e-10)
     for i in range(n):
@@ -873,23 +936,21 @@ def _tridiag_2eq_solve(
         binv = b12[i] - a1[i] * e12_prev
         cinv = b21[i] - a2[i] * e21_prev
         dinv = b22[i] - a2[i] * e22_prev
-        det  = ainv * dinv - binv * cinv
+        det = ainv * dinv - binv * cinv
         _abs_det = jnp.abs(det)
         det_safe = jnp.where(_abs_det > _eps_det, det, _eps_det)
 
-        e11[i] =  dinv * c1[i] / det_safe
+        e11[i] = dinv * c1[i] / det_safe
         e12[i] = -binv * c2[i] / det_safe
         e21[i] = -cinv * c1[i] / det_safe
-        e22[i] =  ainv * c2[i] / det_safe
+        e22[i] = ainv * c2[i] / det_safe
 
-        f1[i] = ( dinv * (d1[i] - a1[i] * f1_prev)
-                - binv * (d2[i] - a2[i] * f2_prev)) / det_safe
-        f2[i] = (-cinv * (d1[i] - a1[i] * f1_prev)
-                + ainv * (d2[i] - a2[i] * f2_prev)) / det_safe
+        f1[i] = (dinv * (d1[i] - a1[i] * f1_prev) - binv * (d2[i] - a2[i] * f2_prev)) / det_safe
+        f2[i] = (-cinv * (d1[i] - a1[i] * f1_prev) + ainv * (d2[i] - a2[i] * f2_prev)) / det_safe
 
         e11_prev, e12_prev = e11[i], e12[i]
         e21_prev, e22_prev = e21[i], e22[i]
-        f1_prev,  f2_prev  = f1[i],  f2[i]
+        f1_prev, f2_prev = f1[i], f2[i]
 
     t = [jnp.zeros(())] * n
     q = [jnp.zeros(())] * n
@@ -909,6 +970,7 @@ tridiag_2eq.defvjp(_tridiag_2eq_fwd_rule, _tridiag_2eq_bwd_rule)
 # Public: log-gamma function
 # ---------------------------------------------------------------------------
 
+
 def log_gamma_function(x: float) -> float:
     """
     Return the natural logarithm of the gamma function, ``ln(Γ(x))``,
@@ -927,21 +989,21 @@ def log_gamma_function(x: float) -> float:
     """
     # Fortran: parameter coef(6), stp
     coef = (
-         76.18009172947146,
+        76.18009172947146,
         -86.50532032941677,
-         24.01409824083091,
-         -1.231739572450155,
-          0.1208650973866179e-2,
-         -0.5395239384953e-5,
+        24.01409824083091,
+        -1.231739572450155,
+        0.1208650973866179e-2,
+        -0.5395239384953e-5,
     )
     stp: float = 2.5066282746310005
 
-    y   = x
+    y = x
     tmp = x + 5.5
     tmp = (x + 0.5) * jnp.log(tmp) - tmp
     ser = 1.000000000190015
-    for j in range(6):                  # Fortran: do j = 1, 6; y = y + 1; ser += coef(j)/y
-        y   += 1.0
+    for j in range(6):  # Fortran: do j = 1, 6; y = y + 1; ser += coef(j)/y
+        y += 1.0
         ser += coef[j] / y
     return tmp + jnp.log(stp * ser / x)
 
@@ -949,6 +1011,7 @@ def log_gamma_function(x: float) -> float:
 # ---------------------------------------------------------------------------
 # Public: beta function
 # ---------------------------------------------------------------------------
+
 
 def beta_function(a: float, b: float) -> float:
     """
@@ -963,16 +1026,13 @@ def beta_function(a: float, b: float) -> float:
     Returns:
         ``B(a, b)``.
     """
-    return jnp.exp(
-        log_gamma_function(a)
-        + log_gamma_function(b)
-        - log_gamma_function(a + b)
-    )
+    return jnp.exp(log_gamma_function(a) + log_gamma_function(b) - log_gamma_function(a + b))
 
 
 # ---------------------------------------------------------------------------
 # Public: beta distribution PDF
 # ---------------------------------------------------------------------------
+
 
 def beta_distribution_pdf(a: float, b: float, x: float) -> float:
     """
@@ -999,6 +1059,7 @@ def beta_distribution_pdf(a: float, b: float, x: float) -> float:
 # ---------------------------------------------------------------------------
 # Public: beta distribution CDF
 # ---------------------------------------------------------------------------
+
 
 def beta_distribution_cdf(a: float, b: float, x: float) -> float:
     """
@@ -1043,6 +1104,7 @@ def beta_distribution_cdf(a: float, b: float, x: float) -> float:
 # Private: incomplete beta continued fraction
 # ---------------------------------------------------------------------------
 
+
 def _beta_function_incomplete_cf(a: float, b: float, x: float) -> float:
     """
     Evaluate the continued fraction representation of the incomplete
@@ -1062,41 +1124,45 @@ def _beta_function_incomplete_cf(a: float, b: float, x: float) -> float:
     Returns:
         The continued fraction value ``betacf``.
     """
-    maxit: int   = 100      # Fortran: parameter maxit = 100
-    eps:   float = 3.0e-7   # Fortran: parameter eps = 3.e-07_r8
+    maxit: int = 100  # Fortran: parameter maxit = 100
+    eps: float = 3.0e-7  # Fortran: parameter eps = 3.e-07_r8
     fpmin: float = 1.0e-30  # Fortran: parameter fpmin = 1.e-30_r8
 
     qab = a + b
     qap = a + 1.0
     qam = a - 1.0
-    c   = 1.0
-    d   = 1.0 - qab * x / qap
+    c = 1.0
+    d = 1.0 - qab * x / qap
     if abs(d) < fpmin:
         d = fpmin
     d = 1.0 / d
     h = d
 
-    for m in range(1, maxit + 1):                  # Fortran: do m = 1, maxit
+    for m in range(1, maxit + 1):  # Fortran: do m = 1, maxit
         m2 = 2 * m
         # Even step — Fortran lines 487-494
         aa = float(m) * (b - float(m)) * x / ((qam + float(m2)) * (a + float(m2)))
         d = 1.0 + aa * d
-        if abs(d) < fpmin: d = fpmin
+        if abs(d) < fpmin:
+            d = fpmin
         c = 1.0 + aa / c
-        if abs(c) < fpmin: c = fpmin
+        if abs(c) < fpmin:
+            c = fpmin
         d = 1.0 / d
         h = h * d * c
         # Odd step — Fortran lines 495-503
         aa = -(a + float(m)) * (qab + float(m)) * x / ((qap + float(m2)) * (a + float(m2)))
         d = 1.0 + aa * d
-        if abs(d) < fpmin: d = fpmin
+        if abs(d) < fpmin:
+            d = fpmin
         c = 1.0 + aa / c
-        if abs(c) < fpmin: c = fpmin
+        if abs(c) < fpmin:
+            c = fpmin
         d = 1.0 / d
         delta = d * c
         h = h * delta
         if abs(delta - 1.0) < eps:
             return h
 
-    endrun(msg=' ERROR: beta_function_incomplete_cf error')
-    return h    # Unreachable; satisfies type checker
+    endrun(msg=" ERROR: beta_function_incomplete_cf error")
+    return h  # Unreachable; satisfies type checker

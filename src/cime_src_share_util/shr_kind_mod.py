@@ -40,7 +40,7 @@ r8 = SHR_KIND_R8  # Alias for abortutils and other modules
 # =============================================================================
 # NOTES
 # =============================================================================
-# 
+#
 # In Fortran, selected_real_kind(12) requests a real type with at least
 # 12 decimal digits of precision, which maps to IEEE 754 double precision
 # (binary64). JAX's float64 provides this precision.
@@ -51,7 +51,7 @@ r8 = SHR_KIND_R8  # Alias for abortutils and other modules
 #
 # Usage in other modules:
 #   from shr_kind_mod import SHR_KIND_R8, SHR_KIND_IN, r8
-#   
+#
 #   # For array declarations:
 #   temperature = jnp.zeros(n, dtype=SHR_KIND_R8)
 #   indices = jnp.arange(n, dtype=SHR_KIND_IN)

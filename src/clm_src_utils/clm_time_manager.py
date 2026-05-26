@@ -37,39 +37,40 @@ Original Fortran module: clm_time_manager
 from __future__ import annotations
 
 from clm_src_main.abortutils import endrun  # noqa: F401
-from clm_src_main.clm_varctl import iulog   # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Module-level time state — Fortran public module variables
 # ---------------------------------------------------------------------------
 
-dtstep: int = 0   # Model timestep (s); Fortran: integer, public :: dtstep
-itim:   int = 0   # Current model timestep number; Fortran: integer, public :: itim
+dtstep: int = 0  # Model timestep (s); Fortran: integer, public :: dtstep
+itim: int = 0  # Current model timestep number; Fortran: integer, public :: itim
 
 # Private simulation date state
-start_date_ymd: int = 0   # Start date in yyyymmdd format
-start_date_tod: int = 0   # Start time of day (s past 0Z)
-curr_date_ymd:  int = 0   # Current date in yyyymmdd format (end of timestep)
-curr_date_tod:  int = 0   # Current time of day (s past 0Z)
+start_date_ymd: int = 0  # Start date in yyyymmdd format
+start_date_tod: int = 0  # Start time of day (s past 0Z)
+curr_date_ymd: int = 0  # Current date in yyyymmdd format (end of timestep)
+curr_date_tod: int = 0  # Current time of day (s past 0Z)
 
 # ---------------------------------------------------------------------------
 # Calendar tables — Fortran parameter arrays
 # ---------------------------------------------------------------------------
 
-calkindflag: str = 'GREGORIAN'
+calkindflag: str = "GREGORIAN"
 
 # Days in each month, normal and leap — Fortran: mday(12), mdayleap(12)
-_mday:     tuple = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+_mday: tuple = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
 _mdayleap: tuple = (31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
 
 # Cumulative days at end of month (0-based index 0..12) — Fortran: mdaycum(0:12), mdayleapcum(0:12)
-_mdaycum:     tuple = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365)
+_mdaycum: tuple = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365)
 _mdayleapcum: tuple = (0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366)
 
 
 # ---------------------------------------------------------------------------
 # Public: get_step_size
 # ---------------------------------------------------------------------------
+
 
 def get_step_size() -> int:
     """
@@ -87,6 +88,7 @@ def get_step_size() -> int:
 # Public: get_nstep
 # ---------------------------------------------------------------------------
 
+
 def get_nstep() -> int:
     """
     Return the current model timestep number.
@@ -102,6 +104,7 @@ def get_nstep() -> int:
 # ---------------------------------------------------------------------------
 # Public: isleap
 # ---------------------------------------------------------------------------
+
 
 def isleap(year: int, calendar: str) -> bool:
     """
@@ -127,20 +130,21 @@ def isleap(year: int, calendar: str) -> bool:
     Returns:
         ``True`` iff ``year`` is a leap year.
     """
-    result = False                          # Fortran: isleap = .false.
-    if calendar.strip() == 'GREGORIAN':
+    result = False  # Fortran: isleap = .false.
+    if calendar.strip() == "GREGORIAN":
         if year % 4 == 0:
-            result = True                   # Every 4 years → leap
+            result = True  # Every 4 years → leap
             if year % 100 == 0:
-                result = False              # Every 100 years → not leap
+                result = False  # Every 100 years → not leap
                 if year % 400 == 0:
-                    result = True           # Every 400 years → leap
+                    result = True  # Every 400 years → leap
     return result
 
 
 # ---------------------------------------------------------------------------
 # Public: get_curr_date
 # ---------------------------------------------------------------------------
+
 
 def get_curr_date() -> tuple:
     """
@@ -173,8 +177,8 @@ def get_curr_date() -> tuple:
 
     mcyear = start_date_ymd // 10000
 
-    nsecs  = itim * dtstep
-    ndays  = (nsecs + start_date_tod) // 86400
+    nsecs = itim * dtstep
+    ndays = (nsecs + start_date_tod) // 86400
 
     if isleap(mcyear, calkindflag):
         nyears = ndays // 366
@@ -192,26 +196,23 @@ def get_curr_date() -> tuple:
     # Initialise current year, month, day from start date + offsets
     mcyear = start_date_ymd // 10000 + nyears
     mcmnth = (start_date_ymd % 10000) // 100
-    mcday  = (start_date_ymd % 100) + ndays
+    mcday = (start_date_ymd % 100) + ndays
 
     # Roll over month/year boundaries — replaces Fortran "go to 10"
     while True:
-        days_per_month = (
-            _mdayleap[mcmnth - 1] if isleap(mcyear, calkindflag)
-            else _mday[mcmnth - 1]
-        )
+        days_per_month = _mdayleap[mcmnth - 1] if isleap(mcyear, calkindflag) else _mday[mcmnth - 1]
         if mcday > days_per_month:
-            mcday  -= days_per_month
+            mcday -= days_per_month
             mcmnth += 1
             if mcmnth == 13:
                 mcyear += 1
-                mcmnth  = 1
+                mcmnth = 1
         else:
             break
 
     curr_date_ymd = mcyear * 10000 + mcmnth * 100 + mcday
 
-    yr  = curr_date_ymd // 10000
+    yr = curr_date_ymd // 10000
     mon = (curr_date_ymd % 10000) // 100
     day = curr_date_ymd % 100
 
@@ -221,6 +222,7 @@ def get_curr_date() -> tuple:
 # ---------------------------------------------------------------------------
 # Private: _get_prev_date
 # ---------------------------------------------------------------------------
+
 
 def _get_prev_date() -> tuple:
     """
@@ -236,8 +238,8 @@ def _get_prev_date() -> tuple:
     """
     mcyear = start_date_ymd // 10000
 
-    nsecs  = (itim - 1) * dtstep                    # Fortran: nsecs = (itim-1)*dtstep
-    ndays  = (nsecs + start_date_tod) // 86400
+    nsecs = (itim - 1) * dtstep  # Fortran: nsecs = (itim-1)*dtstep
+    ndays = (nsecs + start_date_tod) // 86400
 
     if isleap(mcyear, calkindflag):
         nyears = ndays // 366
@@ -253,25 +255,22 @@ def _get_prev_date() -> tuple:
 
     mcyear = start_date_ymd // 10000 + nyears
     mcmnth = (start_date_ymd % 10000) // 100
-    mcday  = (start_date_ymd % 100) + ndays
+    mcday = (start_date_ymd % 100) + ndays
 
     while True:
-        days_per_month = (
-            _mdayleap[mcmnth - 1] if isleap(mcyear, calkindflag)
-            else _mday[mcmnth - 1]
-        )
+        days_per_month = _mdayleap[mcmnth - 1] if isleap(mcyear, calkindflag) else _mday[mcmnth - 1]
         if mcday > days_per_month:
-            mcday  -= days_per_month
+            mcday -= days_per_month
             mcmnth += 1
             if mcmnth == 13:
                 mcyear += 1
-                mcmnth  = 1
+                mcmnth = 1
         else:
             break
 
     date_ymd = mcyear * 10000 + mcmnth * 100 + mcday
 
-    yr  = date_ymd // 10000
+    yr = date_ymd // 10000
     mon = (date_ymd % 10000) // 100
     day = date_ymd % 100
 
@@ -281,6 +280,7 @@ def _get_prev_date() -> tuple:
 # ---------------------------------------------------------------------------
 # Public: get_curr_time
 # ---------------------------------------------------------------------------
+
 
 def get_curr_time() -> tuple:
     """
@@ -293,8 +293,8 @@ def get_curr_time() -> tuple:
         elapsed days since the start date and ``seconds`` is the
         remaining partial-day seconds.
     """
-    nsecs   = itim * dtstep
-    days    = (nsecs + start_date_tod) // 86400
+    nsecs = itim * dtstep
+    days = (nsecs + start_date_tod) // 86400
     seconds = (nsecs + start_date_tod) % 86400
     return days, seconds
 
@@ -302,6 +302,7 @@ def get_curr_time() -> tuple:
 # ---------------------------------------------------------------------------
 # Private: _get_prev_calday
 # ---------------------------------------------------------------------------
+
 
 def _get_prev_calday() -> float:
     """
@@ -329,11 +330,11 @@ def _get_prev_calday() -> float:
         calday = float(_mdaycum[mon - 1]) + float(day) + float(tod) / 86400.0
 
     # Gregorian calendar hack — Fortran lines 320-327
-    if 366.0 < calday <= 367.0 and calkindflag.strip() == 'GREGORIAN':
+    if 366.0 < calday <= 367.0 and calkindflag.strip() == "GREGORIAN":
         calday -= 1.0
 
     if calday < 1.0 or calday > 366.0:
-        print(f'{iulog}: get_prev_calday error: out of bounds')
+        print(f"{iulog}: get_prev_calday error: out of bounds")
         endrun()
 
     return calday
@@ -342,6 +343,7 @@ def _get_prev_calday() -> float:
 # ---------------------------------------------------------------------------
 # Public: get_curr_calday
 # ---------------------------------------------------------------------------
+
 
 def get_curr_calday(offset: int = 0) -> float:
     """
@@ -383,9 +385,9 @@ def get_curr_calday(offset: int = 0) -> float:
 
     elif offset > 0:
         # Not implemented — Fortran lines 277-279
-        print(f'{iulog}: get_curr_calday error: offset > 0')
+        print(f"{iulog}: get_curr_calday error: offset > 0")
         endrun()
-        calday = 0.0    # unreachable; silences type checkers
+        calday = 0.0  # unreachable; silences type checkers
 
     else:
         # Current timestep: end-of-step date — Fortran lines 281-293
@@ -397,11 +399,11 @@ def get_curr_calday(offset: int = 0) -> float:
             calday = float(_mdaycum[mon - 1]) + float(day) + float(tod) / 86400.0
 
         # Gregorian hack — Fortran lines 284-290
-        if 366.0 < calday <= 367.0 and calkindflag.strip() == 'GREGORIAN':
+        if 366.0 < calday <= 367.0 and calkindflag.strip() == "GREGORIAN":
             calday -= 1.0
 
         if calday < 1.0 or calday > 366.0:
-            print(f'{iulog}: get_curr_calday error: out of bounds')
+            print(f"{iulog}: get_curr_calday error: out of bounds")
             endrun()
 
     return calday
@@ -410,6 +412,7 @@ def get_curr_calday(offset: int = 0) -> float:
 # ---------------------------------------------------------------------------
 # Public: is_end_curr_day
 # ---------------------------------------------------------------------------
+
 
 def is_end_curr_day() -> bool:
     """
@@ -431,6 +434,7 @@ def is_end_curr_day() -> bool:
 # ---------------------------------------------------------------------------
 # Public: is_end_curr_month
 # ---------------------------------------------------------------------------
+
 
 def is_end_curr_month() -> bool:
     """

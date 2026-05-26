@@ -19,20 +19,20 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-
 # =============================================================================
 # Data Structures
 # =============================================================================
 
+
 class BoundsType(NamedTuple):
     """
     Bounds for CLM grid hierarchy.
-    
+
     Defines the beginning and ending indices for each level of the CLM
     subgrid hierarchy: gridcell (g), landunit (l), column (c), and patch (p).
-    
+
     For offline single-point simulations, all bounds are typically [1, 1].
-    
+
     Attributes:
         begg: Beginning gridcell index [scalar int]
         endg: Ending gridcell index [scalar int]
@@ -42,9 +42,10 @@ class BoundsType(NamedTuple):
         endc: Ending column index [scalar int]
         begp: Beginning patch index [scalar int]
         endp: Ending patch index [scalar int]
-        
+
     Reference: decompMod.F90 bounds_type definition
     """
+
     begg: int
     endg: int
     begl: int
@@ -58,16 +59,17 @@ class BoundsType(NamedTuple):
 class ClumpConfig(NamedTuple):
     """
     Configuration for computational clumps.
-    
+
     CLM processes the domain in "clumps" for parallelization. Each clump
     contains a subset of gridcells and their associated subgrid entities.
-    
+
     Attributes:
         n_clumps: Number of computational clumps [scalar int]
         clump_id: ID of current clump (1-indexed) [scalar int]
-        
+
     Reference: decompMod.F90
     """
+
     n_clumps: int
     clump_id: int
 
@@ -76,29 +78,30 @@ class ClumpConfig(NamedTuple):
 # Domain Decomposition Functions
 # =============================================================================
 
+
 def get_clump_bounds(clump_id: int) -> BoundsType:
     """
     Get bounds for a computational clump.
-    
+
     For offline single-point simulations, this returns bounds for a single
     grid cell with one land unit, one column, and one patch.
-    
+
     Args:
         clump_id: Clump identifier (1-indexed) [scalar int]
-        
+
     Returns:
         Bounds for the clump's grid hierarchy
-        
+
     Note:
         In the full CLM, this would look up bounds from a decomposition table.
         For offline testing, we hardcode single-point bounds.
-        
+
     Reference: decompMod.F90 get_clump_bounds, CLMml.F90 lines 18-19
     """
     # Validate input
     if clump_id < 1:
         raise ValueError(f"clump_id must be >= 1, got {clump_id}")
-    
+
     # Single grid cell configuration
     # All indices are 1-based to match Fortran convention
     bounds = BoundsType(
@@ -111,26 +114,26 @@ def get_clump_bounds(clump_id: int) -> BoundsType:
         begp=1,  # Beginning patch
         endp=1,  # Ending patch
     )
-    
+
     return bounds
 
 
 def initialize_clump_config(n_clumps: int = 1) -> ClumpConfig:
     """
     Initialize clump configuration.
-    
+
     Args:
         n_clumps: Number of computational clumps [scalar int]
-        
+
     Returns:
         Clump configuration
-        
+
     Reference: CLMml.F90 line 17
     """
     # Validate input
     if n_clumps < 1:
         raise ValueError(f"n_clumps must be >= 1, got {n_clumps}")
-    
+
     return ClumpConfig(
         n_clumps=n_clumps,
         clump_id=1,  # Process first (and only) clump
@@ -141,37 +144,38 @@ def initialize_clump_config(n_clumps: int = 1) -> ClumpConfig:
 # Main Driver
 # =============================================================================
 
+
 def clm_ml_main(
     driver_fn,
     n_clumps: int = 1,
 ) -> None:
     """
     Main entry point for CLM-ML offline driver.
-    
+
     This function:
     1. Initializes the computational domain (clumps and bounds)
     2. Calls the main driver routine to run the model
-    
+
     Args:
         driver_fn: Main driver function (CLMml_drv) that takes bounds
         n_clumps: Number of computational clumps [scalar int]
-        
+
     Note:
         This is a simplified version for offline testing. The full CLM
         would loop over multiple clumps and timesteps.
-        
+
     Reference: CLMml.F90 lines 1-24
     """
     # Validate input
     if n_clumps < 1:
         raise ValueError(f"n_clumps must be >= 1, got {n_clumps}")
-    
+
     # Initialize clump configuration (line 17)
     clump_config = initialize_clump_config(n_clumps)
-    
+
     # Get bounds for the clump (line 19)
     bounds = get_clump_bounds(clump_config.clump_id)
-    
+
     # Run the model (line 23)
     driver_fn(bounds)
 
@@ -179,6 +183,7 @@ def clm_ml_main(
 # =============================================================================
 # JAX-Compatible Main Driver
 # =============================================================================
+
 
 def clm_ml_main_jax(
     driver_fn,
@@ -188,20 +193,20 @@ def clm_ml_main_jax(
 ) -> tuple:
     """
     JAX-compatible main driver for CLM-ML.
-    
+
     This version is designed for JAX transformations (jit, grad, vmap).
     Instead of side effects, it takes initial state and returns final state.
-    
+
     Args:
         driver_fn: Main driver function that takes (bounds, state, forcing, params)
         initial_state: Initial model state [NamedTuple]
         forcing_data: Atmospheric forcing data [NamedTuple]
         params: Model parameters [NamedTuple]
-        
+
     Returns:
         final_state: Final model state [NamedTuple]
         diagnostics: Diagnostic outputs [NamedTuple]
-        
+
     Example:
         >>> from jax_ctsm.driver import clm_ml_driver
         >>> state, diag = clm_ml_main_jax(
@@ -210,16 +215,16 @@ def clm_ml_main_jax(
         ...     forcing,
         ...     params
         ... )
-        
+
     Note:
         This is a pure functional version suitable for JAX. The original
         Fortran code uses side effects and global state.
-        
+
     Reference: CLMml.F90 lines 1-24 (functional adaptation)
     """
     # Get bounds for single-point simulation
     bounds = get_clump_bounds(clump_id=1)
-    
+
     # Run the driver (pure functional version)
     final_state, diagnostics = driver_fn(
         bounds=bounds,
@@ -227,7 +232,7 @@ def clm_ml_main_jax(
         forcing=forcing_data,
         params=params,
     )
-    
+
     return final_state, diagnostics
 
 
@@ -235,21 +240,22 @@ def clm_ml_main_jax(
 # Utility Functions
 # =============================================================================
 
+
 def validate_bounds(bounds: BoundsType) -> bool:
     """
     Validate bounds structure.
-    
+
     Checks that:
     - End indices >= begin indices
     - Indices are positive
     - Hierarchy is consistent (g >= l >= c >= p)
-    
+
     Args:
         bounds: Bounds to validate
-        
+
     Returns:
         True if valid, False otherwise
-        
+
     Reference: decompMod.F90 (validation logic)
     """
     # Check that end >= begin for each level
@@ -257,28 +263,34 @@ def validate_bounds(bounds: BoundsType) -> bool:
     valid_l = bounds.endl >= bounds.begl
     valid_c = bounds.endc >= bounds.begc
     valid_p = bounds.endp >= bounds.begp
-    
+
     # Check positive indices
-    positive = all([
-        bounds.begg > 0, bounds.endg > 0,
-        bounds.begl > 0, bounds.endl > 0,
-        bounds.begc > 0, bounds.endc > 0,
-        bounds.begp > 0, bounds.endp > 0,
-    ])
-    
+    positive = all(
+        [
+            bounds.begg > 0,
+            bounds.endg > 0,
+            bounds.begl > 0,
+            bounds.endl > 0,
+            bounds.begc > 0,
+            bounds.endc > 0,
+            bounds.begp > 0,
+            bounds.endp > 0,
+        ]
+    )
+
     return valid_g and valid_l and valid_c and valid_p and positive
 
 
 def get_domain_size(bounds: BoundsType) -> dict:
     """
     Get size of each hierarchy level.
-    
+
     Args:
         bounds: Domain bounds
-        
+
     Returns:
         Dictionary with counts for each level
-        
+
     Example:
         >>> bounds = get_clump_bounds(1)
         >>> sizes = get_domain_size(bounds)
@@ -286,10 +298,10 @@ def get_domain_size(bounds: BoundsType) -> dict:
         {'n_gridcells': 1, 'n_landunits': 1, 'n_columns': 1, 'n_patches': 1}
     """
     return {
-        'n_gridcells': bounds.endg - bounds.begg + 1,
-        'n_landunits': bounds.endl - bounds.begl + 1,
-        'n_columns': bounds.endc - bounds.begc + 1,
-        'n_patches': bounds.endp - bounds.begp + 1,
+        "n_gridcells": bounds.endg - bounds.begg + 1,
+        "n_landunits": bounds.endl - bounds.begl + 1,
+        "n_columns": bounds.endc - bounds.begc + 1,
+        "n_patches": bounds.endp - bounds.begp + 1,
     }
 
 

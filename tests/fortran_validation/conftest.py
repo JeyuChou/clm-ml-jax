@@ -18,6 +18,7 @@ import warnings
 from pathlib import Path
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -48,6 +49,7 @@ def initialize_rsl_tables():
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             from multilayer_canopy.MLCanopyTurbulenceMod import LookupPsihatINI
+
             LookupPsihatINI()
         RSL_AVAILABLE = True
     except Exception as exc:

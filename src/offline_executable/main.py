@@ -14,7 +14,7 @@ import os
 import sys
 import time
 from pathlib import Path
-import f90nml                                  # pip install f90nml
+import f90nml  # pip install f90nml
 
 import jax
 
@@ -31,8 +31,8 @@ os.makedirs(_jax_cache_dir, exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", _jax_cache_dir)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 10.0)
 
-from clm_src_main.decompMod        import bounds_type
-from clm_src_cpl.lnd_comp_nuopc   import InitializeRealize, ModelAdvance
+from clm_src_main.decompMod import bounds_type
+from clm_src_cpl.lnd_comp_nuopc import InitializeRealize, ModelAdvance
 from offline_driver import controlMod
 
 # Root of the Python source tree  (…/clm-ml-jax/src)
@@ -64,7 +64,7 @@ def _resolve_path(raw: str) -> str:
     # Strip leading '../' segments then resolve under _SRC_ROOT
     parts = p.parts
     # Drop leading '..' components
-    while parts and parts[0] == '..':
+    while parts and parts[0] == "..":
         parts = parts[1:]
     candidate = _SRC_ROOT / Path(*parts)
     if candidate.exists():
@@ -88,7 +88,7 @@ def read_namelist(source) -> dict:
     if source is None or source == "-":
         # Fortran:  ./prgm.exe < nl.CHATS7.05.2007
         text = sys.stdin.read()
-        nml  = f90nml.reads(text)
+        nml = f90nml.reads(text)
     else:
         # Fortran:  ./prgm.exe nl.CHATS7.05.2007  (alternative)
         nml = f90nml.read(source)
@@ -110,10 +110,14 @@ def build_bounds(nml: dict) -> bounds_type:
         A :class:`bounds_type` for the single-column offline run.
     """
     return bounds_type(
-        begg=0, endg=0,
-        begl=0, endl=0,
-        begc=0, endc=0,
-        begp=0, endp=0,
+        begg=0,
+        endg=0,
+        begl=0,
+        endl=0,
+        begc=0,
+        endc=0,
+        begp=0,
+        endp=0,
     )
 
 
@@ -122,21 +126,21 @@ def main():
     # 1. Parse namelist  (mirrors controlMod.F90 :: read(5, nml=...))
     # ------------------------------------------------------------------
     source = sys.argv[1] if len(sys.argv) > 1 else None
-    nml    = read_namelist(source)
+    nml = read_namelist(source)
 
     # Offline CLMml namelist group is typically &clmML_inparm
     params = nml.get("clmML_inparm", nml.get("clm_inparm", nml.get("clm_input", {})))
 
     tower_name = str(params.get("tower_name", "CHATS7"))
-    start_ymd  = int(params.get("start_ymd", 20070501))
-    iyear      = start_ymd // 10000
-    imonth     = (start_ymd // 100) % 100
+    start_ymd = int(params.get("start_ymd", 20070501))
+    iyear = start_ymd // 10000
+    imonth = (start_ymd // 100) % 100
 
-    fin_tower       = _resolve_path(str(params.get("fin_tower", "")))
-    fin_clm         = _resolve_path(str(params.get("fin_clm", "")))
+    fin_tower = _resolve_path(str(params.get("fin_tower", "")))
+    fin_clm = _resolve_path(str(params.get("fin_clm", "")))
     fin_soil_adjust = _resolve_path(str(params.get("fin_soil_adjust", "")))
-    dirout_raw      = str(params.get("dirout", "")).strip()
-    dirout          = _resolve_path(dirout_raw) if dirout_raw else ""
+    dirout_raw = str(params.get("dirout", "")).strip()
+    dirout = _resolve_path(dirout_raw) if dirout_raw else ""
 
     # fin1 = tower forcing file (used by TowerMet* and init_acclim)
     # fin2 = CLM history file   (used by clmData inside clm_driver)
@@ -170,16 +174,16 @@ def main():
 
     TowerDataMod.tower_num = tower_num
 
-    clmSoilOptionMod.clm_phys         = str(params.get("clm_phys", clmSoilOptionMod.clm_phys))
-    clmSoilOptionMod.nlev_soil_adjust  = int(params.get("nlev_soil_adjust", 0))
-    clmSoilOptionMod.fin_soil_adjust   = fin_soil_adjust
-    MLclm_varctl.met_type              = int(params.get("met_type",   MLclm_varctl.met_type))
-    MLclm_varctl.dpai_min              = float(params.get("dpai_min", MLclm_varctl.dpai_min))
-    MLclm_varctl.pftcon_val            = int(params.get("pftcon_val", MLclm_varctl.pftcon_val))
+    clmSoilOptionMod.clm_phys = str(params.get("clm_phys", clmSoilOptionMod.clm_phys))
+    clmSoilOptionMod.nlev_soil_adjust = int(params.get("nlev_soil_adjust", 0))
+    clmSoilOptionMod.fin_soil_adjust = fin_soil_adjust
+    MLclm_varctl.met_type = int(params.get("met_type", MLclm_varctl.met_type))
+    MLclm_varctl.dpai_min = float(params.get("dpai_min", MLclm_varctl.dpai_min))
+    MLclm_varctl.pftcon_val = int(params.get("pftcon_val", MLclm_varctl.pftcon_val))
 
     clm_time_manager.start_date_ymd = start_ymd
     clm_time_manager.start_date_tod = int(params.get("start_tod", 0))
-    clm_time_manager.dtstep         = int(TowerDataMod.tower_time[tower_num]) * 60
+    clm_time_manager.dtstep = int(TowerDataMod.tower_time[tower_num]) * 60
 
     # ------------------------------------------------------------------
     # 3. Build decomposition bounds  (single column for offline case)
@@ -190,8 +194,8 @@ def main():
     # 4. Compute ntimes
     # ------------------------------------------------------------------
     stop_option = str(params.get("stop_option", "ndays")).strip()
-    stop_n      = int(params.get("stop_n", 1))
-    dtstep_sec  = clm_time_manager.dtstep
+    stop_n = int(params.get("stop_n", 1))
+    dtstep_sec = clm_time_manager.dtstep
 
     if stop_option == "ndays":
         ntimes = (stop_n * 86400) // max(dtstep_sec, 1)
@@ -225,6 +229,7 @@ def main():
     # "from clm_src_main.filterMod import filter", so we must patch
     # that binding too; otherwise clm_drv() sees the stale zero-count filter.
     import clm_src_main.clm_driver as _clm_driver_mod
+
     _clm_driver_mod.filter = _new_filter
 
     print("Initialization complete.", flush=True)
@@ -233,7 +238,10 @@ def main():
     # 6. Pre-loop setup  (mirrors CLMml_drv lines 84-120)
     # ------------------------------------------------------------------
     from offline_driver.CLMml_driver import (
-        init_acclim, TowerVeg, SoilInit, output,
+        init_acclim,
+        TowerVeg,
+        SoilInit,
+        output,
     )
     from offline_driver.TowerMetMod import (
         TowerMetCurr,
@@ -243,13 +251,18 @@ def main():
     from offline_driver.clmDataMod import close_cached_datasets as _close_clmdata_cache
 
     # 6a. Acclimation temperature (reads full tower record once)
-    (clm_instMod.atm2lnd_inst,
-     clm_instMod.wateratm2lndbulk_inst,
-     clm_instMod.temperature_inst,
-     clm_instMod.frictionvel_inst,
-     clm_instMod.mlcanopy_inst) = init_acclim(
-        fin1, tower_num, ntimes,
-        bounds.begp, bounds.endp,
+    (
+        clm_instMod.atm2lnd_inst,
+        clm_instMod.wateratm2lndbulk_inst,
+        clm_instMod.temperature_inst,
+        clm_instMod.frictionvel_inst,
+        clm_instMod.mlcanopy_inst,
+    ) = init_acclim(
+        fin1,
+        tower_num,
+        ntimes,
+        bounds.begp,
+        bounds.endp,
         clm_instMod.atm2lnd_inst,
         clm_instMod.wateratm2lndbulk_inst,
         clm_instMod.temperature_inst,
@@ -260,17 +273,18 @@ def main():
     # 6aa. Orbital parameters for this year — mirrors CLMml_drv lines 80-81
     from clm_share.shr_orb_mod import shr_orb_params as _shr_orb_params
     from clm_src_utils import clm_varorb as _clm_varorb
+
     _eccen, _obliq, _mvelp, _obliqr, _lambm0, _mvelpp = _shr_orb_params(iyear)
-    _clm_varorb.eccen  = _eccen
+    _clm_varorb.eccen = _eccen
     _clm_varorb.obliqr = _obliqr
     _clm_varorb.lambm0 = _lambm0
     _clm_varorb.mvelpp = _mvelpp
 
     # 6b. Tower vegetation properties
-    (clm_instMod.canopystate_inst,
-     clm_instMod.mlcanopy_inst) = TowerVeg(
+    clm_instMod.canopystate_inst, clm_instMod.mlcanopy_inst = TowerVeg(
         tower_num,
-        bounds.begp, bounds.endp,
+        bounds.begp,
+        bounds.endp,
         clm_instMod.canopystate_inst,
         clm_instMod.mlcanopy_inst,
     )
@@ -293,15 +307,14 @@ def main():
     clm_time_manager.itim = 1
     curr_calday = get_curr_calday(offset=0)
 
-    soil_init_time_indx = round(
-        (curr_calday - start_calday_clm) * 86400.0 / float(dtstep_sec)
-    ) + 1
+    soil_init_time_indx = round((curr_calday - start_calday_clm) * 86400.0 / float(dtstep_sec)) + 1
 
     # 6d. Soil temperature and moisture initialisation
-    (clm_instMod.waterstatebulk_inst,
-     clm_instMod.temperature_inst) = SoilInit(
-        fin2, soil_init_time_indx,
-        bounds.begc, bounds.endc,
+    clm_instMod.waterstatebulk_inst, clm_instMod.temperature_inst = SoilInit(
+        fin2,
+        soil_init_time_indx,
+        bounds.begc,
+        bounds.endc,
         clm_instMod.soilstate_inst,
         clm_instMod.waterstatebulk_inst,
         clm_instMod.temperature_inst,
@@ -318,15 +331,15 @@ def main():
     tid = str(TowerDataMod.tower_id[tower_num])
 
     def _outpath(tag: str) -> str:
-        fname = f'{tid}_{iyear:04d}-{imonth:02d}_{tag}.out'
+        fname = f"{tid}_{iyear:04d}-{imonth:02d}_{tag}.out"
         return os.path.join(dirout, fname)
 
-    fout1 = open(_outpath('flux'),        'w')
-    fout2 = open(_outpath('aux'),         'w')
-    fout3 = open(_outpath('profile'),     'w')
-    fout4 = open(_outpath('fsun'),        'w')
-    fout5 = open(_outpath('fluxprofile'), 'w')
-    fout6 = open(_outpath('soiltemp'),    'w')
+    fout1 = open(_outpath("flux"), "w")
+    fout2 = open(_outpath("aux"), "w")
+    fout3 = open(_outpath("profile"), "w")
+    fout4 = open(_outpath("fsun"), "w")
+    fout5 = open(_outpath("fluxprofile"), "w")
+    fout6 = open(_outpath("soiltemp"), "w")
     print(f"Output files opened in: {dirout}", flush=True)
 
     # ------------------------------------------------------------------
@@ -338,8 +351,9 @@ def main():
         progress_nsteps = 1
     print(
         f"Starting time loop: ntimes={ntimes}, dtstep={dtstep_sec}s, "
-        f"progress every {progress_nsteps} step(s)"
-    , flush=True)
+        f"progress every {progress_nsteps} step(s)",
+        flush=True,
+    )
 
     run_t0 = time.perf_counter()
     try:
@@ -351,17 +365,20 @@ def main():
             curr_calday = get_curr_calday(offset=0)
 
             # Time slice index into CLM history file
-            time_indx = round(
-                (curr_calday - start_calday_clm) * 86400.0 / float(dtstep_sec)
-            ) + 1
+            time_indx = round((curr_calday - start_calday_clm) * 86400.0 / float(dtstep_sec)) + 1
 
             # Read current-step tower meteorology
             t_met0 = time.perf_counter()
-            (clm_instMod.atm2lnd_inst,
-             clm_instMod.wateratm2lndbulk_inst,
-             clm_instMod.frictionvel_inst) = TowerMetCurr(
-                fin1, _itim, tower_num,
-                bounds.begp, bounds.endp,
+            (
+                clm_instMod.atm2lnd_inst,
+                clm_instMod.wateratm2lndbulk_inst,
+                clm_instMod.frictionvel_inst,
+            ) = TowerMetCurr(
+                fin1,
+                _itim,
+                tower_num,
+                bounds.begp,
+                bounds.endp,
                 clm_instMod.atm2lnd_inst,
                 clm_instMod.wateratm2lndbulk_inst,
                 clm_instMod.frictionvel_inst,
@@ -371,8 +388,10 @@ def main():
             if met_type == 3:
                 itim_next = min(_itim + 1, ntimes)
                 clm_instMod.mlcanopy_inst = TowerMetNext(
-                    fin1, itim_next,
-                    bounds.begp, bounds.endp,
+                    fin1,
+                    itim_next,
+                    bounds.begp,
+                    bounds.endp,
                     clm_instMod.mlcanopy_inst,
                 )
             t_met = time.perf_counter() - t_met0
@@ -385,8 +404,14 @@ def main():
             # Write output
             t_out0 = time.perf_counter()
             output(
-                curr_calday, tower_num,
-                fout1, fout2, fout3, fout4, fout5, fout6,
+                curr_calday,
+                tower_num,
+                fout1,
+                fout2,
+                fout3,
+                fout4,
+                fout5,
+                fout6,
                 clm_instMod.mlcanopy_inst,
                 clm_instMod.temperature_inst,
             )
@@ -400,8 +425,9 @@ def main():
                 print(
                     f"  timestep {_itim}/{ntimes} | step={step_dt:.2f}s "
                     f"(met={t_met:.2f}s, adv={t_adv:.2f}s, out={t_out:.2f}s) "
-                    f"| elapsed={elapsed:.1f}s | eta={eta:.1f}s"
-                , flush=True)
+                    f"| elapsed={elapsed:.1f}s | eta={eta:.1f}s",
+                    flush=True,
+                )
     finally:
         # Keep all file descriptor lifetimes explicit when using netCDF caches.
         for fh in (fout1, fout2, fout3, fout4, fout5, fout6):

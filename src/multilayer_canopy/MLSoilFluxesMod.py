@@ -19,9 +19,9 @@ JIT-compatible checking if needed).
 import jax
 import jax.numpy as jnp
 
-from multilayer_canopy.MLWaterVaporMod import SatVap, LatVap    # noqa: F401
+from multilayer_canopy.MLWaterVaporMod import SatVap, LatVap  # noqa: F401
 from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
-from clm_src_main.abortutils import endrun                 # noqa: F401
+from clm_src_main.abortutils import endrun  # noqa: F401
 
 
 def SoilFluxes(
@@ -83,38 +83,38 @@ def SoilFluxes(
         Updated :class:`mlcanopy_type`.
     """
     # Unpack inputs (Fortran associate block, lines 43-63)
-    tref      = mlcanopy_inst.tref_forcing[p]
-    pref_p    = mlcanopy_inst.pref_forcing[p]
-    rhomol_p  = mlcanopy_inst.rhomol_forcing[p]
-    cpair_p   = mlcanopy_inst.cpair_forcing[p]
-    rnsoi_p   = mlcanopy_inst.rnsoi_soil[p]
-    rhg_p     = mlcanopy_inst.rhg_soil[p]
+    tref = mlcanopy_inst.tref_forcing[p]
+    pref_p = mlcanopy_inst.pref_forcing[p]
+    rhomol_p = mlcanopy_inst.rhomol_forcing[p]
+    cpair_p = mlcanopy_inst.cpair_forcing[p]
+    rnsoi_p = mlcanopy_inst.rnsoi_soil[p]
+    rhg_p = mlcanopy_inst.rhg_soil[p]
     soilres_p = mlcanopy_inst.soilres_soil[p]
-    gac0_p    = mlcanopy_inst.gac0_soil[p]
-    soil_t_p  = mlcanopy_inst.soil_t_soil[p]
+    gac0_p = mlcanopy_inst.gac0_soil[p]
+    soil_t_p = mlcanopy_inst.soil_t_soil[p]
     soil_dz_p = mlcanopy_inst.soil_dz_soil[p]
     soil_tk_p = mlcanopy_inst.soil_tk_soil[p]
-    tg_bef_p  = mlcanopy_inst.tg_bef_soil[p]
-    tair_1    = mlcanopy_inst.tair_profile[p, 1]
-    eair_1    = mlcanopy_inst.eair_profile[p, 1]
+    tg_bef_p = mlcanopy_inst.tg_bef_soil[p]
+    tair_1 = mlcanopy_inst.tair_profile[p, 1]
+    eair_1 = mlcanopy_inst.eair_profile[p, 1]
 
     # ------------------------------------------------------------------
     # Latent heat of vaporization — Fortran line 66
     # ------------------------------------------------------------------
-    lam = LatVap(tref)                                 # J/mol
+    lam = LatVap(tref)  # J/mol
 
     # ------------------------------------------------------------------
     # Soil conductance for water vapour — Fortran lines 68-70
     # ------------------------------------------------------------------
-    gws = (1.0 / soilres_p) * rhomol_p                # s/m → mol H2O/m2/s
-    gw  = gac0_p * gws / (gac0_p + gws)               # total conductance
+    gws = (1.0 / soilres_p) * rhomol_p  # s/m → mol H2O/m2/s
+    gw = gac0_p * gws / (gac0_p + gws)  # total conductance
 
     # ------------------------------------------------------------------
     # Saturation vapour pressure at tg_bef — Fortran lines 72-73
     # ------------------------------------------------------------------
-    esat, desat = SatVap(tg_bef_p)                    # Pa, Pa/K
-    qsat  = esat  / pref_p                            # mol/mol
-    dqsat = desat / pref_p                            # mol/mol/K
+    esat, desat = SatVap(tg_bef_p)  # Pa, Pa/K
+    qsat = esat / pref_p  # mol/mol
+    dqsat = desat / pref_p  # mol/mol/K
 
     # ------------------------------------------------------------------
     # Soil surface temperature — Fortran lines 75-78
@@ -123,24 +123,24 @@ def SoilFluxes(
     num2 = lam * gw
     num3 = soil_tk_p / soil_dz_p
     num4 = rnsoi_p - num2 * rhg_p * (qsat - dqsat * tg_bef_p) + num3 * soil_t_p
-    den  = num1 + num2 * dqsat * rhg_p + num3
+    den = num1 + num2 * dqsat * rhg_p + num3
     tg_p = (num1 * tair_1 + num2 * (eair_1 / pref_p) + num4) / den
 
     # ------------------------------------------------------------------
     # Sensible heat flux — Fortran line 80
     # ------------------------------------------------------------------
-    shsoi_p = cpair_p * (tg_p - tair_1) * gac0_p      # W/m2
+    shsoi_p = cpair_p * (tg_p - tair_1) * gac0_p  # W/m2
 
     # ------------------------------------------------------------------
     # Latent heat flux — Fortran lines 82-83
     # ------------------------------------------------------------------
-    eg_p    = rhg_p * (esat + desat * (tg_p - tg_bef_p))   # Pa
-    lhsoi_p = lam * (eg_p - eair_1) / pref_p * gw           # W/m2
+    eg_p = rhg_p * (esat + desat * (tg_p - tg_bef_p))  # Pa
+    lhsoi_p = lam * (eg_p - eair_1) / pref_p * gw  # W/m2
 
     # ------------------------------------------------------------------
     # Soil heat flux — Fortran line 85
     # ------------------------------------------------------------------
-    gsoi_p = soil_tk_p * (tg_p - soil_t_p) / soil_dz_p      # W/m2
+    gsoi_p = soil_tk_p * (tg_p - soil_t_p) / soil_dz_p  # W/m2
 
     # ------------------------------------------------------------------
     # Energy balance error check — Fortran lines 87-90
@@ -150,8 +150,11 @@ def SoilFluxes(
     err = rnsoi_p - shsoi_p - lhsoi_p - gsoi_p
     # JIT-compatible diagnostic: callback runs host-side with concrete value
     jax.debug.callback(
-        lambda e: endrun(msg=' ERROR: SoilFluxes: energy balance error')
-        if abs(float(e)) > 0.001 else None,
+        lambda e: (
+            endrun(msg=" ERROR: SoilFluxes: energy balance error")
+            if abs(float(e)) > 0.001
+            else None
+        ),
         err,
     )
 
@@ -161,10 +164,10 @@ def SoilFluxes(
     etsoi_p = lhsoi_p / lam
 
     return mlcanopy_inst._replace(
-        shsoi_soil = mlcanopy_inst.shsoi_soil.at[p].set(shsoi_p),
-        lhsoi_soil = mlcanopy_inst.lhsoi_soil.at[p].set(lhsoi_p),
-        gsoi_soil  = mlcanopy_inst.gsoi_soil.at[p].set(gsoi_p),
-        etsoi_soil = mlcanopy_inst.etsoi_soil.at[p].set(etsoi_p),
-        tg_soil    = mlcanopy_inst.tg_soil.at[p].set(tg_p),
-        eg_soil    = mlcanopy_inst.eg_soil.at[p].set(eg_p),
+        shsoi_soil=mlcanopy_inst.shsoi_soil.at[p].set(shsoi_p),
+        lhsoi_soil=mlcanopy_inst.lhsoi_soil.at[p].set(lhsoi_p),
+        gsoi_soil=mlcanopy_inst.gsoi_soil.at[p].set(gsoi_p),
+        etsoi_soil=mlcanopy_inst.etsoi_soil.at[p].set(etsoi_p),
+        tg_soil=mlcanopy_inst.tg_soil.at[p].set(tg_p),
+        eg_soil=mlcanopy_inst.eg_soil.at[p].set(eg_p),
     )

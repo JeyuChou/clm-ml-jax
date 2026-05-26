@@ -14,13 +14,13 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.clm_varpar import numrad          # noqa: F401
-from clm_src_main.decompMod import bounds_type      # noqa: F401
-
+from clm_src_main.clm_varpar import numrad  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
+
 
 class atm2lnd_type(NamedTuple):
     """
@@ -63,20 +63,22 @@ class atm2lnd_type(NamedTuple):
             downscaled to column (W/m2). Shape ``(endc - begc + 1,)``.
             Fortran: ``forc_lwrad_downscaled_col(begc:endc)``.
     """
-    forc_u_grc:                Array   # (n_grc,)
-    forc_v_grc:                Array   # (n_grc,)
-    forc_pco2_grc:             Array   # (n_grc,)
-    forc_po2_grc:              Array   # (n_grc,)
-    forc_solad_downscaled_col: Array   # (n_col, numrad)
-    forc_solai_grc:            Array   # (n_grc, numrad)
-    forc_t_downscaled_col:     Array   # (n_col,)
-    forc_pbot_downscaled_col:  Array   # (n_col,)
-    forc_lwrad_downscaled_col: Array   # (n_col,)
+
+    forc_u_grc: Array  # (n_grc,)
+    forc_v_grc: Array  # (n_grc,)
+    forc_pco2_grc: Array  # (n_grc,)
+    forc_po2_grc: Array  # (n_grc,)
+    forc_solad_downscaled_col: Array  # (n_col, numrad)
+    forc_solai_grc: Array  # (n_grc, numrad)
+    forc_t_downscaled_col: Array  # (n_col,)
+    forc_pbot_downscaled_col: Array  # (n_col,)
+    forc_lwrad_downscaled_col: Array  # (n_col,)
 
 
 # ---------------------------------------------------------------------------
 # Initialization helpers (mirror Init / InitAllocate)
 # ---------------------------------------------------------------------------
+
 
 def InitAllocate(bounds: bounds_type) -> atm2lnd_type:
     """
@@ -94,25 +96,27 @@ def InitAllocate(bounds: bounds_type) -> atm2lnd_type:
         A fully initialised :class:`atm2lnd_type` with every element
         set to ``0.0``.
     """
-    ival = jnp.float64(0.0)                          # Fortran line 59: ival = 0.0_r8
+    ival = jnp.float64(0.0)  # Fortran line 59: ival = 0.0_r8
 
-    begg = bounds.begg;  endg = bounds.endg          # Fortran lines 62-63
-    begc = bounds.begc;  endc = bounds.endc          # Fortran lines 62-63
+    begg = bounds.begg
+    endg = bounds.endg  # Fortran lines 62-63
+    begc = bounds.begc
+    endc = bounds.endc  # Fortran lines 62-63
 
     n_grc = endg - begg + 1
     n_col = endc - begc + 1
 
     # Fortran: allocate(this%forc_u_grc(begg:endg)); ... = ival
-    forc_u_grc    = jnp.full((n_grc,),          ival, dtype=jnp.float64)
+    forc_u_grc = jnp.full((n_grc,), ival, dtype=jnp.float64)
 
     # Fortran: allocate(this%forc_v_grc(begg:endg)); ... = ival
-    forc_v_grc    = jnp.full((n_grc,),          ival, dtype=jnp.float64)
+    forc_v_grc = jnp.full((n_grc,), ival, dtype=jnp.float64)
 
     # Fortran: allocate(this%forc_pco2_grc(begg:endg)); ... = ival
-    forc_pco2_grc = jnp.full((n_grc,),          ival, dtype=jnp.float64)
+    forc_pco2_grc = jnp.full((n_grc,), ival, dtype=jnp.float64)
 
     # Fortran: allocate(this%forc_po2_grc(begg:endg)); ... = ival
-    forc_po2_grc  = jnp.full((n_grc,),          ival, dtype=jnp.float64)
+    forc_po2_grc = jnp.full((n_grc,), ival, dtype=jnp.float64)
 
     # Fortran: allocate(this%forc_solad_downscaled_col(begc:endc,numrad)); ... = ival
     # Size numrad+1 so that 1-based ivis=1, inir=2 indices are valid (slot 0 unused)
@@ -120,27 +124,27 @@ def InitAllocate(bounds: bounds_type) -> atm2lnd_type:
 
     # Fortran: allocate(this%forc_solai_grc(begg:endg,numrad)); ... = ival
     # Size numrad+1 so that 1-based ivis=1, inir=2 indices are valid (slot 0 unused)
-    forc_solai_grc            = jnp.full((n_grc, numrad + 1), ival, dtype=jnp.float64)
+    forc_solai_grc = jnp.full((n_grc, numrad + 1), ival, dtype=jnp.float64)
 
     # Fortran: allocate(this%forc_t_downscaled_col(begc:endc)); ... = ival
-    forc_t_downscaled_col     = jnp.full((n_col,),         ival, dtype=jnp.float64)
+    forc_t_downscaled_col = jnp.full((n_col,), ival, dtype=jnp.float64)
 
     # Fortran: allocate(this%forc_pbot_downscaled_col(begc:endc)); ... = ival
-    forc_pbot_downscaled_col  = jnp.full((n_col,),         ival, dtype=jnp.float64)
+    forc_pbot_downscaled_col = jnp.full((n_col,), ival, dtype=jnp.float64)
 
     # Fortran: allocate(this%forc_lwrad_downscaled_col(begc:endc)); ... = ival
-    forc_lwrad_downscaled_col = jnp.full((n_col,),         ival, dtype=jnp.float64)
+    forc_lwrad_downscaled_col = jnp.full((n_col,), ival, dtype=jnp.float64)
 
     return atm2lnd_type(
-        forc_u_grc                = forc_u_grc,
-        forc_v_grc                = forc_v_grc,
-        forc_pco2_grc             = forc_pco2_grc,
-        forc_po2_grc              = forc_po2_grc,
-        forc_solad_downscaled_col = forc_solad_downscaled_col,
-        forc_solai_grc            = forc_solai_grc,
-        forc_t_downscaled_col     = forc_t_downscaled_col,
-        forc_pbot_downscaled_col  = forc_pbot_downscaled_col,
-        forc_lwrad_downscaled_col = forc_lwrad_downscaled_col,
+        forc_u_grc=forc_u_grc,
+        forc_v_grc=forc_v_grc,
+        forc_pco2_grc=forc_pco2_grc,
+        forc_po2_grc=forc_po2_grc,
+        forc_solad_downscaled_col=forc_solad_downscaled_col,
+        forc_solai_grc=forc_solai_grc,
+        forc_t_downscaled_col=forc_t_downscaled_col,
+        forc_pbot_downscaled_col=forc_pbot_downscaled_col,
+        forc_lwrad_downscaled_col=forc_lwrad_downscaled_col,
     )
 
 

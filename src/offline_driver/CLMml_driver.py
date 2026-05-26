@@ -17,43 +17,54 @@ import math
 import os
 from typing import IO
 
-from clm_src_main.abortutils import endrun                                           # noqa: F401
-from clm_src_main.clm_varctl import iulog                                            # noqa: F401
-from clm_src_main.clm_instMod import (                                               # noqa: F401
-    atm2lnd_inst, wateratm2lndbulk_inst, soilstate_inst,
-    waterstatebulk_inst, canopystate_inst, temperature_inst,
-    frictionvel_inst, mlcanopy_inst,
+from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
+from clm_src_main.clm_instMod import (  # noqa: F401
+    atm2lnd_inst,
+    wateratm2lndbulk_inst,
+    soilstate_inst,
+    waterstatebulk_inst,
+    canopystate_inst,
+    temperature_inst,
+    frictionvel_inst,
+    mlcanopy_inst,
 )
+
 # Type imports for function signatures
-from clm_src_main.atm2lndType import atm2lnd_type                                    # noqa: F401
-from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type                  # noqa: F401
-from clm_src_biogeophys.TemperatureType import temperature_type                      # noqa: F401
-from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type                  # noqa: F401
-from clm_src_biogeophys.CanopyStateType import canopystate_type                      # noqa: F401
-from clm_src_biogeophys.SoilStateType import soilstate_type                          # noqa: F401
-from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type                # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type                       # noqa: F401
-from clm_src_main import clm_instMod                                                      # noqa: F401
-from multilayer_canopy.MLclm_varctl import flux_profile_type, met_type                    # noqa: F401
-from clm_src_utils import clm_time_manager                                                  # noqa: F401
-from clm_src_utils.clm_time_manager import (                                          # noqa: F401
-    start_date_ymd, start_date_tod, curr_date_tod, dtstep, itim,
-    get_curr_date, get_curr_calday, get_curr_time,
+from clm_src_main.atm2lndType import atm2lnd_type  # noqa: F401
+from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type  # noqa: F401
+from clm_src_biogeophys.TemperatureType import temperature_type  # noqa: F401
+from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type  # noqa: F401
+from clm_src_biogeophys.CanopyStateType import canopystate_type  # noqa: F401
+from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
+from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from clm_src_main import clm_instMod  # noqa: F401
+from multilayer_canopy.MLclm_varctl import flux_profile_type, met_type  # noqa: F401
+from clm_src_utils import clm_time_manager  # noqa: F401
+from clm_src_utils.clm_time_manager import (  # noqa: F401
+    start_date_ymd,
+    start_date_tod,
+    curr_date_tod,
+    dtstep,
+    itim,
+    get_curr_date,
+    get_curr_calday,
+    get_curr_time,
 )
-from clm_src_utils.clm_varorb import eccen, mvelpp, lambm0, obliqr                   # noqa: F401
-from offline_driver.controlMod import control                                          # noqa: F401
-from clm_src_main.filterMod import setFilters, filter                                # noqa: F401
+from clm_src_utils.clm_varorb import eccen, mvelpp, lambm0, obliqr  # noqa: F401
+from offline_driver.controlMod import control  # noqa: F401
+from clm_src_main.filterMod import setFilters, filter  # noqa: F401
 from clm_src_cpl.lnd_comp_nuopc import InitializeRealize, ModelAdvance, bounds_type  # noqa: F401
-from clm_src_main.PatchType import patch                                             # noqa: F401
-from clm_share.shr_orb_mod import shr_orb_params                                  # noqa: F401
-from offline_driver.TowerDataMod import tower_id, tower_num                            # noqa: F401
-from offline_driver.TowerMetMod import TowerMetCurr, TowerMetNext                      # noqa: F401
-
-
+from clm_src_main.PatchType import patch  # noqa: F401
+from clm_share.shr_orb_mod import shr_orb_params  # noqa: F401
+from offline_driver.TowerDataMod import tower_id, tower_num  # noqa: F401
+from offline_driver.TowerMetMod import TowerMetCurr, TowerMetNext  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
 
 def CLMml_drv(bounds: bounds_type) -> None:
     """
@@ -94,8 +105,7 @@ def CLMml_drv(bounds: bounds_type) -> None:
     # ------------------------------------------------------------------
     # Initialize namelist run control variables — Fortran line 55
     # ------------------------------------------------------------------
-    ntim, clm_start_ymd, clm_start_tod, fin_tower, fin_clm, fin_soil_adjust, dirout = \
-        control()
+    ntim, clm_start_ymd, clm_start_tod, fin_tower, fin_clm, fin_soil_adjust, dirout = control()
 
     # ------------------------------------------------------------------
     # Get current date from start_date_ymd — Fortran lines 63-65
@@ -103,7 +113,7 @@ def CLMml_drv(bounds: bounds_type) -> None:
     clm_time_manager.itim = 1
     yr, mon, day, _ = get_curr_date()
 
-    print(f'{iulog}: Processing: {tower_id[tower_num]} {yr} {mon}')
+    print(f"{iulog}: Processing: {tower_id[tower_num]} {yr} {mon}")
 
     # ------------------------------------------------------------------
     # Initialize CLM and build filters — Fortran lines 73-77
@@ -115,14 +125,18 @@ def CLMml_drv(bounds: bounds_type) -> None:
     # Orbital parameters for this year — Fortran lines 80-81
     # ------------------------------------------------------------------
     from clm_src_utils import clm_varorb
-    obliq, mvelp = shr_orb_params( yr    )    # obliq, mvelp are local (not used further)
+
+    obliq, mvelp = shr_orb_params(yr)  # obliq, mvelp are local (not used further)
 
     # ------------------------------------------------------------------
     # Acclimation temperature from full tower record — Fortran lines 84-87
     # ------------------------------------------------------------------
     init_acclim(
-        fin_tower, tower_num, ntim,
-        bounds.begp, bounds.endp,
+        fin_tower,
+        tower_num,
+        ntim,
+        bounds.begp,
+        bounds.endp,
         clm_instMod.atm2lnd_inst,
         clm_instMod.wateratm2lndbulk_inst,
         clm_instMod.temperature_inst,
@@ -134,7 +148,9 @@ def CLMml_drv(bounds: bounds_type) -> None:
     # Initialize tower vegetation — Fortran lines 91-92
     # ------------------------------------------------------------------
     TowerVeg(
-        tower_num, bounds.begp, bounds.endp,
+        tower_num,
+        bounds.begp,
+        bounds.endp,
         clm_instMod.canopystate_inst,
         clm_instMod.mlcanopy_inst,
     )
@@ -151,7 +167,7 @@ def CLMml_drv(bounds: bounds_type) -> None:
 
     # Save run start date/time — Fortran lines 103-104
     run_start_date = clm_time_manager.start_date_ymd
-    run_start_tod  = clm_time_manager.start_date_tod
+    run_start_tod = clm_time_manager.start_date_tod
 
     # Temporarily set to CLM history start to compute start_calday_clm — Fortran lines 106-109
     clm_time_manager.start_date_ymd = clm_start_ymd
@@ -166,14 +182,14 @@ def CLMml_drv(bounds: bounds_type) -> None:
     curr_calday = get_curr_calday(offset=0)
 
     # Time slice index into CLM history file — Fortran line 116
-    time_indx = round(
-        (curr_calday - start_calday_clm) * 86400.0 / float(dtstep)
-    ) + 1
+    time_indx = round((curr_calday - start_calday_clm) * 86400.0 / float(dtstep)) + 1
 
     # Initialize soil temperature and moisture — Fortran lines 118-120
     SoilInit(
-        fin_clm, time_indx,
-        bounds.begc, bounds.endc,
+        fin_clm,
+        time_indx,
+        bounds.begc,
+        bounds.endc,
         clm_instMod.soilstate_inst,
         clm_instMod.waterstatebulk_inst,
         clm_instMod.temperature_inst,
@@ -188,32 +204,32 @@ def CLMml_drv(bounds: bounds_type) -> None:
 
     def _outpath(tag: str) -> str:
         """Build full output file path matching Fortran write/format."""
-        fname = f'{tid}_{yr:04d}-{mon:02d}_{tag}.out'
+        fname = f"{tid}_{yr:04d}-{mon:02d}_{tag}.out"
         return os.path.join(dirout.strip(), fname)
 
-    fout1 = open(_outpath('flux'),         'w')   # Fluxes
-    fout2 = open(_outpath('aux'),          'w')   # Auxiliary data
-    fout3 = open(_outpath('profile'),      'w')   # Profile data
-    fout4 = open(_outpath('fsun'),         'w')   # Sun/shade fluxes
-    fout5 = open(_outpath('fluxprofile'),  'w')   # Vertical flux profiles
-    fout6 = open(_outpath('soiltemp'),     'w')   # Soil temperature
+    fout1 = open(_outpath("flux"), "w")  # Fluxes
+    fout2 = open(_outpath("aux"), "w")  # Auxiliary data
+    fout3 = open(_outpath("profile"), "w")  # Profile data
+    fout4 = open(_outpath("fsun"), "w")  # Sun/shade fluxes
+    fout5 = open(_outpath("fluxprofile"), "w")  # Vertical flux profiles
+    fout6 = open(_outpath("soiltemp"), "w")  # Soil temperature
 
     # ------------------------------------------------------------------
     # Optionally open ASCII profile input file — Fortran lines 155-162
     # ------------------------------------------------------------------
     fin1: IO | None = None
     if flux_profile_type == -1:
-        endrun(msg=' ERROR: flux_profile_type not supported')
+        endrun(msg=" ERROR: flux_profile_type not supported")
         # Lines below are unreachable; preserved from Fortran lines 157-161
-        fin1_path = 'set_file_name'
-        fin1 = open(fin1_path, 'r')
+        fin1_path = "set_file_name"
+        fin1 = open(fin1_path, "r")
 
     # ------------------------------------------------------------------
     # Main time-stepping loop — Fortran lines 165-183
     # ------------------------------------------------------------------
-    print(f'{iulog}: Starting time stepping loop .....')
+    print(f"{iulog}: Starting time stepping loop .....")
 
-    for _itim in range(1, ntim + 1):              # Fortran: do itim = 1, ntim
+    for _itim in range(1, ntim + 1):  # Fortran: do itim = 1, ntim
         clm_time_manager.itim = _itim
 
         # Date, time, and calendar day — Fortran lines 171-173
@@ -222,16 +238,19 @@ def CLMml_drv(bounds: bounds_type) -> None:
         curr_calday = get_curr_calday(offset=0)
 
         # Time slice into CLM history file — Fortran line 176
-        time_indx = round(
-            (curr_calday - start_calday_clm) * 86400.0 / float(dtstep)
-        ) + 1
+        time_indx = round((curr_calday - start_calday_clm) * 86400.0 / float(dtstep)) + 1
 
         # Read tower meteorology for current time step — Fortran lines 178-180
-        (clm_instMod.atm2lnd_inst,
-         clm_instMod.wateratm2lndbulk_inst,
-         clm_instMod.frictionvel_inst) = TowerMetCurr(
-            fin_tower, _itim, tower_num,
-            bounds.begp, bounds.endp,
+        (
+            clm_instMod.atm2lnd_inst,
+            clm_instMod.wateratm2lndbulk_inst,
+            clm_instMod.frictionvel_inst,
+        ) = TowerMetCurr(
+            fin_tower,
+            _itim,
+            tower_num,
+            bounds.begp,
+            bounds.endp,
             clm_instMod.atm2lnd_inst,
             clm_instMod.wateratm2lndbulk_inst,
             clm_instMod.frictionvel_inst,
@@ -239,17 +258,19 @@ def CLMml_drv(bounds: bounds_type) -> None:
 
         # Read next-step meteorology for 3-point interpolation — Fortran lines 182-185
         if met_type == 3:
-            itim_next = min(_itim + 1, ntim)      # Fortran: itim_next = min(itim+1, ntim)
+            itim_next = min(_itim + 1, ntim)  # Fortran: itim_next = min(itim+1, ntim)
             clm_instMod.mlcanopy_inst = TowerMetNext(
-                fin_tower, itim_next,
-                bounds.begp, bounds.endp,
+                fin_tower,
+                itim_next,
+                bounds.begp,
+                bounds.endp,
                 clm_instMod.mlcanopy_inst,
             )
 
         # Read canopy profile data if required — Fortran line 188
         if flux_profile_type == -1:
             if fin1 is None:
-                endrun(msg=' ERROR: flux_profile_type -1 requires profile input file')
+                endrun(msg=" ERROR: flux_profile_type -1 requires profile input file")
             assert fin1 is not None  # Type narrowing for static analysis
             clm_instMod.mlcanopy_inst = ReadCanopyProfiles(
                 _itim, curr_calday, fin1, clm_instMod.mlcanopy_inst
@@ -258,12 +279,18 @@ def CLMml_drv(bounds: bounds_type) -> None:
         # Advance the model — Fortran lines 190-192
         ModelAdvance(bounds, time_indx, fin_clm, fin_soil_adjust)
         if _itim == 1:
-            print(f'{iulog}: Executing model .....')
+            print(f"{iulog}: Executing model .....")
 
         # Write output — Fortran lines 194-196
         output(
-            curr_calday, tower_num,
-            fout1, fout2, fout3, fout4, fout5, fout6,
+            curr_calday,
+            tower_num,
+            fout1,
+            fout2,
+            fout3,
+            fout4,
+            fout5,
+            fout6,
             clm_instMod.mlcanopy_inst,
             clm_instMod.temperature_inst,
         )
@@ -277,8 +304,9 @@ def CLMml_drv(bounds: bounds_type) -> None:
     if flux_profile_type == -1 and fin1 is not None:
         fin1.close()
 
-    print(f'{iulog}: Successfully finished simulation')
-    
+    print(f"{iulog}: Successfully finished simulation")
+
+
 def init_acclim(
     fin: str,
     tower_num: int,
@@ -290,8 +318,7 @@ def init_acclim(
     temperature_inst: temperature_type,
     frictionvel_inst: frictionvel_type,
     mlcanopy_inst: mlcanopy_type,
-) -> tuple[atm2lnd_type, wateratm2lndbulk_type, temperature_type,
-           frictionvel_type, mlcanopy_type]:
+) -> tuple[atm2lnd_type, wateratm2lndbulk_type, temperature_type, frictionvel_type, mlcanopy_type]:
     """
     Read tower meteorology data once over all time slices to derive
     the mean acclimation temperature for each patch.
@@ -333,8 +360,8 @@ def init_acclim(
         temperature_inst, frictionvel_inst, mlcanopy_inst)``.
     """
     # Unpack mutable arrays (Fortran associate block)
-    t10      = temperature_inst.t_a10_patch            # Acclimation temperature (K)
-    pref     = mlcanopy_inst.pref_forcing              # Air pressure at reference height (Pa)
+    t10 = temperature_inst.t_a10_patch  # Acclimation temperature (K)
+    pref = mlcanopy_inst.pref_forcing  # Air pressure at reference height (Pa)
 
     # ------------------------------------------------------------------
     # Initialize accumulator to zero — Fortran lines: do p = begp, endp; t10(p) = 0
@@ -348,21 +375,22 @@ def init_acclim(
     for _itim in range(1, ntim + 1):
 
         # Read temperature for this time slice — Fortran lines: call TowerMetCurr(...)
-        (atm2lnd_inst,
-         wateratm2lndbulk_inst,
-         frictionvel_inst) = TowerMetCurr(
-            fin, _itim, tower_num,
-            begp, endp,
+        atm2lnd_inst, wateratm2lndbulk_inst, frictionvel_inst = TowerMetCurr(
+            fin,
+            _itim,
+            tower_num,
+            begp,
+            endp,
             atm2lnd_inst,
             wateratm2lndbulk_inst,
             frictionvel_inst,
         )
 
         # Re-bind after TowerMetCurr returns updated instances
-        forc_t    = atm2lnd_inst.forc_t_downscaled_col
+        forc_t = atm2lnd_inst.forc_t_downscaled_col
         forc_pbot = atm2lnd_inst.forc_pbot_downscaled_col
 
-        for p in range(begp, endp + 1):               # Fortran: do p = begp, endp
+        for p in range(begp, endp + 1):  # Fortran: do p = begp, endp
             c = int(patch.column[p])
 
             # Accumulate temperature — Fortran: t10(p) = t10(p) + forc_t(c)
@@ -381,11 +409,12 @@ def init_acclim(
     return (
         atm2lnd_inst,
         wateratm2lndbulk_inst,
-        temperature_inst._replace(t_a10_patch = t10),
+        temperature_inst._replace(t_a10_patch=t10),
         frictionvel_inst,
-        mlcanopy_inst._replace(pref_forcing = pref),
+        mlcanopy_inst._replace(pref_forcing=pref),
     )
-    
+
+
 def TowerVeg(
     it: int,
     begp: int,
@@ -437,12 +466,15 @@ def TowerVeg(
     Returns:
         Tuple of updated ``(canopystate_inst, mlcanopy_inst)``.
     """
-    from clm_src_main.abortutils import endrun                        # noqa: F401
-    from clm_src_main.clm_varpar import mxpft                        # noqa: F401
-    from clm_src_main.PatchType import patch                         # noqa: F401
-    from offline_driver.TowerDataMod import (                          # noqa: F401
-        tower_pft, tower_canht, tower_root,
-        tower_pbeta_lai, tower_pbeta_sai,
+    from clm_src_main.abortutils import endrun  # noqa: F401
+    from clm_src_main.clm_varpar import mxpft  # noqa: F401
+    from clm_src_main.PatchType import patch  # noqa: F401
+    from offline_driver.TowerDataMod import (  # noqa: F401
+        tower_pft,
+        tower_canht,
+        tower_root,
+        tower_pbeta_lai,
+        tower_pbeta_sai,
     )
 
     # ------------------------------------------------------------------
@@ -450,20 +482,35 @@ def TowerVeg(
     # Fortran lines 40-42
     # ------------------------------------------------------------------
     _htop_pft: list[float] = (
-        [0.0]                                           # index 0: not_vegetated
-        + [17.0, 17.0, 14.0,                            # 1-3:  needleleaf trees
-           35.0, 35.0, 18.0, 20.0, 20.0,               # 4-8:  broadleaf trees
-           0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]    # 9-16: shrubs/grasses/crops
-        + [0.0] * (mxpft - 16)                          # 17-mxpft: additional crop PFTs
+        [0.0]  # index 0: not_vegetated
+        + [
+            17.0,
+            17.0,
+            14.0,  # 1-3:  needleleaf trees
+            35.0,
+            35.0,
+            18.0,
+            20.0,
+            20.0,  # 4-8:  broadleaf trees
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+        ]  # 9-16: shrubs/grasses/crops
+        + [0.0] * (mxpft - 16)  # 17-mxpft: additional crop PFTs
     )
 
     # Unpack mutable arrays (Fortran associate block)
-    htop         = canopystate_inst.htop_patch
+    htop = canopystate_inst.htop_patch
     root_biomass = mlcanopy_inst.root_biomass_canopy
-    pbeta_lai    = mlcanopy_inst.pbeta_lai_canopy
-    pbeta_sai    = mlcanopy_inst.pbeta_sai_canopy
+    pbeta_lai = mlcanopy_inst.pbeta_lai_canopy
+    pbeta_sai = mlcanopy_inst.pbeta_sai_canopy
 
-    for p in range(begp, endp + 1):                    # Fortran: do p = begp, endp
+    for p in range(begp, endp + 1):  # Fortran: do p = begp, endp
 
         # PFT assignment — Fortran: patch%itype(p) = tower_pft(it)
         patch.itype = patch.itype.at[p].set(int(tower_pft[it]))
@@ -478,29 +525,32 @@ def TowerVeg(
         if float(tower_root[it]) > 0.0:
             root_biomass = root_biomass.at[p].set(float(tower_root[it]))
         else:
-            endrun(msg=' TowerVeg ERROR: invalid root biomass')
+            endrun(msg=" TowerVeg ERROR: invalid root biomass")
 
         # Beta distribution parameters — Fortran lines 64-71
         # Use tower values only when all four are positive; otherwise
         # deferred to getPADparameters using PFT defaults.
-        if (float(tower_pbeta_lai[it, 0]) > 0.0
-                and float(tower_pbeta_lai[it, 1]) > 0.0
-                and float(tower_pbeta_sai[it, 0]) > 0.0
-                and float(tower_pbeta_sai[it, 1]) > 0.0):
+        if (
+            float(tower_pbeta_lai[it, 0]) > 0.0
+            and float(tower_pbeta_lai[it, 1]) > 0.0
+            and float(tower_pbeta_sai[it, 0]) > 0.0
+            and float(tower_pbeta_sai[it, 1]) > 0.0
+        ):
             pbeta_lai = pbeta_lai.at[p, 1].set(float(tower_pbeta_lai[it, 0]))
             pbeta_lai = pbeta_lai.at[p, 2].set(float(tower_pbeta_lai[it, 1]))
             pbeta_sai = pbeta_sai.at[p, 1].set(float(tower_pbeta_sai[it, 0]))
             pbeta_sai = pbeta_sai.at[p, 2].set(float(tower_pbeta_sai[it, 1]))
 
     return (
-        canopystate_inst._replace(htop_patch = htop),
+        canopystate_inst._replace(htop_patch=htop),
         mlcanopy_inst._replace(
-            root_biomass_canopy = root_biomass,
-            pbeta_lai_canopy    = pbeta_lai,
-            pbeta_sai_canopy    = pbeta_sai,
+            root_biomass_canopy=root_biomass,
+            pbeta_lai_canopy=pbeta_lai,
+            pbeta_sai_canopy=pbeta_sai,
         ),
     )
-    
+
+
 def SoilInit(
     ncfilename: str,
     strt: int,
@@ -553,99 +603,98 @@ def SoilInit(
     Returns:
         Tuple of updated ``(waterstatebulk_inst, temperature_inst)``.
     """
-    import netCDF4 as nc                                # noqa: F401
+    import netCDF4 as nc  # noqa: F401
 
-    from clm_src_main.abortutils import handle_err                   # noqa: F401
-    from clm_src_main.clm_varcon import denh2o, spval                       # noqa: F401
-    from clm_src_main.clm_varpar import nlevgrnd, nlevsoi, nlevsno   # noqa: F401
-    from clm_src_main.ColumnType import col                          # noqa: F401
-    from offline_driver.clmSoilOptionMod import clm_phys               # noqa: F401
+    from clm_src_main.abortutils import handle_err  # noqa: F401
+    from clm_src_main.clm_varcon import denh2o, spval  # noqa: F401
+    from clm_src_main.clm_varpar import nlevgrnd, nlevsoi, nlevsno  # noqa: F401
+    from clm_src_main.ColumnType import col  # noqa: F401
+    from offline_driver.clmSoilOptionMod import clm_phys  # noqa: F401
 
     # Unpack read-only inputs (Fortran associate block)
-    dz       = col.dz                                   # Soil layer thickness (m)
-    nbedrock = col.nbedrock                             # Depth to bedrock index
-    watsat   = soilstate_inst.watsat_col                # Porosity
+    dz = col.dz  # Soil layer thickness (m)
+    nbedrock = col.nbedrock  # Depth to bedrock index
+    watsat = soilstate_inst.watsat_col  # Porosity
 
-    t_soisno   = temperature_inst.t_soisno_col          # Soil temperature (K)
-    h2osoi_vol = waterstatebulk_inst.h2osoi_vol_col     # Volumetric soil water (m3/m3)
-    h2osoi_liq = waterstatebulk_inst.h2osoi_liq_col     # Liquid water (kg H2O/m2)
-    h2osoi_ice = waterstatebulk_inst.h2osoi_ice_col     # Ice lens (kg H2O/m2)
+    t_soisno = temperature_inst.t_soisno_col  # Soil temperature (K)
+    h2osoi_vol = waterstatebulk_inst.h2osoi_vol_col  # Volumetric soil water (m3/m3)
+    h2osoi_liq = waterstatebulk_inst.h2osoi_liq_col  # Liquid water (kg H2O/m2)
+    h2osoi_ice = waterstatebulk_inst.h2osoi_ice_col  # Ice lens (kg H2O/m2)
 
     # ------------------------------------------------------------------
     # Read soil temperature and moisture from netCDF — Fortran lines 55-82
     # Fortran: start3=(1,1,strt), count3=(1,nlevgrnd,1)
     # Python/C row-major: ds['VAR'][t, :nlev, 0]
     # ------------------------------------------------------------------
-    t = strt - 1    # Convert 1-based Fortran index to 0-based Python
+    t = strt - 1  # Convert 1-based Fortran index to 0-based Python
 
-    with nc.Dataset(ncfilename, 'r') as ds:
+    with nc.Dataset(ncfilename, "r") as ds:
 
         # TSOI(nlndgrid, nlevgrnd, ntime) — Fortran lines 60-64
-        if 'TSOI' not in ds.variables:
-            handle_err(-1, 'TSOI')
-        tsoi_loc = ds.variables['TSOI'][t, :nlevgrnd, 0]          # (nlevgrnd,)
+        if "TSOI" not in ds.variables:
+            handle_err(-1, "TSOI")
+        tsoi_loc = ds.variables["TSOI"][t, :nlevgrnd, 0]  # (nlevgrnd,)
 
         # H2OSOI — Fortran lines 66-77
-        if 'H2OSOI' not in ds.variables:
-            handle_err(-1, 'H2OSOI')
+        if "H2OSOI" not in ds.variables:
+            handle_err(-1, "H2OSOI")
 
-        if clm_phys == 'CLM4_5':
+        if clm_phys == "CLM4_5":
             # count3=(1,nlevgrnd,1) — Fortran lines 68-70
-            h2osoi_loc_clm45 = ds.variables['H2OSOI'][t, :nlevgrnd, 0]   # (nlevgrnd,)
+            h2osoi_loc_clm45 = ds.variables["H2OSOI"][t, :nlevgrnd, 0]  # (nlevgrnd,)
             h2osoi_loc_clm50 = None
-        elif clm_phys == 'CLM5_0':
+        elif clm_phys == "CLM5_0":
             # count3=(1,nlevsoi,1) — Fortran lines 71-74
             h2osoi_loc_clm45 = None
-            h2osoi_loc_clm50 = ds.variables['H2OSOI'][t, :nlevsoi, 0]    # (nlevsoi,)
+            h2osoi_loc_clm50 = ds.variables["H2OSOI"][t, :nlevsoi, 0]  # (nlevsoi,)
 
     # ------------------------------------------------------------------
     # Copy data to model variables — Fortran lines 82-107
     # ------------------------------------------------------------------
-    for c in range(begc, endc + 1):                    # Fortran: do c = begc, endc
+    for c in range(begc, endc + 1):  # Fortran: do c = begc, endc
 
         # Soil temperature — Fortran lines 84-86
-        for j in range(1, nlevgrnd + 1):               # Fortran: do j = 1, nlevgrnd
+        for j in range(1, nlevgrnd + 1):  # Fortran: do j = 1, nlevgrnd
             t_soisno = t_soisno.at[c, j].set(float(tsoi_loc[j - 1]))
 
         # Volumetric soil moisture — Fortran lines 88-97
-        if clm_phys == 'CLM4_5':
+        if clm_phys == "CLM4_5":
             assert h2osoi_loc_clm45 is not None  # Type narrowing
             for j in range(1, nlevgrnd + 1):
                 h2osoi_vol = h2osoi_vol.at[c, j].set(float(h2osoi_loc_clm45[j - 1]))
 
-        elif clm_phys == 'CLM5_0':
+        elif clm_phys == "CLM5_0":
             assert h2osoi_loc_clm50 is not None  # Type narrowing
             for j in range(1, nlevsoi + 1):
                 h2osoi_vol = h2osoi_vol.at[c, j].set(float(h2osoi_loc_clm50[j - 1]))
-            for j in range(nlevsoi + 1, nlevgrnd + 1):    # Bedrock layers = 0
+            for j in range(nlevsoi + 1, nlevgrnd + 1):  # Bedrock layers = 0
                 h2osoi_vol = h2osoi_vol.at[c, j].set(0.0)
 
         # Cap soil moisture at porosity for CLM5.0 — Fortran lines 99-103
-        if clm_phys == 'CLM5_0':
+        if clm_phys == "CLM5_0":
             nb = int(nbedrock[c])
-            for j in range(1, nb + 1):                 # Fortran: do j = 1, nbedrock(c)
+            for j in range(1, nb + 1):  # Fortran: do j = 1, nbedrock(c)
                 h2osoi_vol = h2osoi_vol.at[c, j].set(
                     float(jnp.minimum(h2osoi_vol[c, j], watsat[c, j]))
                 )
 
         # Liquid water and ice — Fortran lines 105-108
-        for j in range(1, nlevgrnd + 1):               # Fortran: do j = 1, nlevgrnd
-            h2osoi_liq = h2osoi_liq.at[c, j].set(
-                float(h2osoi_vol[c, j]) * float(dz[c, j]) * denh2o
-            )
+        for j in range(1, nlevgrnd + 1):  # Fortran: do j = 1, nlevgrnd
+            h2osoi_liq = h2osoi_liq.at[c, j].set(float(h2osoi_vol[c, j]) * float(dz[c, j]) * denh2o)
             h2osoi_ice = h2osoi_ice.at[c, j].set(0.0)
 
     return (
         waterstatebulk_inst._replace(
-            h2osoi_vol_col = h2osoi_vol,
-            h2osoi_liq_col = h2osoi_liq,
-            h2osoi_ice_col = h2osoi_ice,
+            h2osoi_vol_col=h2osoi_vol,
+            h2osoi_liq_col=h2osoi_liq,
+            h2osoi_ice_col=h2osoi_ice,
         ),
         temperature_inst._replace(
-            t_soisno_col = t_soisno,
+            t_soisno_col=t_soisno,
         ),
     )
-    
+
+
 def output(
     curr_calday: float,
     it: int,
@@ -698,21 +747,21 @@ def output(
         mlcan: Multilayer canopy state container (read-only).
         temperature_inst: Temperature state container (read-only).
     """
-    from clm_src_main.abortutils import endrun                        # noqa: F401
-    from clm_src_main.clm_varcon import tfrz                         # noqa: F401
-    from clm_src_main.clm_varpar import ivis, inir, nlevsno          # noqa: F401
-    from clm_src_main.ColumnType import col                          # noqa: F401
-    from clm_src_utils.clm_time_manager import dtstep                 # noqa: F401
-    from multilayer_canopy.MLclm_varcon import mmdry, mmh2o              # noqa: F401
-    from multilayer_canopy.MLclm_varctl import met_type                   # noqa: F401
-    from multilayer_canopy.MLclm_varpar import isun, isha                 # noqa: F401
-    from multilayer_canopy.MLWaterVaporMod import LatVap                  # noqa: F401
+    from clm_src_main.abortutils import endrun  # noqa: F401
+    from clm_src_main.clm_varcon import tfrz  # noqa: F401
+    from clm_src_main.clm_varpar import ivis, inir, nlevsno  # noqa: F401
+    from clm_src_main.ColumnType import col  # noqa: F401
+    from clm_src_utils.clm_time_manager import dtstep  # noqa: F401
+    from multilayer_canopy.MLclm_varcon import mmdry, mmh2o  # noqa: F401
+    from multilayer_canopy.MLclm_varctl import met_type  # noqa: F401
+    from multilayer_canopy.MLclm_varpar import isun, isha  # noqa: F401
+    from multilayer_canopy.MLWaterVaporMod import LatVap  # noqa: F401
     import math
 
     missing_value: float = -999.0
-    zero_value:    float =    0.0
+    zero_value: float = 0.0
 
-    p: int = 0    # Single-patch tower site — 0-based Python indexing (Fortran used 1)
+    p: int = 0  # Single-patch tower site — 0-based Python indexing (Fortran used 1)
 
     # ------------------------------------------------------------------
     # Time stamp — Fortran lines 66-74
@@ -726,7 +775,7 @@ def output(
     elif met_type == 2:
         # Time at end of timestep (not supported) — Fortran lines 73-74
         time_stamp = curr_calday
-        endrun(msg=' ERROR: met_type not valid')
+        endrun(msg=" ERROR: met_type not valid")
     else:
         time_stamp = curr_calday
 
@@ -734,21 +783,20 @@ def output(
     # nout1: flux.out — canopy and soil fluxes — Fortran lines 77-95
     # write(nout1,'(f12.7,17f10.3)') time_stamp, 17 variables
     # ------------------------------------------------------------------
-    swup = (
-        float(mlcan.albcan_canopy[p, ivis])
-        * (float(mlcan.swskyb_forcing[p, ivis]) + float(mlcan.swskyd_forcing[p, ivis]))
-        + float(mlcan.albcan_canopy[p, inir])
-        * (float(mlcan.swskyb_forcing[p, inir]) + float(mlcan.swskyd_forcing[p, inir]))
+    swup = float(mlcan.albcan_canopy[p, ivis]) * (
+        float(mlcan.swskyb_forcing[p, ivis]) + float(mlcan.swskyd_forcing[p, ivis])
+    ) + float(mlcan.albcan_canopy[p, inir]) * (
+        float(mlcan.swskyb_forcing[p, inir]) + float(mlcan.swskyd_forcing[p, inir])
     )
 
     lhflx_tr = float(mlcan.trveg_canopy[p]) * LatVap(float(mlcan.tref_forcing[p]))
     lhflx_ev = float(mlcan.evveg_canopy[p]) * LatVap(float(mlcan.tref_forcing[p]))
 
     ic_top = int(mlcan.ntop_canopy[p])
-    tair   = float(mlcan.tair_profile[p, ic_top])
+    tair = float(mlcan.tair_profile[p, ic_top])
 
     nout1.write(
-        f'{time_stamp:12.7f}'
+        f"{time_stamp:12.7f}"
         + _fmt10(mlcan.rnet_canopy[p])
         + _fmt10(mlcan.stflx_air_canopy[p])
         + _fmt10(mlcan.shflx_canopy[p])
@@ -766,7 +814,7 @@ def output(
         + _fmt10(lhflx_ev)
         + _fmt10(mlcan.beta_canopy[p])
         + _fmt10(mlcan.stflx_veg_canopy[p])
-        + '\n'
+        + "\n"
     )
 
     # ------------------------------------------------------------------
@@ -806,7 +854,7 @@ def output(
         + _fmt10(mlcan.taveg_canopy[p])
         + _fmt10(mlcan.tavegsun_canopy[p])
         + _fmt10(mlcan.tavegsha_canopy[p])
-        + '\n'
+        + "\n"
     )
 
     # ------------------------------------------------------------------
@@ -822,13 +870,13 @@ def output(
     )
 
     nout2.write(
-        f'{float(mlcan.btran_soil[p]):10.4f}'
+        f"{float(mlcan.btran_soil[p]):10.4f}"
         + _fmt10(mlcan.lsc_profile[p, top])
         + _fmt10(mlcan.psis_soil[p])
         + _fmt10(mlcan.lwp_mean_profile[p, top])
         + _fmt10(mlcan.lwp_mean_profile[p, mid])
         + _fmt10(mlcan.fracminlwp_canopy[p])
-        + '\n'
+        + "\n"
     )
 
     # ------------------------------------------------------------------
@@ -838,7 +886,7 @@ def output(
 
     def _qair(ic_: int) -> float:
         """Specific humidity (g/kg) from vapour pressure profile."""
-        e  = float(mlcan.eair_profile[p, ic_])
+        e = float(mlcan.eair_profile[p, ic_])
         pr = float(mlcan.pref_forcing[p])
         return 1000.0 * (mmh2o / mmdry) * e / (pr - (1.0 - mmh2o / mmdry) * e)
 
@@ -858,31 +906,34 @@ def output(
         """Build one nout3 record (28 columns)."""
         tair_ = float(mlcan.tair_profile[p, ic_])
         qair_ = _qair(ic_)
-        ra_   = _ra(ic_)
-        mv    = missing_value
-        zv    = zero_value
+        ra_ = _ra(ic_)
+        mv = missing_value
+        zv = zero_value
 
         if is_above:
             # Above-canopy: all leaf quantities are missing — Fortran lines 131-149
             return (
-                f'{time_stamp:12.7f}'
+                f"{time_stamp:12.7f}"
                 + _fmt10(mlcan.zs_profile[p, ic_])
-                + _fmt10(zv) + _fmt10(zv) + _fmt10(zv) + _fmt10(zv)
+                + _fmt10(zv)
+                + _fmt10(zv)
+                + _fmt10(zv)
+                + _fmt10(zv)
                 + (_fmt10(mv) * 18)
                 + _fmt10(float(mlcan.wind_profile[p, ic_]))
                 + _fmt10(tair_)
                 + _fmt10(qair_)
                 + _fmt10(ra_)
-                + '\n'
+                + "\n"
             )
         else:
             dpai_ = float(mlcan.dpai_profile[p, ic_])
-            lad_  = _lad(ic_)
+            lad_ = _lad(ic_)
             frac_ = float(mlcan.fracsun_profile[p, ic_])
             if dpai_ > 0.0:
                 # Leaf layer — Fortran lines 155-170
                 return (
-                    f'{time_stamp:12.7f}'
+                    f"{time_stamp:12.7f}"
                     + _fmt10(mlcan.zs_profile[p, ic_])
                     + _fmt10(frac_)
                     + _fmt10(lad_)
@@ -910,28 +961,28 @@ def output(
                     + _fmt10(tair_)
                     + _fmt10(qair_)
                     + _fmt10(ra_)
-                    + '\n'
+                    + "\n"
                 )
             else:
                 # Non-leaf within-canopy layer — Fortran lines 172-185
                 return (
-                    f'{time_stamp:12.7f}'
+                    f"{time_stamp:12.7f}"
                     + _fmt10(mlcan.zs_profile[p, ic_])
                     + _fmt10(frac_)
-                    + _fmt10(zv) + _fmt10(zv) + _fmt10(zv)
+                    + _fmt10(zv)
+                    + _fmt10(zv)
+                    + _fmt10(zv)
                     + (_fmt10(mv) * 18)
                     + _fmt10(float(mlcan.wind_profile[p, ic_]))
                     + _fmt10(tair_)
                     + _fmt10(qair_)
                     + _fmt10(ra_)
-                    + '\n'
+                    + "\n"
                 )
 
     # Above-canopy layers — Fortran: do ic = ncan, ntop+1, -1
     # Python range stop is exclusive, so use ntop (not ntop+1) to include ic=ntop+1
-    for ic in range(int(mlcan.ncan_canopy[p]),
-                    int(mlcan.ntop_canopy[p]),
-                    -1):
+    for ic in range(int(mlcan.ncan_canopy[p]), int(mlcan.ntop_canopy[p]), -1):
         nout3.write(_profile_line(ic, is_above=True))
 
     # Within-canopy layers — Fortran: do ic = ntop, 1, -1
@@ -944,15 +995,15 @@ def output(
     # ------------------------------------------------------------------
     _ntop_fp = int(mlcan.ntop_canopy[p])
     for ic in range(int(mlcan.ncan_canopy[p]), 0, -1):  # Fortran: do ic = ncan, 1, -1
-        shf  = float(mlcan.shair_profile[p, ic])
-        lhf  = float(mlcan.etair_profile[p, ic]) * LatVap(float(mlcan.tref_forcing[p]))
+        shf = float(mlcan.shair_profile[p, ic])
+        lhf = float(mlcan.etair_profile[p, ic]) * LatVap(float(mlcan.tref_forcing[p]))
         mflx = float(mlcan.mflx_profile[p, ic])
         # LW profiles are only computed for within-canopy layers (0..ntop).
         # Above-canopy layers retain spval; write 0.0 to match Fortran behavior.
         lwdwn_ic = float(mlcan.lwdwn_profile[p, ic]) if ic <= _ntop_fp else 0.0
         lwupw_ic = float(mlcan.lwupw_profile[p, ic]) if ic <= _ntop_fp else 0.0
         nout5.write(
-            f'{time_stamp:12.7f}'
+            f"{time_stamp:12.7f}"
             + _fmt10(mlcan.zw_profile[p, ic])
             + _fmt10(shf)
             + _fmt10(lhf)
@@ -965,30 +1016,32 @@ def output(
             + _fmt10(mlcan.swupw_profile[p, ic, inir])
             + _fmt10(lwdwn_ic)
             + _fmt10(lwupw_ic)
-            + '\n'
+            + "\n"
         )
 
     # ------------------------------------------------------------------
     # nout6: soiltemp.out — soil temperature — Fortran lines 204-207
     # write(nout6,'(f12.7,20f10.3)') time_stamp, (z(1,ic), t_soisno(1,ic), ic=1,10)
     # ------------------------------------------------------------------
-    soiltemp_cols = ''
-    for ic in range(1, 11):                             # Fortran: ic=1,10
+    soiltemp_cols = ""
+    for ic in range(1, 11):  # Fortran: ic=1,10
         soiltemp_cols += _fmt10(col.z[1, ic])
         soiltemp_cols += _fmt10(temperature_inst.t_soisno_col[1, ic])
-    nout6.write(f'{time_stamp:12.7f}' + soiltemp_cols + '\n')
+    nout6.write(f"{time_stamp:12.7f}" + soiltemp_cols + "\n")
 
 
 # ---------------------------------------------------------------------------
 # Private formatting helper
 # ---------------------------------------------------------------------------
 
+
 def _fmt10(val) -> str:
     """
     Format a scalar as a 10-character field with 3 decimal places,
     matching Fortran ``f10.3``.
     """
-    return f'{float(val):10.3f}'
+    return f"{float(val):10.3f}"
+
 
 def ReadCanopyProfiles(
     itim: int,
@@ -1051,18 +1104,18 @@ def ReadCanopyProfiles(
     Returns:
         Updated :class:`mlcanopy_type`.
     """
-    from clm_src_main.abortutils import endrun           # noqa: F401
+    from clm_src_main.abortutils import endrun  # noqa: F401
     from multilayer_canopy.MLclm_varcon import mmh2o, mmdry  # noqa: F401
 
     # Unpack mutable arrays (Fortran associate block)
-    ncan      = mlcanopy_inst.ncan_canopy           # Number of aboveground layers
-    pref      = mlcanopy_inst.pref_forcing          # Air pressure at reference height (Pa)
-    zs        = mlcanopy_inst.zs_profile            # Layer height for scalar conc. and source (m)
-    wind_data = mlcanopy_inst.wind_data_profile     # Wind speed FROM DATASET (m/s)
-    tair_data = mlcanopy_inst.tair_data_profile     # Air temperature FROM DATASET (K)
-    eair_data = mlcanopy_inst.eair_data_profile     # Vapour pressure FROM DATASET (Pa)
+    ncan = mlcanopy_inst.ncan_canopy  # Number of aboveground layers
+    pref = mlcanopy_inst.pref_forcing  # Air pressure at reference height (Pa)
+    zs = mlcanopy_inst.zs_profile  # Layer height for scalar conc. and source (m)
+    wind_data = mlcanopy_inst.wind_data_profile  # Wind speed FROM DATASET (m/s)
+    tair_data = mlcanopy_inst.tair_data_profile  # Air temperature FROM DATASET (K)
+    eair_data = mlcanopy_inst.eair_data_profile  # Vapour pressure FROM DATASET (Pa)
 
-    p: int = 0    # 0-based single-patch tower site (Fortran used 1)
+    p: int = 0  # 0-based single-patch tower site (Fortran used 1)
 
     # ------------------------------------------------------------------
     # Private helper: parse one record from the profile file
@@ -1079,37 +1132,37 @@ def ReadCanopyProfiles(
         line = fh.readline()
         if not line:
             return None
-        vals = [float(line[i*10:(i+1)*10]) for i in range(27)]
+        vals = [float(line[i * 10 : (i + 1) * 10]) for i in range(27)]
         curr_calday_data = vals[0]
-        zs_data          = vals[1]
+        zs_data = vals[1]
         # vals[2:24] are 22 dummy variables x(1:22) — discarded
-        wind             = vals[24]
-        tair             = vals[25]
-        qair             = vals[26]
+        wind = vals[24]
+        tair = vals[25]
+        qair = vals[26]
         return curr_calday_data, zs_data, wind, tair, qair
 
     # ------------------------------------------------------------------
     # First time step: scan file to count vertical levels — Fortran lines 47-57
     # ------------------------------------------------------------------
     if itim == 1:
-        nrec:  int   = 0
+        nrec: int = 0
         check: float = 0.0
 
         while True:
             rec = _read_record(nin1)
-            if rec is None:                            # Fortran: end=100
+            if rec is None:  # Fortran: end=100
                 break
             calday_rec, _, _, _, _ = rec
             if nrec == 0:
-                check = calday_rec                     # Fortran: check = curr_calday_data
+                check = calday_rec  # Fortran: check = curr_calday_data
             if calday_rec == check:
                 nrec += 1
             else:
-                break                                  # Fortran: exit
+                break  # Fortran: exit
 
         # Fortran label 100: ncan(p) = nrec; rewind(nin1)
         ncan = ncan.at[p].set(nrec)
-        nin1.seek(0)                                   # Fortran: rewind(nin1)
+        nin1.seek(0)  # Fortran: rewind(nin1)
 
     # ------------------------------------------------------------------
     # Read profile data for the current time slice — Fortran lines 60-77
@@ -1119,38 +1172,35 @@ def ReadCanopyProfiles(
 
         rec = _read_record(nin1)
         if rec is None:
-            endrun(msg=' ERROR: ReadCanopyProfiles: unexpected end of file')
+            endrun(msg=" ERROR: ReadCanopyProfiles: unexpected end of file")
             break
 
         curr_calday_data, zs_data, wind, tair, qair_gkg = rec
 
-        qair = qair_gkg / 1000.0    # g/kg -> kg/kg — Fortran line 63
+        qair = qair_gkg / 1000.0  # g/kg -> kg/kg — Fortran line 63
 
         # Calendar day error check — Fortran lines 65-68
         err = curr_calday_data - curr_calday
         if abs(err) >= 1.0e-4:
-            endrun(msg=' ERROR: ReadCanopyProfiles: calendar error')
+            endrun(msg=" ERROR: ReadCanopyProfiles: calendar error")
 
         # Height profile error check (skip on first time step) — Fortran lines 70-74
         if itim > 1:
             err = zs_data - float(zs[p, ic])
             if abs(err) >= 1.0e-3:
-                endrun(msg=' ERROR: ReadCanopyProfiles: height profile error')
+                endrun(msg=" ERROR: ReadCanopyProfiles: height profile error")
 
         # Store wind and temperature — Fortran lines 76-77
         wind_data = wind_data.at[p, ic].set(wind)
         tair_data = tair_data.at[p, ic].set(tair)
 
         # Specific humidity -> vapour pressure (Pa) — Fortran line 78
-        eair_val = (
-            qair * float(pref[p])
-            / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * qair)
-        )
+        eair_val = qair * float(pref[p]) / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * qair)
         eair_data = eair_data.at[p, ic].set(eair_val)
 
     return mlcanopy_inst._replace(
-        ncan_canopy          = ncan,
-        wind_data_profile    = wind_data,
-        tair_data_profile    = tair_data,
-        eair_data_profile    = eair_data,
+        ncan_canopy=ncan,
+        wind_data_profile=wind_data,
+        tair_data_profile=tair_data,
+        eair_data_profile=eair_data,
     )

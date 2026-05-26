@@ -12,10 +12,10 @@ from typing import Optional
 
 from .clm_varctl import iulog
 
-
 # ---------------------------------------------------------------------------
 # endrun
 # ---------------------------------------------------------------------------
+
 
 def endrun(msg: Optional[str] = None) -> None:
     """
@@ -31,9 +31,9 @@ def endrun(msg: Optional[str] = None) -> None:
              Mirrors Fortran ``character(len=*), intent(in), optional``.
     """
     if msg is not None:
-        print(f'{iulog}: ENDRUN: {msg}')
+        print(f"{iulog}: ENDRUN: {msg}")
     else:
-        print(f'{iulog}: ENDRUN: called without a message string')
+        print(f"{iulog}: ENDRUN: called without a message string")
 
     raise SystemExit(1)
 
@@ -41,6 +41,7 @@ def endrun(msg: Optional[str] = None) -> None:
 # ---------------------------------------------------------------------------
 # handle_err
 # ---------------------------------------------------------------------------
+
 
 def handle_err(status: int, errmsg: str) -> None:
     """
@@ -61,15 +62,16 @@ def handle_err(status: int, errmsg: str) -> None:
     """
     import netCDF4  # noqa: F401 — only imported when needed
 
-    nf_noerr = 0    # Fortran: nf_noerr from netcdf.inc
+    nf_noerr = 0  # Fortran: nf_noerr from netcdf.inc
 
     if status != nf_noerr:
         try:
             import netCDF4
-            # Get error message using netCDF4's error handling
-            nc_msg = f'NetCDF error {status}'
-        except Exception:
-            nc_msg = f'NetCDF error code {status}'
 
-        print(f'{nc_msg}: {errmsg}')
-        raise SystemExit('Stopped')
+            # Get error message using netCDF4's error handling
+            nc_msg = f"NetCDF error {status}"
+        except Exception:
+            nc_msg = f"NetCDF error code {status}"
+
+        print(f"{nc_msg}: {errmsg}")
+        raise SystemExit("Stopped")

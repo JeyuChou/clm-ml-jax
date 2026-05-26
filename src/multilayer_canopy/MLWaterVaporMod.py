@@ -20,57 +20,56 @@ from typing import Tuple, Union
 
 import jax.numpy as jnp
 
-from clm_src_main.clm_varcon import tfrz, hvap, hsub    # noqa: F401
-from multilayer_canopy.MLclm_varcon import mmh2o             # noqa: F401
-
+from clm_src_main.clm_varcon import tfrz, hvap, hsub  # noqa: F401
+from multilayer_canopy.MLclm_varcon import mmh2o  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public: saturation vapour pressure and its temperature derivative
 # ---------------------------------------------------------------------------
 
 # Polynomial coefficients for water vapour (0 °C to 100 °C) — Fortran lines 35-43
-_a0: float =  6.11213476
-_a1: float =  0.444007856
-_a2: float =  0.143064234e-1
-_a3: float =  0.264461437e-3
-_a4: float =  0.305903558e-5
-_a5: float =  0.196237241e-7
-_a6: float =  0.892344772e-10
+_a0: float = 6.11213476
+_a1: float = 0.444007856
+_a2: float = 0.143064234e-1
+_a3: float = 0.264461437e-3
+_a4: float = 0.305903558e-5
+_a5: float = 0.196237241e-7
+_a6: float = 0.892344772e-10
 _a7: float = -0.373208410e-12
-_a8: float =  0.209339997e-15
+_a8: float = 0.209339997e-15
 
 # Derivative coefficients for water vapour — Fortran lines 45-53
-_b0: float =  0.444017302
-_b1: float =  0.286064092e-1
-_b2: float =  0.794683137e-3
-_b3: float =  0.121211669e-4
-_b4: float =  0.103354611e-6
-_b5: float =  0.404125005e-9
+_b0: float = 0.444017302
+_b1: float = 0.286064092e-1
+_b2: float = 0.794683137e-3
+_b3: float = 0.121211669e-4
+_b4: float = 0.103354611e-6
+_b5: float = 0.404125005e-9
 _b6: float = -0.788037859e-12
 _b7: float = -0.114596802e-13
-_b8: float =  0.381294516e-16
+_b8: float = 0.381294516e-16
 
 # Polynomial coefficients for ice (-75 °C to 0 °C) — Fortran lines 55-63
-_c0: float =  6.11123516
-_c1: float =  0.503109514
-_c2: float =  0.188369801e-1
-_c3: float =  0.420547422e-3
-_c4: float =  0.614396778e-5
-_c5: float =  0.602780717e-7
-_c6: float =  0.387940929e-9
-_c7: float =  0.149436277e-11
-_c8: float =  0.262655803e-14
+_c0: float = 6.11123516
+_c1: float = 0.503109514
+_c2: float = 0.188369801e-1
+_c3: float = 0.420547422e-3
+_c4: float = 0.614396778e-5
+_c5: float = 0.602780717e-7
+_c6: float = 0.387940929e-9
+_c7: float = 0.149436277e-11
+_c8: float = 0.262655803e-14
 
 # Derivative coefficients for ice — Fortran lines 65-73
-_d0: float =  0.503277922
-_d1: float =  0.377289173e-1
-_d2: float =  0.126801703e-2
-_d3: float =  0.249468427e-4
-_d4: float =  0.313703411e-6
-_d5: float =  0.257180651e-8
-_d6: float =  0.133268878e-10
-_d7: float =  0.394116744e-13
-_d8: float =  0.498070196e-16
+_d0: float = 0.503277922
+_d1: float = 0.377289173e-1
+_d2: float = 0.126801703e-2
+_d3: float = 0.249468427e-4
+_d4: float = 0.313703411e-6
+_d5: float = 0.257180651e-8
+_d6: float = 0.133268878e-10
+_d7: float = 0.394116744e-13
+_d8: float = 0.498070196e-16
 
 
 def SatVap(t):
@@ -106,20 +105,24 @@ def SatVap(t):
     tc = jnp.clip(jnp.asarray(t) - tfrz, -75.0, 100.0)
 
     # Water vapour polynomials — Fortran lines 78-83 (evaluated for all t)
-    es_w    = _a0 + tc*(_a1 + tc*(_a2 + tc*(_a3 + tc*(_a4
-              + tc*(_a5 + tc*(_a6 + tc*(_a7 + tc*_a8)))))))
-    desdt_w = _b0 + tc*(_b1 + tc*(_b2 + tc*(_b3 + tc*(_b4
-              + tc*(_b5 + tc*(_b6 + tc*(_b7 + tc*_b8)))))))
+    es_w = _a0 + tc * (
+        _a1 + tc * (_a2 + tc * (_a3 + tc * (_a4 + tc * (_a5 + tc * (_a6 + tc * (_a7 + tc * _a8))))))
+    )
+    desdt_w = _b0 + tc * (
+        _b1 + tc * (_b2 + tc * (_b3 + tc * (_b4 + tc * (_b5 + tc * (_b6 + tc * (_b7 + tc * _b8))))))
+    )
 
     # Ice polynomials — Fortran lines 84-89 (evaluated for all t)
-    es_i    = _c0 + tc*(_c1 + tc*(_c2 + tc*(_c3 + tc*(_c4
-              + tc*(_c5 + tc*(_c6 + tc*(_c7 + tc*_c8)))))))
-    desdt_i = _d0 + tc*(_d1 + tc*(_d2 + tc*(_d3 + tc*(_d4
-              + tc*(_d5 + tc*(_d6 + tc*(_d7 + tc*_d8)))))))
+    es_i = _c0 + tc * (
+        _c1 + tc * (_c2 + tc * (_c3 + tc * (_c4 + tc * (_c5 + tc * (_c6 + tc * (_c7 + tc * _c8))))))
+    )
+    desdt_i = _d0 + tc * (
+        _d1 + tc * (_d2 + tc * (_d3 + tc * (_d4 + tc * (_d5 + tc * (_d6 + tc * (_d7 + tc * _d8))))))
+    )
 
     # Select water vs ice branch without Python if — differentiable
     above_zero = tc >= 0.0
-    es    = jnp.where(above_zero, es_w,    es_i)    * 100.0   # mb → Pa
+    es = jnp.where(above_zero, es_w, es_i) * 100.0  # mb → Pa
     desdt = jnp.where(above_zero, desdt_w, desdt_i) * 100.0
 
     return es, desdt
@@ -141,15 +144,23 @@ def SatVap_py(t: float):
         tc = 100.0
 
     if tc >= 0.0:
-        es    = _a0 + tc*(_a1 + tc*(_a2 + tc*(_a3 + tc*(_a4
-                  + tc*(_a5 + tc*(_a6 + tc*(_a7 + tc*_a8)))))))
-        desdt = _b0 + tc*(_b1 + tc*(_b2 + tc*(_b3 + tc*(_b4
-                  + tc*(_b5 + tc*(_b6 + tc*(_b7 + tc*_b8)))))))
+        es = _a0 + tc * (
+            _a1
+            + tc * (_a2 + tc * (_a3 + tc * (_a4 + tc * (_a5 + tc * (_a6 + tc * (_a7 + tc * _a8))))))
+        )
+        desdt = _b0 + tc * (
+            _b1
+            + tc * (_b2 + tc * (_b3 + tc * (_b4 + tc * (_b5 + tc * (_b6 + tc * (_b7 + tc * _b8))))))
+        )
     else:
-        es    = _c0 + tc*(_c1 + tc*(_c2 + tc*(_c3 + tc*(_c4
-                  + tc*(_c5 + tc*(_c6 + tc*(_c7 + tc*_c8)))))))
-        desdt = _d0 + tc*(_d1 + tc*(_d2 + tc*(_d3 + tc*(_d4
-                  + tc*(_d5 + tc*(_d6 + tc*(_d7 + tc*_d8)))))))
+        es = _c0 + tc * (
+            _c1
+            + tc * (_c2 + tc * (_c3 + tc * (_c4 + tc * (_c5 + tc * (_c6 + tc * (_c7 + tc * _c8))))))
+        )
+        desdt = _d0 + tc * (
+            _d1
+            + tc * (_d2 + tc * (_d3 + tc * (_d4 + tc * (_d5 + tc * (_d6 + tc * (_d7 + tc * _d8))))))
+        )
 
     return es * 100.0, desdt * 100.0
 
@@ -157,6 +168,7 @@ def SatVap_py(t: float):
 # ---------------------------------------------------------------------------
 # Public: molar latent heat of vaporization
 # ---------------------------------------------------------------------------
+
 
 def LatVap(t):
     """

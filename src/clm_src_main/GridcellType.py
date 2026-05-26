@@ -12,12 +12,12 @@ from __future__ import annotations
 from typing import NamedTuple
 
 import numpy as np
-from clm_src_main.clm_varcon import spval as nan   # nan => spval
-
+from clm_src_main.clm_varcon import spval as nan  # nan => spval
 
 # ---------------------------------------------------------------------------
 # gridcell_type
 # ---------------------------------------------------------------------------
+
 
 class GridcellType(NamedTuple):
     """
@@ -33,13 +33,15 @@ class GridcellType(NamedTuple):
         latdeg: Latitude  (degrees).  Fortran: ``latdeg(begg:endg)``.
         londeg: Longitude (degrees).  Fortran: ``londeg(begg:endg)``.
     """
-    latdeg: np.ndarray   # shape (endg - begg + 1,)
-    londeg: np.ndarray   # shape (endg - begg + 1,)
+
+    latdeg: np.ndarray  # shape (endg - begg + 1,)
+    londeg: np.ndarray  # shape (endg - begg + 1,)
 
 
 # ---------------------------------------------------------------------------
 # Init
 # ---------------------------------------------------------------------------
+
 
 def gridcell_type_Init(begg: int, endg: int) -> GridcellType:
     """
@@ -62,8 +64,8 @@ def gridcell_type_Init(begg: int, endg: int) -> GridcellType:
     """
     ng = endg - begg + 1
     return GridcellType(
-        latdeg = np.full(ng, nan, dtype=np.float64),
-        londeg = np.full(ng, nan, dtype=np.float64),
+        latdeg=np.full(ng, nan, dtype=np.float64),
+        londeg=np.full(ng, nan, dtype=np.float64),
     )
 
 

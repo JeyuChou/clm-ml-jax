@@ -14,14 +14,14 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.clm_varpar import nlevgrnd, nlevsno          # noqa: F401
-from clm_src_main.clm_varcon import ispval, spval as nan        # noqa: F401
-from clm_src_main.decompMod import bounds_type                  # noqa: F401
-
+from clm_src_main.clm_varpar import nlevgrnd, nlevsno  # noqa: F401
+from clm_src_main.clm_varcon import ispval, spval as nan  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
+
 
 class waterstatebulk_type(NamedTuple):
     """
@@ -47,15 +47,17 @@ class waterstatebulk_type(NamedTuple):
             Shape ``(endc - begc + 1,)``.
             Fortran: ``h2osfc_col(begc:endc)``.
     """
-    h2osoi_liq_col: Array   # (n_col, nlevsno + nlevgrnd)
-    h2osoi_ice_col: Array   # (n_col, nlevsno + nlevgrnd)
-    h2osoi_vol_col: Array   # (n_col, nlevgrnd)
-    h2osfc_col:     Array   # (n_col,)
+
+    h2osoi_liq_col: Array  # (n_col, nlevsno + nlevgrnd)
+    h2osoi_ice_col: Array  # (n_col, nlevsno + nlevgrnd)
+    h2osoi_vol_col: Array  # (n_col, nlevgrnd)
+    h2osfc_col: Array  # (n_col,)
 
 
 # ---------------------------------------------------------------------------
 # Initialization helpers (mirror Init / InitAllocate)
 # ---------------------------------------------------------------------------
+
 
 def InitAllocate(bounds: bounds_type) -> waterstatebulk_type:
     """
@@ -79,10 +81,11 @@ def InitAllocate(bounds: bounds_type) -> waterstatebulk_type:
         A fully initialised :class:`waterstatebulk_type` with every
         element set to ``nan`` (``spval``).
     """
-    begc = bounds.begc;  endc = bounds.endc    # Fortran lines 58-59
+    begc = bounds.begc
+    endc = bounds.endc  # Fortran lines 58-59
 
-    n_col    = endc - begc + 1
-    n_liqice = nlevsno + nlevgrnd              # Fortran: -nlevsno+1:nlevgrnd
+    n_col = endc - begc + 1
+    n_liqice = nlevsno + nlevgrnd  # Fortran: -nlevsno+1:nlevgrnd
 
     # Fortran: allocate(this%h2osoi_liq_col(begc:endc,-nlevsno+1:nlevgrnd)); ... = nan
     h2osoi_liq_col = jnp.full((n_col, n_liqice), nan, dtype=jnp.float64)
@@ -94,13 +97,13 @@ def InitAllocate(bounds: bounds_type) -> waterstatebulk_type:
     h2osoi_vol_col = jnp.full((n_col, nlevgrnd), nan, dtype=jnp.float64)
 
     # Fortran: allocate(this%h2osfc_col(begc:endc)); ... = nan
-    h2osfc_col     = jnp.full((n_col,),          nan, dtype=jnp.float64)
+    h2osfc_col = jnp.full((n_col,), nan, dtype=jnp.float64)
 
     return waterstatebulk_type(
-        h2osoi_liq_col = h2osoi_liq_col,
-        h2osoi_ice_col = h2osoi_ice_col,
-        h2osoi_vol_col = h2osoi_vol_col,
-        h2osfc_col     = h2osfc_col,
+        h2osoi_liq_col=h2osoi_liq_col,
+        h2osoi_ice_col=h2osoi_ice_col,
+        h2osoi_vol_col=h2osoi_vol_col,
+        h2osfc_col=h2osfc_col,
     )
 
 

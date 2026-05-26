@@ -11,10 +11,10 @@ Fortran lines 1-72
 
 from clm_src_main.decompMod import bounds_type
 
-
 # ---------------------------------------------------------------------------
 # Public interface functions
 # ---------------------------------------------------------------------------
+
 
 def InitializeRealize(bounds: bounds_type) -> None:
     """

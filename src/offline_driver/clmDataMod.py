@@ -15,18 +15,17 @@ from jax import Array
 from typing import Dict
 import atexit
 
-import netCDF4 as nc                                                   # noqa: F401
+import netCDF4 as nc  # noqa: F401
 
-from clm_src_main.abortutils import handle_err                                      # noqa: F401
-from clm_src_main.ColumnType import col                                             # noqa: F401
-from clm_src_biogeophys.SoilStateType import soilstate_type                               # noqa: F401
-from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type                     # noqa: F401
-from clm_src_biogeophys.CanopyStateType import canopystate_type                           # noqa: F401
-from clm_src_biogeophys.SurfaceAlbedoType import surfalb_type                             # noqa: F401
-from clm_src_main.clm_varpar import nlevgrnd, nlevsoi                               # noqa: F401
-from clm_src_main.clm_varcon import denh2o, spval                                   # noqa: F401
-from offline_driver.clmSoilOptionMod import clm_phys, nlev_soil_adjust                # noqa: F401
-
+from clm_src_main.abortutils import handle_err  # noqa: F401
+from clm_src_main.ColumnType import col  # noqa: F401
+from clm_src_biogeophys.SoilStateType import soilstate_type  # noqa: F401
+from clm_src_biogeophys.WaterStateBulkType import waterstatebulk_type  # noqa: F401
+from clm_src_biogeophys.CanopyStateType import canopystate_type  # noqa: F401
+from clm_src_biogeophys.SurfaceAlbedoType import surfalb_type  # noqa: F401
+from clm_src_main.clm_varpar import nlevgrnd, nlevsoi  # noqa: F401
+from clm_src_main.clm_varcon import denh2o, spval  # noqa: F401
+from offline_driver.clmSoilOptionMod import clm_phys, nlev_soil_adjust  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # NetCDF dataset cache
@@ -39,7 +38,7 @@ def _get_cached_dataset(ncfilename: str) -> nc.Dataset:
     """Return an open netCDF dataset handle, opening it once per file path."""
     ds = _NC_DATASET_CACHE.get(ncfilename)
     if ds is None:
-        ds = nc.Dataset(ncfilename, 'r')
+        ds = nc.Dataset(ncfilename, "r")
         _NC_DATASET_CACHE[ncfilename] = ds
     return ds
 
@@ -60,6 +59,7 @@ atexit.register(close_cached_datasets)
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
 
 def clmData(
     fin_clm: str,
@@ -116,12 +116,12 @@ def clmData(
         surfalb_inst)``.
     """
     # Unpack inputs (Fortran associate block, lines 72-84)
-    dz       = col.dz                                # Soil layer thickness (m)
-    nbedrock = col.nbedrock                          # Depth to bedrock index
-    watsat   = soilstate_inst.watsat_col             # Porosity
+    dz = col.dz  # Soil layer thickness (m)
+    nbedrock = col.nbedrock  # Depth to bedrock index
+    watsat = soilstate_inst.watsat_col  # Porosity
 
-    elai       = canopystate_inst.elai_patch         # Leaf area index (m2/m2)
-    esai       = canopystate_inst.esai_patch         # Stem area index (m2/m2)
+    elai = canopystate_inst.elai_patch  # Leaf area index (m2/m2)
+    esai = canopystate_inst.esai_patch  # Stem area index (m2/m2)
     h2osoi_vol = waterstatebulk_inst.h2osoi_vol_col  # Volumetric soil water (m3/m3)
     h2osoi_liq = waterstatebulk_inst.h2osoi_liq_col  # Liquid water (kg H2O/m2)
     h2osoi_ice = waterstatebulk_inst.h2osoi_ice_col  # Ice lens (kg H2O/m2)
@@ -132,7 +132,7 @@ def clmData(
     elai_loc, esai_loc = readCLMveg(fin_clm, strt)
 
     # Broadcast single gridcell value to all patches — Fortran lines 89-91
-    for p in range(begp, endp + 1):                  # Fortran: do p = begp, endp
+    for p in range(begp, endp + 1):  # Fortran: do p = begp, endp
         elai = elai.at[p].set(float(elai_loc))
         esai = esai.at[p].set(float(esai_loc))
 
@@ -144,15 +144,15 @@ def clmData(
     # ------------------------------------------------------------------
     # Distribute soil water to all columns — Fortran lines 96-113
     # ------------------------------------------------------------------
-    for c in range(begc, endc + 1):                  # Fortran: do c = begc, endc
-        ci = c - begc                                 # 0-based column offset
+    for c in range(begc, endc + 1):  # Fortran: do c = begc, endc
+        ci = c - begc  # 0-based column offset
 
-        if clm_phys == 'CLM4_5':
+        if clm_phys == "CLM4_5":
             # CLM4.5: nlevgrnd layers — Fortran lines 98-100
             for j in range(1, nlevgrnd + 1):
                 h2osoi_vol = h2osoi_vol.at[ci, j].set(float(h2osoi_clm45[j - 1]))
 
-        elif clm_phys == 'CLM5_0':
+        elif clm_phys == "CLM5_0":
             # CLM5.0: nlevsoi soil layers — Fortran lines 101-105
             for j in range(1, nlevsoi + 1):
                 h2osoi_vol = h2osoi_vol.at[ci, j].set(float(h2osoi_clm50[j - 1]))
@@ -164,20 +164,18 @@ def clmData(
         if nlev_soil_adjust > 0:
             h2osoi_factor = readSoilWatFactor(fin_soil_adjust, strt)
             for j in range(1, nlev_soil_adjust + 1):
-                h2osoi_vol = h2osoi_vol.at[ci, j].set(
-                    float(h2osoi_vol[ci, j]) * h2osoi_factor
-                )
+                h2osoi_vol = h2osoi_vol.at[ci, j].set(float(h2osoi_vol[ci, j]) * h2osoi_factor)
 
         # Cap soil moisture at porosity for CLM5.0 — Fortran lines 117-121
-        if clm_phys == 'CLM5_0':
+        if clm_phys == "CLM5_0":
             nb = int(nbedrock[c])
-            for j in range(1, nb + 1):                # Fortran: do j = 1, nbedrock(c)
+            for j in range(1, nb + 1):  # Fortran: do j = 1, nbedrock(c)
                 h2osoi_vol = h2osoi_vol.at[ci, j].set(
                     jnp.minimum(float(h2osoi_vol[ci, j]), float(watsat[c, j]))
                 )
 
         # Set liquid water and ice — Fortran lines 123-126
-        for j in range(1, nlevgrnd + 1):              # Fortran: do j = 1, nlevgrnd
+        for j in range(1, nlevgrnd + 1):  # Fortran: do j = 1, nlevgrnd
             h2osoi_liq = h2osoi_liq.at[ci, j - 1].set(
                 float(h2osoi_vol[ci, j]) * float(dz[c, j]) * denh2o
             )
@@ -185,13 +183,13 @@ def clmData(
 
     return (
         waterstatebulk_inst._replace(
-            h2osoi_vol_col = h2osoi_vol,
-            h2osoi_liq_col = h2osoi_liq,
-            h2osoi_ice_col = h2osoi_ice,
+            h2osoi_vol_col=h2osoi_vol,
+            h2osoi_liq_col=h2osoi_liq,
+            h2osoi_ice_col=h2osoi_ice,
         ),
         canopystate_inst._replace(
-            elai_patch = elai,
-            esai_patch = esai,
+            elai_patch=elai,
+            esai_patch=esai,
         ),
         surfalb_inst,
     )
@@ -200,6 +198,7 @@ def clmData(
 # ---------------------------------------------------------------------------
 # Private: read LAI and SAI from CLM netCDF history file
 # ---------------------------------------------------------------------------
+
 
 def readCLMveg(
     ncfilename: str,
@@ -227,15 +226,15 @@ def readCLMveg(
         Tuple of ``(elai_mod, esai_mod)`` as scalar floats.
     """
     # Fortran: start2=(1, strt), count2=(1,1) — lon=1 gridcell, 1 timestep
-    t = strt - 1    # Convert 1-based Fortran index to 0-based Python
+    t = strt - 1  # Convert 1-based Fortran index to 0-based Python
 
     ds = _get_cached_dataset(ncfilename)
 
     # ELAI(nlndgrid, ntime) — Fortran lines 142-146
-    elai_mod = float(ds.variables['ELAI'][t, 0])
+    elai_mod = float(ds.variables["ELAI"][t, 0])
 
     # ESAI(nlndgrid, ntime) — Fortran lines 148-152
-    esai_mod = float(ds.variables['ESAI'][t, 0])
+    esai_mod = float(ds.variables["ESAI"][t, 0])
 
     return elai_mod, esai_mod
 
@@ -243,6 +242,7 @@ def readCLMveg(
 # ---------------------------------------------------------------------------
 # Private: read volumetric soil water from CLM netCDF history file
 # ---------------------------------------------------------------------------
+
 
 def readCLMsoil(
     ncfilename: str,
@@ -275,21 +275,21 @@ def readCLMsoil(
     """
     # Initialize to spval — Fortran lines 181-182
     h2osoi_clm45 = jnp.full((nlevgrnd,), spval, dtype=jnp.float64)
-    h2osoi_clm50 = jnp.full((nlevsoi,),  spval, dtype=jnp.float64)
+    h2osoi_clm50 = jnp.full((nlevsoi,), spval, dtype=jnp.float64)
 
-    t = strt - 1    # Convert 1-based Fortran index to 0-based Python
+    t = strt - 1  # Convert 1-based Fortran index to 0-based Python
 
     ds = _get_cached_dataset(ncfilename)
-    if clm_phys == 'CLM4_5':
+    if clm_phys == "CLM4_5":
         # H2OSOI(nlndgrid, nlevgrnd, ntime) — Fortran lines 195-201
         # Fortran start3=(1,1,strt), count3=(1,nlevgrnd,1)
-        data = ds.variables['H2OSOI'][t, :nlevgrnd, 0]        # (nlevgrnd,)
+        data = ds.variables["H2OSOI"][t, :nlevgrnd, 0]  # (nlevgrnd,)
         h2osoi_clm45 = jnp.array(data, dtype=jnp.float64)
 
-    elif clm_phys == 'CLM5_0':
+    elif clm_phys == "CLM5_0":
         # H2OSOI(nlndgrid, nlevsoi, ntime) — Fortran lines 205-211
         # Fortran start3=(1,1,strt), count3=(1,nlevsoi,1)
-        data = ds.variables['H2OSOI'][t, :nlevsoi, 0]         # (nlevsoi,)
+        data = ds.variables["H2OSOI"][t, :nlevsoi, 0]  # (nlevsoi,)
         h2osoi_clm50 = jnp.array(data, dtype=jnp.float64)
 
     return h2osoi_clm45, h2osoi_clm50
@@ -298,6 +298,7 @@ def readCLMsoil(
 # ---------------------------------------------------------------------------
 # Private: read soil moisture adjustment factor from netCDF file
 # ---------------------------------------------------------------------------
+
 
 def readSoilWatFactor(
     ncfilename: str,
@@ -318,10 +319,10 @@ def readSoilWatFactor(
     Returns:
         Scalar soil moisture adjustment factor.
     """
-    t = strt - 1    # Convert 1-based Fortran index to 0-based Python
+    t = strt - 1  # Convert 1-based Fortran index to 0-based Python
 
     # factor(ntime) — Fortran lines 240-244
     ds = _get_cached_dataset(ncfilename)
-    h2osoi_factor_loc = float(ds.variables['FACTOR'][t])
+    h2osoi_factor_loc = float(ds.variables["FACTOR"][t])
 
     return h2osoi_factor_loc

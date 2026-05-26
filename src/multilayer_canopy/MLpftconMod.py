@@ -15,11 +15,10 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_utils.spmdMod import masterproc                        # noqa: F401
-from clm_src_main.clm_varctl import iulog                          # noqa: F401
-from clm_src_main.clm_varpar import mxpft                          # noqa: F401
-from multilayer_canopy.MLclm_varctl import pftcon_val                   # noqa: F401
-
+from clm_src_utils.spmdMod import masterproc  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
+from clm_src_main.clm_varpar import mxpft  # noqa: F401
+from multilayer_canopy.MLclm_varctl import pftcon_val  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # PFT index reference (Fortran lines 96-161)
@@ -47,6 +46,7 @@ from multilayer_canopy.MLclm_varctl import pftcon_val                   # noqa: 
 # ---------------------------------------------------------------------------
 # Data structure
 # ---------------------------------------------------------------------------
+
 
 class MLpftcon_type(NamedTuple):
     """
@@ -97,27 +97,29 @@ class MLpftcon_type(NamedTuple):
         clump_fac: Foliage clumping index (-).
             Fortran: ``clump_fac(0:mxpft)``.
     """
-    vcmaxpft:         Array   # (mxpft+1,)
-    gplant_SPA:       Array   # (mxpft+1,)
-    capac_SPA:        Array   # (mxpft+1,)
-    iota_SPA:         Array   # (mxpft+1,)
-    root_radius_SPA:  Array   # (mxpft+1,)
-    root_density_SPA: Array   # (mxpft+1,)
-    root_resist_SPA:  Array   # (mxpft+1,)
-    gsmin_SPA:        Array   # (mxpft+1,)
-    g0_BB:            Array   # (mxpft+1,)
-    g1_BB:            Array   # (mxpft+1,)
-    g0_MED:           Array   # (mxpft+1,)
-    g1_MED:           Array   # (mxpft+1,)
-    psi50_gs:         Array   # (mxpft+1,)
-    shape_gs:         Array   # (mxpft+1,)
-    emleaf:           Array   # (mxpft+1,)
-    clump_fac:        Array   # (mxpft+1,)
+
+    vcmaxpft: Array  # (mxpft+1,)
+    gplant_SPA: Array  # (mxpft+1,)
+    capac_SPA: Array  # (mxpft+1,)
+    iota_SPA: Array  # (mxpft+1,)
+    root_radius_SPA: Array  # (mxpft+1,)
+    root_density_SPA: Array  # (mxpft+1,)
+    root_resist_SPA: Array  # (mxpft+1,)
+    gsmin_SPA: Array  # (mxpft+1,)
+    g0_BB: Array  # (mxpft+1,)
+    g1_BB: Array  # (mxpft+1,)
+    g0_MED: Array  # (mxpft+1,)
+    g1_MED: Array  # (mxpft+1,)
+    psi50_gs: Array  # (mxpft+1,)
+    shape_gs: Array  # (mxpft+1,)
+    emleaf: Array  # (mxpft+1,)
+    clump_fac: Array  # (mxpft+1,)
 
 
 # ---------------------------------------------------------------------------
 # Initialization helpers (mirror Init / InitAllocate / InitRead)
 # ---------------------------------------------------------------------------
+
 
 def InitAllocate() -> MLpftcon_type:
     """
@@ -130,25 +132,25 @@ def InitAllocate() -> MLpftcon_type:
     Returns:
         A zero-initialised :class:`MLpftcon_type`.
     """
-    n = mxpft + 1    # Fortran: allocate(field(0:mxpft))
+    n = mxpft + 1  # Fortran: allocate(field(0:mxpft))
     z = jnp.zeros(n, dtype=jnp.float64)
     return MLpftcon_type(
-        vcmaxpft         = z,
-        gplant_SPA       = z,
-        capac_SPA        = z,
-        iota_SPA         = z,
-        root_radius_SPA  = z,
-        root_density_SPA = z,
-        root_resist_SPA  = z,
-        gsmin_SPA        = z,
-        g0_BB            = z,
-        g1_BB            = z,
-        g0_MED           = z,
-        g1_MED           = z,
-        psi50_gs         = z,
-        shape_gs         = z,
-        emleaf           = z,
-        clump_fac        = z,
+        vcmaxpft=z,
+        gplant_SPA=z,
+        capac_SPA=z,
+        iota_SPA=z,
+        root_radius_SPA=z,
+        root_density_SPA=z,
+        root_resist_SPA=z,
+        gsmin_SPA=z,
+        g0_BB=z,
+        g1_BB=z,
+        g0_MED=z,
+        g1_MED=z,
+        psi50_gs=z,
+        shape_gs=z,
+        emleaf=z,
+        clump_fac=z,
     )
 
 
@@ -172,22 +174,22 @@ def InitRead(this: MLpftcon_type) -> MLpftcon_type:
         Fully populated :class:`MLpftcon_type`.
     """
     if masterproc:
-        print(f'{iulog}: Attempting to initialize MLpftcon .....')
+        print(f"{iulog}: Attempting to initialize MLpftcon .....")
 
     # ------------------------------------------------------------------
     # vcmaxpft: Maximum carboxylation rate at 25 C (umol/m2/s)
     # Fortran lines 169-186
     # ------------------------------------------------------------------
     vcmaxpft = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    vcmaxpft = vcmaxpft.at[ 1].set(62.5)
-    vcmaxpft = vcmaxpft.at[ 2].set(62.5)
-    vcmaxpft = vcmaxpft.at[ 3].set(39.1)
-    vcmaxpft = vcmaxpft.at[ 4].set(41.0)
-    vcmaxpft = vcmaxpft.at[ 5].set(61.4)
-    vcmaxpft = vcmaxpft.at[ 6].set(41.0)
-    vcmaxpft = vcmaxpft.at[ 7].set(57.7)
-    vcmaxpft = vcmaxpft.at[ 8].set(57.7)
-    vcmaxpft = vcmaxpft.at[ 9].set(61.7)
+    vcmaxpft = vcmaxpft.at[1].set(62.5)
+    vcmaxpft = vcmaxpft.at[2].set(62.5)
+    vcmaxpft = vcmaxpft.at[3].set(39.1)
+    vcmaxpft = vcmaxpft.at[4].set(41.0)
+    vcmaxpft = vcmaxpft.at[5].set(61.4)
+    vcmaxpft = vcmaxpft.at[6].set(41.0)
+    vcmaxpft = vcmaxpft.at[7].set(57.7)
+    vcmaxpft = vcmaxpft.at[8].set(57.7)
+    vcmaxpft = vcmaxpft.at[9].set(61.7)
     vcmaxpft = vcmaxpft.at[10].set(54.0)
     vcmaxpft = vcmaxpft.at[11].set(54.0)
     vcmaxpft = vcmaxpft.at[12].set(78.2)
@@ -201,73 +203,73 @@ def InitRead(this: MLpftcon_type) -> MLpftcon_type:
     # Fortran lines 188-196
     # ------------------------------------------------------------------
     gplant_SPA = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    gplant_SPA = gplant_SPA.at[1:17].set(4.0)          # gplant_SPA(1:16) = 4.
+    gplant_SPA = gplant_SPA.at[1:17].set(4.0)  # gplant_SPA(1:16) = 4.
 
     capac_SPA = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    capac_SPA = capac_SPA.at[ 1:12].set(2500.0)         # capac_SPA(1:11) = 2500.
-    capac_SPA = capac_SPA.at[12:17].set(500.0)          # capac_SPA(12:16) = 500.
+    capac_SPA = capac_SPA.at[1:12].set(2500.0)  # capac_SPA(1:11) = 2500.
+    capac_SPA = capac_SPA.at[12:17].set(500.0)  # capac_SPA(12:16) = 500.
 
     # ------------------------------------------------------------------
     # Stomatal optimization: iota_SPA (umol CO2/mol H2O)
     # Fortran lines 198-204
     # ------------------------------------------------------------------
     iota_SPA = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    iota_SPA = iota_SPA.at[1: 2].set(750.0)             # iota_SPA(1:1)  = 750.
-    iota_SPA = iota_SPA.at[2: 4].set(1500.0)            # iota_SPA(2:3)  = 1500.
-    iota_SPA = iota_SPA.at[4: 5].set(500.0)             # iota_SPA(4:4)  = 500.
-    iota_SPA = iota_SPA.at[5:17].set(750.0)             # iota_SPA(5:16) = 750.
+    iota_SPA = iota_SPA.at[1:2].set(750.0)  # iota_SPA(1:1)  = 750.
+    iota_SPA = iota_SPA.at[2:4].set(1500.0)  # iota_SPA(2:3)  = 1500.
+    iota_SPA = iota_SPA.at[4:5].set(500.0)  # iota_SPA(4:4)  = 500.
+    iota_SPA = iota_SPA.at[5:17].set(750.0)  # iota_SPA(5:16) = 750.
 
     # ------------------------------------------------------------------
     # Root hydraulics
     # Fortran lines 206-213
     # ------------------------------------------------------------------
     root_radius_SPA = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    root_radius_SPA = root_radius_SPA.at[1:17].set(0.29e-3)   # root_radius_SPA(1:16) = 0.29e-03
+    root_radius_SPA = root_radius_SPA.at[1:17].set(0.29e-3)  # root_radius_SPA(1:16) = 0.29e-03
 
     root_density_SPA = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
     root_density_SPA = root_density_SPA.at[1:17].set(0.31e6)  # root_density_SPA(1:16) = 0.31e06
 
     root_resist_SPA = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    root_resist_SPA = root_resist_SPA.at[1:17].set(25.0)      # root_resist_SPA(1:16) = 25.
+    root_resist_SPA = root_resist_SPA.at[1:17].set(25.0)  # root_resist_SPA(1:16) = 25.
 
     # ------------------------------------------------------------------
     # Minimum stomatal conductance (mol H2O/m2/s)
     # Fortran lines 215-217
     # ------------------------------------------------------------------
     gsmin_SPA = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    gsmin_SPA = gsmin_SPA.at[1:17].set(0.002)           # gsmin_SPA(1:16) = 0.002
+    gsmin_SPA = gsmin_SPA.at[1:17].set(0.002)  # gsmin_SPA(1:16) = 0.002
 
     # ------------------------------------------------------------------
     # Ball-Berry stomatal conductance parameters
     # Fortran lines 219-228
     # ------------------------------------------------------------------
     g0_BB = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    g0_BB = g0_BB.at[ 1:14].set(0.01)                   # g0_BB(1:13)   = 0.01
-    g0_BB = g0_BB.at[14:15].set(0.04)                   # g0_BB(14:14)  = 0.04
-    g0_BB = g0_BB.at[15:17].set(0.01)                   # g0_BB(15:16)  = 0.01
+    g0_BB = g0_BB.at[1:14].set(0.01)  # g0_BB(1:13)   = 0.01
+    g0_BB = g0_BB.at[14:15].set(0.04)  # g0_BB(14:14)  = 0.04
+    g0_BB = g0_BB.at[15:17].set(0.01)  # g0_BB(15:16)  = 0.01
 
     g1_BB = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    g1_BB = g1_BB.at[ 1:14].set(9.0)                    # g1_BB(1:13)  = 9.
-    g1_BB = g1_BB.at[14:15].set(4.0)                    # g1_BB(14:14) = 4.
-    g1_BB = g1_BB.at[15:17].set(9.0)                    # g1_BB(15:16) = 9.
+    g1_BB = g1_BB.at[1:14].set(9.0)  # g1_BB(1:13)  = 9.
+    g1_BB = g1_BB.at[14:15].set(4.0)  # g1_BB(14:14) = 4.
+    g1_BB = g1_BB.at[15:17].set(9.0)  # g1_BB(15:16) = 9.
 
     # ------------------------------------------------------------------
     # Medlyn stomatal conductance parameters
     # Fortran lines 230-250
     # ------------------------------------------------------------------
     g0_MED = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    g0_MED = g0_MED.at[1:17].set(0.0001)                # g0_MED(1:16) = 0.0001
+    g0_MED = g0_MED.at[1:17].set(0.0001)  # g0_MED(1:16) = 0.0001
 
     g1_MED = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    g1_MED = g1_MED.at[ 1].set(2.35)
-    g1_MED = g1_MED.at[ 2].set(2.35)
-    g1_MED = g1_MED.at[ 3].set(2.35)
-    g1_MED = g1_MED.at[ 4].set(4.12)
-    g1_MED = g1_MED.at[ 5].set(4.12)
-    g1_MED = g1_MED.at[ 6].set(4.45)
-    g1_MED = g1_MED.at[ 7].set(4.45)
-    g1_MED = g1_MED.at[ 8].set(4.45)
-    g1_MED = g1_MED.at[ 9].set(4.70)
+    g1_MED = g1_MED.at[1].set(2.35)
+    g1_MED = g1_MED.at[2].set(2.35)
+    g1_MED = g1_MED.at[3].set(2.35)
+    g1_MED = g1_MED.at[4].set(4.12)
+    g1_MED = g1_MED.at[5].set(4.12)
+    g1_MED = g1_MED.at[6].set(4.45)
+    g1_MED = g1_MED.at[7].set(4.45)
+    g1_MED = g1_MED.at[8].set(4.45)
+    g1_MED = g1_MED.at[9].set(4.70)
     g1_MED = g1_MED.at[10].set(4.70)
     g1_MED = g1_MED.at[11].set(4.70)
     g1_MED = g1_MED.at[12].set(2.22)
@@ -281,24 +283,24 @@ def InitRead(this: MLpftcon_type) -> MLpftcon_type:
     # Fortran lines 252-257
     # ------------------------------------------------------------------
     psi50_gs = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    psi50_gs = psi50_gs.at[1:17].set(-2.3)              # psi50_gs(1:16) = -2.3
+    psi50_gs = psi50_gs.at[1:17].set(-2.3)  # psi50_gs(1:16) = -2.3
 
     shape_gs = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    shape_gs = shape_gs.at[1:17].set(40.0)              # shape_gs(1:16) = 40.
+    shape_gs = shape_gs.at[1:17].set(40.0)  # shape_gs(1:16) = 40.
 
     # ------------------------------------------------------------------
     # Leaf emissivity (-)
     # Fortran lines 259-261
     # ------------------------------------------------------------------
     emleaf = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    emleaf = emleaf.at[1:17].set(0.98)                  # emleaf(1:16) = 0.98
+    emleaf = emleaf.at[1:17].set(0.98)  # emleaf(1:16) = 0.98
 
     # ------------------------------------------------------------------
     # Foliage clumping index (-)
     # Fortran lines 263-265
     # ------------------------------------------------------------------
     clump_fac = jnp.full(mxpft + 1, -999.0, dtype=jnp.float64)
-    clump_fac = clump_fac.at[1:17].set(1.0)             # clump_fac(1:16) = 1.
+    clump_fac = clump_fac.at[1:17].set(1.0)  # clump_fac(1:16) = 1.
 
     # ------------------------------------------------------------------
     # Tower site adjustments (pftcon_val == 1)
@@ -306,35 +308,35 @@ def InitRead(this: MLpftcon_type) -> MLpftcon_type:
     # ------------------------------------------------------------------
     if pftcon_val == 1:
         if masterproc:
-            print(f'{iulog}: MLpftcon ... using non-default values')
+            print(f"{iulog}: MLpftcon ... using non-default values")
 
-        vcmaxpft    = vcmaxpft.at[7].set(125.0)         # CHATS: Rosati et al. (2006)
-        gplant_SPA  = gplant_SPA.at[7].set(7.0)         # CHATS: Tyree et al. (1993)
-        iota_SPA    = iota_SPA.at[7].set(375.0)         # CHATS: Rosati et al. (2006)
+        vcmaxpft = vcmaxpft.at[7].set(125.0)  # CHATS: Rosati et al. (2006)
+        gplant_SPA = gplant_SPA.at[7].set(7.0)  # CHATS: Tyree et al. (1993)
+        iota_SPA = iota_SPA.at[7].set(375.0)  # CHATS: Rosati et al. (2006)
         root_resist_SPA = root_resist_SPA.at[7].set(14.0)  # CHATS: Tyree et al. (1994)
-        psi50_gs    = psi50_gs.at[7].set(-1.60)         # CHATS: SPA-walnut
-        shape_gs    = shape_gs.at[7].set(40.0)          # CHATS: SPA-walnut
+        psi50_gs = psi50_gs.at[7].set(-1.60)  # CHATS: SPA-walnut
+        shape_gs = shape_gs.at[7].set(40.0)  # CHATS: SPA-walnut
 
     if masterproc:
-        print(f'{iulog}: Successfuly initialized MLpftcon')
+        print(f"{iulog}: Successfuly initialized MLpftcon")
 
     return this._replace(
-        vcmaxpft         = vcmaxpft,
-        gplant_SPA       = gplant_SPA,
-        capac_SPA        = capac_SPA,
-        iota_SPA         = iota_SPA,
-        root_radius_SPA  = root_radius_SPA,
-        root_density_SPA = root_density_SPA,
-        root_resist_SPA  = root_resist_SPA,
-        gsmin_SPA        = gsmin_SPA,
-        g0_BB            = g0_BB,
-        g1_BB            = g1_BB,
-        g0_MED           = g0_MED,
-        g1_MED           = g1_MED,
-        psi50_gs         = psi50_gs,
-        shape_gs         = shape_gs,
-        emleaf           = emleaf,
-        clump_fac        = clump_fac,
+        vcmaxpft=vcmaxpft,
+        gplant_SPA=gplant_SPA,
+        capac_SPA=capac_SPA,
+        iota_SPA=iota_SPA,
+        root_radius_SPA=root_radius_SPA,
+        root_density_SPA=root_density_SPA,
+        root_resist_SPA=root_resist_SPA,
+        gsmin_SPA=gsmin_SPA,
+        g0_BB=g0_BB,
+        g1_BB=g1_BB,
+        g0_MED=g0_MED,
+        g1_MED=g1_MED,
+        psi50_gs=psi50_gs,
+        shape_gs=shape_gs,
+        emleaf=emleaf,
+        clump_fac=clump_fac,
     )
 
 
@@ -362,6 +364,7 @@ MLpftcon: MLpftcon_type = Init()
 # ---------------------------------------------------------------------------
 # Parameter injection factory (for gradient-based optimization)
 # ---------------------------------------------------------------------------
+
 
 def make_pft_params(theta_dict: dict, base: MLpftcon_type | None = None) -> MLpftcon_type:
     """Build an MLpftcon_type with optimizable parameters injected from theta_dict.

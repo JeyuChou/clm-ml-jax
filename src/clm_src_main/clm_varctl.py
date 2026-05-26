@@ -21,4 +21,4 @@ iulog: int = 6
 # MLCanopyTurbulenceMod.LookupPsihatINI.
 # Resolve relative to the Python package root (two levels up from this file).
 _pkg_root: str = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-rslfile: str = _os.path.join(_pkg_root, 'rsl_lookup_tables', 'psihat.nc')
+rslfile: str = _os.path.join(_pkg_root, "rsl_lookup_tables", "psihat.nc")

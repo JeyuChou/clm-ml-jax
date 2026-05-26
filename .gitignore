@@ -1,6 +1,11 @@
-# GitHub specific files and directories
-.github/
+# Claude-specific files
 .claude/
+
+# Internal development tools (not part of the land model)
+jax-agents/
+
+# Integration test log files (generated outputs)
+tests/integration/comparison_*.log
 
 # Python
 docs/

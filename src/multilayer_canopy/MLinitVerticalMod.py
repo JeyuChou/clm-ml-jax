@@ -22,27 +22,32 @@ from typing import Sequence
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.abortutils import endrun                                          # noqa: F401
-from clm_src_main.clm_varctl import iulog                                           # noqa: F401
-from clm_src_main.decompMod import bounds_type                                      # noqa: F401
-from clm_src_main.PatchType import patch                                            # noqa: F401
-from multilayer_canopy.MLclm_varctl import (                                             # noqa: F401
-    dz_tall, dz_short, dz_param, nlayer_above, nlayer_within, dpai_min,
+from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
+from clm_src_main.PatchType import patch  # noqa: F401
+from multilayer_canopy.MLclm_varctl import (  # noqa: F401
+    dz_tall,
+    dz_short,
+    dz_param,
+    nlayer_above,
+    nlayer_within,
+    dpai_min,
 )
-from multilayer_canopy.MLclm_varpar import nlevmlcan, isun, isha                         # noqa: F401
-from multilayer_canopy.MLclm_varcon import mmh2o, mmdry                                  # noqa: F401
-from multilayer_canopy.MLMathToolsMod import beta_distribution_cdf                       # noqa: F401
-from clm_src_biogeophys.CanopyStateType import canopystate_type                           # noqa: F401
-from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type                       # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type                           # noqa: F401
-from clm_src_main.atm2lndType import atm2lnd_type                                   # noqa: F401
-from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type                 # noqa: F401
-from clm_src_main.clm_varpar import mxpft                                           # noqa: F401
-
+from multilayer_canopy.MLclm_varpar import nlevmlcan, isun, isha  # noqa: F401
+from multilayer_canopy.MLclm_varcon import mmh2o, mmdry  # noqa: F401
+from multilayer_canopy.MLMathToolsMod import beta_distribution_cdf  # noqa: F401
+from clm_src_biogeophys.CanopyStateType import canopystate_type  # noqa: F401
+from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from clm_src_main.atm2lndType import atm2lnd_type  # noqa: F401
+from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type  # noqa: F401
+from clm_src_main.clm_varpar import mxpft  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public: define canopy layer vertical structure
 # ---------------------------------------------------------------------------
+
 
 def initVerticalStructure(
     bounds: bounds_type,
@@ -104,31 +109,31 @@ def initVerticalStructure(
     """
     # Unpack output arrays (Fortran associate block, lines 46-63)
     forc_hgt_u = frictionvel_inst.forc_hgt_u_patch
-    htop       = canopystate_inst.htop_patch
-    pbeta_lai  = mlcanopy_inst.pbeta_lai_canopy
-    pbeta_sai  = mlcanopy_inst.pbeta_sai_canopy
+    htop = canopystate_inst.htop_patch
+    pbeta_lai = mlcanopy_inst.pbeta_lai_canopy
+    pbeta_sai = mlcanopy_inst.pbeta_sai_canopy
 
-    zref      = mlcanopy_inst.zref_forcing
-    ztop      = mlcanopy_inst.ztop_canopy
-    zbot      = mlcanopy_inst.zbot_canopy
-    ncan      = mlcanopy_inst.ncan_canopy
-    ntop      = mlcanopy_inst.ntop_canopy
-    nbot      = mlcanopy_inst.nbot_canopy
+    zref = mlcanopy_inst.zref_forcing
+    ztop = mlcanopy_inst.ztop_canopy
+    zbot = mlcanopy_inst.zbot_canopy
+    ncan = mlcanopy_inst.ncan_canopy
+    ntop = mlcanopy_inst.ntop_canopy
+    nbot = mlcanopy_inst.nbot_canopy
     dlai_frac = mlcanopy_inst.dlai_frac_profile
     dsai_frac = mlcanopy_inst.dsai_frac_profile
-    zs        = mlcanopy_inst.zs_profile
-    zw        = mlcanopy_inst.zw_profile
-    dz        = mlcanopy_inst.dz_profile
+    zs = mlcanopy_inst.zs_profile
+    zw = mlcanopy_inst.zw_profile
+    dz = mlcanopy_inst.dz_profile
 
-    unit_lai: float = 1.0    # Unit LAI — Fortran line 43
-    unit_sai: float = 1.0    # Unit SAI — Fortran line 44
+    unit_lai: float = 1.0  # Unit LAI — Fortran line 43
+    unit_sai: float = 1.0  # Unit SAI — Fortran line 44
 
     # Working arrays for unscaled LAI/SAI per layer (local, not stored)
     n_patch = bounds.endp - bounds.begp + 1
     dlai = jnp.zeros((n_patch + bounds.begp, nlevmlcan + 1), dtype=jnp.float64)
     dsai = jnp.zeros((n_patch + bounds.begp, nlevmlcan + 1), dtype=jnp.float64)
 
-    for fp in range(1, num_filter + 1):                # Fortran: do fp = 1, num_filter
+    for fp in range(1, num_filter + 1):  # Fortran: do fp = 1, num_filter
         p = int(filter_patch[fp - 1])
 
         # Atmospheric reference height and canopy top — Fortran lines 66-68
@@ -141,10 +146,10 @@ def initVerticalStructure(
         # ------------------------------------------------------------------
         if nlayer_within > 0 and nlayer_above > 0:
             # Explicit layer counts — Fortran lines 72-78
-            _ntop    = nlayer_within
+            _ntop = nlayer_within
             dz_within = float(ztop[p]) / float(_ntop)
-            nabove   = nlayer_above
-            _ncan    = _ntop + nabove
+            nabove = nlayer_above
+            _ncan = _ntop + nabove
             dz_above = ztop_to_zref / float(nabove)
 
         elif nlayer_within == 0 or nlayer_above == 0:
@@ -154,19 +159,23 @@ def initVerticalStructure(
             else:
                 dz_within = dz_short
 
-            _ntop     = round(float(ztop[p]) / dz_within)      # Fortran: nint
+            _ntop = round(float(ztop[p]) / dz_within)  # Fortran: nint
             dz_within = float(ztop[p]) / float(_ntop)
-            dz_above  = dz_within
-            nabove    = round(ztop_to_zref / dz_above)          # Fortran: nint
-            _ncan     = _ntop + nabove
-            dz_above  = ztop_to_zref / float(nabove)
+            dz_above = dz_within
+            nabove = round(ztop_to_zref / dz_above)  # Fortran: nint
+            _ncan = _ntop + nabove
+            dz_above = ztop_to_zref / float(nabove)
 
         else:
-            endrun(msg=' ERROR: initVerticalStructure: invalid canopy specification')
-            _ntop = 1; _ncan = 2; dz_within = 1.0; dz_above = 1.0; nabove = 1
+            endrun(msg=" ERROR: initVerticalStructure: invalid canopy specification")
+            _ntop = 1
+            _ncan = 2
+            dz_within = 1.0
+            dz_above = 1.0
+            nabove = 1
 
         if _ncan > nlevmlcan:
-            endrun(msg=' ERROR: initVerticalStructure: ncan > nlevmlcan')
+            endrun(msg=" ERROR: initVerticalStructure: ncan > nlevmlcan")
 
         ntop = ntop.at[p].set(_ntop)
         ncan = ncan.at[p].set(_ncan)
@@ -177,22 +186,22 @@ def initVerticalStructure(
 
         # Within-canopy: ic = ntop down to 0 — Fortran lines 103-110
         zw = zw.at[p, _ntop].set(float(ztop[p]))
-        for ic in range(_ntop - 1, -1, -1):            # Fortran: do ic = ntop-1, 0, -1
+        for ic in range(_ntop - 1, -1, -1):  # Fortran: do ic = ntop-1, 0, -1
             zw = zw.at[p, ic].set(float(zw[p, ic + 1]) - dz_within)
 
         # Guard: zw(p,0) must be zero — Fortran lines 112-116
         if abs(float(zw[p, 0])) > 1.0e-10:
-            endrun(msg=' ERROR: initVerticalStructure: zw(p,0) improperly defined')
-        zw = zw.at[p, 0].set(max(float(zw[p, 0]), 0.0))   # negative → 0
-        zw = zw.at[p, 0].set(min(float(zw[p, 0]), 0.0))   # positive → 0
+            endrun(msg=" ERROR: initVerticalStructure: zw(p,0) improperly defined")
+        zw = zw.at[p, 0].set(max(float(zw[p, 0]), 0.0))  # negative → 0
+        zw = zw.at[p, 0].set(min(float(zw[p, 0]), 0.0))  # positive → 0
 
         # Above-canopy: ic = ncan down to ntop+1 — Fortran lines 118-121
         zw = zw.at[p, _ncan].set(float(zref[p]))
-        for ic in range(_ncan - 1, _ntop, -1):         # Fortran: do ic = ncan-1, ntop+1, -1
+        for ic in range(_ncan - 1, _ntop, -1):  # Fortran: do ic = ncan-1, ntop+1, -1
             zw = zw.at[p, ic].set(float(zw[p, ic + 1]) - dz_above)
 
         # Layer thickness and scalar height — Fortran lines 123-129
-        for ic in range(1, _ncan + 1):                 # Fortran: do ic = 1, ncan
+        for ic in range(1, _ncan + 1):  # Fortran: do ic = 1, ncan
             dz = dz.at[p, ic].set(float(zw[p, ic]) - float(zw[p, ic - 1]))
             zs = zs.at[p, ic].set(0.5 * (float(zw[p, ic]) + float(zw[p, ic - 1])))
 
@@ -201,28 +210,39 @@ def initVerticalStructure(
         # ------------------------------------------------------------------
         for ic in range(1, _ntop + 1):
             zrel_bot = min(float(zw[p, ic - 1]) / float(ztop[p]), 1.0)
-            zrel_top = min(float(zw[p, ic])     / float(ztop[p]), 1.0)
-            cdf_bot = beta_distribution_cdf(float(pbeta_lai[p, 1]), float(pbeta_lai[p, 2]), zrel_bot)
-            cdf_top = beta_distribution_cdf(float(pbeta_lai[p, 1]), float(pbeta_lai[p, 2]), zrel_top)
+            zrel_top = min(float(zw[p, ic]) / float(ztop[p]), 1.0)
+            cdf_bot = beta_distribution_cdf(
+                float(pbeta_lai[p, 1]), float(pbeta_lai[p, 2]), zrel_bot
+            )
+            cdf_top = beta_distribution_cdf(
+                float(pbeta_lai[p, 1]), float(pbeta_lai[p, 2]), zrel_top
+            )
             dlai = dlai.at[p, ic].set((cdf_top - cdf_bot) * unit_lai)
 
         # Beta-distribution SAI profile — Fortran lines 149-155
         for ic in range(1, _ntop + 1):
             zrel_bot = min(float(zw[p, ic - 1]) / float(ztop[p]), 1.0)
-            zrel_top = min(float(zw[p, ic])     / float(ztop[p]), 1.0)
-            cdf_bot = beta_distribution_cdf(float(pbeta_sai[p, 1]), float(pbeta_sai[p, 2]), zrel_bot)
-            cdf_top = beta_distribution_cdf(float(pbeta_sai[p, 1]), float(pbeta_sai[p, 2]), zrel_top)
+            zrel_top = min(float(zw[p, ic]) / float(ztop[p]), 1.0)
+            cdf_bot = beta_distribution_cdf(
+                float(pbeta_sai[p, 1]), float(pbeta_sai[p, 2]), zrel_bot
+            )
+            cdf_top = beta_distribution_cdf(
+                float(pbeta_sai[p, 1]), float(pbeta_sai[p, 2]), zrel_top
+            )
             dsai = dsai.at[p, ic].set((cdf_top - cdf_bot) * unit_sai)
 
         # PAI sum check — Fortran lines 157-160
         pai_sum = sum(float(dlai[p, ic]) + float(dsai[p, ic]) for ic in range(1, _ntop + 1))
         if abs(pai_sum - (unit_lai + unit_sai)) > 1.0e-6:
-            endrun(msg=' ERROR: initVerticalStructure: plant area profile does not sum to canopy total')
+            endrun(
+                msg=" ERROR: initVerticalStructure: plant area profile does not sum to canopy total"
+            )
 
         # ------------------------------------------------------------------
         # Zero layers below dpai_min and redistribute — Fortran lines 162-185
         # ------------------------------------------------------------------
-        lai_miss = 0.0;  sai_miss = 0.0
+        lai_miss = 0.0
+        sai_miss = 0.0
         for ic in range(1, _ntop + 1):
             if float(dlai[p, ic]) + float(dsai[p, ic]) < dpai_min:
                 lai_miss += float(dlai[p, ic])
@@ -248,21 +268,25 @@ def initVerticalStructure(
         # Find lowest leaf/stem layer (nbot) — Fortran lines 187-196
         # ------------------------------------------------------------------
         _nbot = 0
-        for ic in range(_ntop, 0, -1):                 # Fortran: do ic = ntop, 1, -1
+        for ic in range(_ntop, 0, -1):  # Fortran: do ic = ntop, 1, -1
             if float(dlai[p, ic]) + float(dsai[p, ic]) > 0.0:
                 _nbot = ic
         if _nbot == 0:
-            endrun(msg=' ERROR: initVerticalStructure: nbot not defined')
+            endrun(msg=" ERROR: initVerticalStructure: nbot not defined")
         nbot = nbot.at[p].set(_nbot)
-        zbot = zbot.at[p].set(float(zw[p, _nbot - 1]))   # bottom of layer nbot
+        zbot = zbot.at[p].set(float(zw[p, _nbot - 1]))  # bottom of layer nbot
 
         # Post-redistribution sum checks — Fortran lines 198-205
         lai_sum = sum(float(dlai[p, ic]) for ic in range(1, _ntop + 1))
         if abs(lai_sum - unit_lai) > 1.0e-6:
-            endrun(msg=' ERROR: initVerticalStructure: leaf area profile does not sum to canopy total after redistribution')
+            endrun(
+                msg=" ERROR: initVerticalStructure: leaf area profile does not sum to canopy total after redistribution"
+            )
         sai_sum = sum(float(dsai[p, ic]) for ic in range(1, _ntop + 1))
         if abs(sai_sum - unit_sai) > 1.0e-6:
-            endrun(msg=' ERROR: initVerticalStructure: stem area profile does not sum to canopy total after redistribution')
+            endrun(
+                msg=" ERROR: initVerticalStructure: stem area profile does not sum to canopy total after redistribution"
+            )
 
         # Zero above-canopy layers — Fortran lines 207-210
         for ic in range(_ntop + 1, _ncan + 1):
@@ -280,26 +304,27 @@ def initVerticalStructure(
             if float(dlai_frac[p, ic]) + float(dsai_frac[p, ic]) <= 0.0:
                 iflag = 1
         if iflag == 1:
-            endrun(msg=' ERROR: initVerticalStructure: canopy layer has zero plant area index')
+            endrun(msg=" ERROR: initVerticalStructure: canopy layer has zero plant area index")
 
     return mlcanopy_inst._replace(
-        zref_forcing      = zref,
-        ztop_canopy       = ztop,
-        zbot_canopy       = zbot,
-        ncan_canopy       = ncan,
-        ntop_canopy       = ntop,
-        nbot_canopy       = nbot,
-        dlai_frac_profile = dlai_frac,
-        dsai_frac_profile = dsai_frac,
-        zs_profile        = zs,
-        zw_profile        = zw,
-        dz_profile        = dz,
+        zref_forcing=zref,
+        ztop_canopy=ztop,
+        zbot_canopy=zbot,
+        ncan_canopy=ncan,
+        ntop_canopy=ntop,
+        nbot_canopy=nbot,
+        dlai_frac_profile=dlai_frac,
+        dsai_frac_profile=dsai_frac,
+        zs_profile=zs,
+        zw_profile=zw,
+        dz_profile=dz,
     )
 
 
 # ---------------------------------------------------------------------------
 # Public: initialise vertical profiles and canopy states
 # ---------------------------------------------------------------------------
+
 
 def initVerticalProfiles(
     num_filter: int,
@@ -341,43 +366,41 @@ def initVerticalProfiles(
         Updated :class:`mlcanopy_type`.
     """
     # Unpack input forcing (Fortran associate block, lines 198-213)
-    forc_u    = atm2lnd_inst.forc_u_grc
-    forc_v    = atm2lnd_inst.forc_v_grc
+    forc_u = atm2lnd_inst.forc_u_grc
+    forc_v = atm2lnd_inst.forc_v_grc
     forc_pco2 = atm2lnd_inst.forc_pco2_grc
-    forc_t    = atm2lnd_inst.forc_t_downscaled_col
-    forc_q    = wateratm2lndbulk_inst.forc_q_downscaled_col
+    forc_t = atm2lnd_inst.forc_t_downscaled_col
+    forc_q = wateratm2lndbulk_inst.forc_q_downscaled_col
     forc_pbot = atm2lnd_inst.forc_pbot_downscaled_col
 
-    ncan   = mlcanopy_inst.ncan_canopy
-    tg     = mlcanopy_inst.tg_soil
-    wind   = mlcanopy_inst.wind_profile
-    tair   = mlcanopy_inst.tair_profile
-    eair   = mlcanopy_inst.eair_profile
-    cair   = mlcanopy_inst.cair_profile
+    ncan = mlcanopy_inst.ncan_canopy
+    tg = mlcanopy_inst.tg_soil
+    wind = mlcanopy_inst.wind_profile
+    tair = mlcanopy_inst.tair_profile
+    eair = mlcanopy_inst.eair_profile
+    cair = mlcanopy_inst.cair_profile
     h2ocan = mlcanopy_inst.h2ocan_profile
-    lwp    = mlcanopy_inst.lwp_leaf
-    tleaf  = mlcanopy_inst.tleaf_leaf
+    lwp = mlcanopy_inst.lwp_leaf
+    tleaf = mlcanopy_inst.tleaf_leaf
 
-    for fp in range(1, num_filter + 1):                # Fortran: do fp = 1, num_filter
+    for fp in range(1, num_filter + 1):  # Fortran: do fp = 1, num_filter
         p = int(filter_patch[fp - 1])
         c = int(patch.column[p])
         g = int(patch.gridcell[p])
 
-        for ic in range(1, int(ncan[p]) + 1):          # Fortran: do ic = 1, ncan(p)
+        for ic in range(1, int(ncan[p]) + 1):  # Fortran: do ic = 1, ncan(p)
 
             # Wind speed — Fortran line 219
-            wind_val = float(jnp.sqrt(
-                float(forc_u[g]) ** 2 + float(forc_v[g]) ** 2
-            ))
+            wind_val = float(jnp.sqrt(float(forc_u[g]) ** 2 + float(forc_v[g]) ** 2))
             wind = wind.at[p, ic].set(wind_val)
 
             # Air temperature — Fortran line 220
             tair = tair.at[p, ic].set(float(forc_t[c]))
 
             # Vapour pressure (Pa) from specific humidity — Fortran line 221
-            q   = float(forc_q[c])
-            pb  = float(forc_pbot[c])
-            e   = q * pb / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * q)
+            q = float(forc_q[c])
+            pb = float(forc_pbot[c])
+            e = q * pb / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * q)
             eair = eair.at[p, ic].set(e)
 
             # CO2 mole fraction (umol/mol) — Fortran line 222
@@ -386,8 +409,8 @@ def initVerticalProfiles(
             # Leaf temperature and water potential — Fortran line 224
             tleaf = tleaf.at[p, ic, isun].set(float(forc_t[c]))
             tleaf = tleaf.at[p, ic, isha].set(float(forc_t[c]))
-            lwp   = lwp.at[p, ic, isun].set(-0.1)
-            lwp   = lwp.at[p, ic, isha].set(-0.1)
+            lwp = lwp.at[p, ic, isun].set(-0.1)
+            lwp = lwp.at[p, ic, isha].set(-0.1)
 
             # Canopy intercepted water — Fortran line 225
             h2ocan = h2ocan.at[p, ic].set(0.0)
@@ -396,20 +419,21 @@ def initVerticalProfiles(
         tg = tg.at[p].set(float(forc_t[c]))
 
     return mlcanopy_inst._replace(
-        tg_soil         = tg,
-        wind_profile    = wind,
-        tair_profile    = tair,
-        eair_profile    = eair,
-        cair_profile    = cair,
-        h2ocan_profile  = h2ocan,
-        lwp_leaf        = lwp,
-        tleaf_leaf      = tleaf,
+        tg_soil=tg,
+        wind_profile=wind,
+        tair_profile=tair,
+        eair_profile=eair,
+        cair_profile=cair,
+        h2ocan_profile=h2ocan,
+        lwp_leaf=lwp,
+        tleaf_leaf=tleaf,
     )
 
 
 # ---------------------------------------------------------------------------
 # Public: set plant area density beta-distribution parameters from PFT defaults
 # ---------------------------------------------------------------------------
+
 
 def getPADparameters(
     num_filter: int,
@@ -460,7 +484,7 @@ def getPADparameters(
     pbeta_lai_pft: list[list[float]] = [[_def, _def]] * (mxpft + 1)
     pbeta_sai_pft: list[list[float]] = [[_def, _def]] * (mxpft + 1)
 
-    pbeta_lai_pft = pbeta_lai_pft.copy()    # make mutable
+    pbeta_lai_pft = pbeta_lai_pft.copy()  # make mutable
 
     # 1 => needleleaf_evergreen_temperate_tree — Fortran line 251
     pbeta_lai_pft[1] = [11.5, 3.5]
@@ -494,21 +518,23 @@ def getPADparameters(
     pbeta_lai = mlcanopy_inst.pbeta_lai_canopy
     pbeta_sai = mlcanopy_inst.pbeta_sai_canopy
 
-    for fp in range(1, num_filter + 1):                # Fortran: do fp = 1, num_filter
+    for fp in range(1, num_filter + 1):  # Fortran: do fp = 1, num_filter
         p = int(filter_patch[fp - 1])
         pft = int(patch.itype[p])
 
         # Use PFT defaults only when any parameter is < 0 — Fortran lines 275-279
-        if (float(pbeta_lai[p, 1]) < 0.0
-                or float(pbeta_lai[p, 2]) < 0.0
-                or float(pbeta_sai[p, 1]) < 0.0
-                or float(pbeta_sai[p, 2]) < 0.0):
+        if (
+            float(pbeta_lai[p, 1]) < 0.0
+            or float(pbeta_lai[p, 2]) < 0.0
+            or float(pbeta_sai[p, 1]) < 0.0
+            or float(pbeta_sai[p, 2]) < 0.0
+        ):
             pbeta_lai = pbeta_lai.at[p, 1].set(pbeta_lai_pft[pft][0])
             pbeta_lai = pbeta_lai.at[p, 2].set(pbeta_lai_pft[pft][1])
             pbeta_sai = pbeta_sai.at[p, 1].set(pbeta_sai_pft[pft][0])
             pbeta_sai = pbeta_sai.at[p, 2].set(pbeta_sai_pft[pft][1])
 
     return mlcanopy_inst._replace(
-        pbeta_lai_canopy = pbeta_lai,
-        pbeta_sai_canopy = pbeta_sai,
+        pbeta_lai_canopy=pbeta_lai,
+        pbeta_sai_canopy=pbeta_sai,
     )

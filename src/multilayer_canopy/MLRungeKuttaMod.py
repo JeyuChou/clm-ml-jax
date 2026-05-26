@@ -15,17 +15,17 @@ import numpy as np
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.abortutils import endrun                          # noqa: F401
-from clm_src_main.clm_varctl import iulog                          # noqa: F401
-from clm_src_main.clm_varcon import spval                          # noqa: F401
-from multilayer_canopy.MLclm_varpar import isun, isha                   # noqa: F401
-from multilayer_canopy.MLclm_varctl import nrk, runge_kutta_type        # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type          # noqa: F401
-
+from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
+from clm_src_main.clm_varcon import spval  # noqa: F401
+from multilayer_canopy.MLclm_varpar import isun, isha  # noqa: F401
+from multilayer_canopy.MLclm_varctl import nrk, runge_kutta_type  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public: Runge-Kutta state update
 # ---------------------------------------------------------------------------
+
 
 def RungeKuttaUpdate(
     irk: int,
@@ -35,7 +35,7 @@ def RungeKuttaUpdate(
     num_filter: int,
     filter: Array,
     mlcanopy_inst: mlcanopy_type,
-    grid: 'GridInfo | None' = None,
+    grid: "GridInfo | None" = None,
 ) -> mlcanopy_type:
     """
     Runge-Kutta state update: update states for the next Runge-Kutta step.
@@ -79,18 +79,18 @@ def RungeKuttaUpdate(
     _b = np.asarray(b)
 
     # Working copies of the JAX arrays (we'll update via slice assignment)
-    dtair_arr   = mlcanopy_inst.dtair_profile
-    deair_arr   = mlcanopy_inst.deair_profile
+    dtair_arr = mlcanopy_inst.dtair_profile
+    deair_arr = mlcanopy_inst.deair_profile
     dh2ocan_arr = mlcanopy_inst.dh2ocan_profile
-    dtleaf_arr  = mlcanopy_inst.dtleaf_leaf
-    dlwp_arr    = mlcanopy_inst.dlwp_leaf
-    dtg_arr     = mlcanopy_inst.dtg_soil
-    tair_arr    = mlcanopy_inst.tair_profile
-    eair_arr    = mlcanopy_inst.eair_profile
-    h2ocan_arr  = mlcanopy_inst.h2ocan_profile
-    tleaf_arr   = mlcanopy_inst.tleaf_leaf
-    lwp_arr     = mlcanopy_inst.lwp_leaf
-    tg_arr      = mlcanopy_inst.tg_soil
+    dtleaf_arr = mlcanopy_inst.dtleaf_leaf
+    dlwp_arr = mlcanopy_inst.dlwp_leaf
+    dtg_arr = mlcanopy_inst.dtg_soil
+    tair_arr = mlcanopy_inst.tair_profile
+    eair_arr = mlcanopy_inst.eair_profile
+    h2ocan_arr = mlcanopy_inst.h2ocan_profile
+    tleaf_arr = mlcanopy_inst.tleaf_leaf
+    lwp_arr = mlcanopy_inst.lwp_leaf
+    tg_arr = mlcanopy_inst.tg_soil
 
     # ------------------------------------------------------------------
     # Per-patch loop — Fortran lines 95-136
@@ -106,38 +106,38 @@ def RungeKuttaUpdate(
             n = int(mlcanopy_inst.ncan_canopy[p])
 
         # Always use JAX slices — no np.asarray() D→H syncs
-        _tair_cur    = tair_arr[p, :n]
-        _eair_cur    = eair_arr[p, :n]
-        _h2ocan_cur  = h2ocan_arr[p, :n]
-        _tleaf_cur   = tleaf_arr[p, :n, :]
-        _lwp_cur     = lwp_arr[p, :n, :]
+        _tair_cur = tair_arr[p, :n]
+        _eair_cur = eair_arr[p, :n]
+        _h2ocan_cur = h2ocan_arr[p, :n]
+        _tleaf_cur = tleaf_arr[p, :n, :]
+        _lwp_cur = lwp_arr[p, :n, :]
 
-        _tair_bef    = mlcanopy_inst.tair_bef_profile[p, :n]
-        _eair_bef    = mlcanopy_inst.eair_bef_profile[p, :n]
-        _h2ocan_bef  = mlcanopy_inst.h2ocan_bef_profile[p, :n]
-        _tleaf_bef   = mlcanopy_inst.tleaf_bef_leaf[p, :n, :]
-        _lwp_bef     = mlcanopy_inst.lwp_bef_leaf[p, :n, :]
+        _tair_bef = mlcanopy_inst.tair_bef_profile[p, :n]
+        _eair_bef = mlcanopy_inst.eair_bef_profile[p, :n]
+        _h2ocan_bef = mlcanopy_inst.h2ocan_bef_profile[p, :n]
+        _tleaf_bef = mlcanopy_inst.tleaf_bef_leaf[p, :n, :]
+        _lwp_bef = mlcanopy_inst.lwp_bef_leaf[p, :n, :]
 
-        _dtair_prev   = dtair_arr[p, :n, :]
-        _deair_prev   = deair_arr[p, :n, :]
+        _dtair_prev = dtair_arr[p, :n, :]
+        _deair_prev = deair_arr[p, :n, :]
         _dh2ocan_prev = dh2ocan_arr[p, :n, :]
-        _dtleaf_prev  = dtleaf_arr[p, :n, :, :]
-        _dlwp_prev    = dlwp_arr[p, :n, :, :]
+        _dtleaf_prev = dtleaf_arr[p, :n, :, :]
+        _dlwp_prev = dlwp_arr[p, :n, :, :]
 
-        _tg_cur       = tg_arr[p]
-        _tg_bef_val   = mlcanopy_inst.tg_bef_soil[p]
-        _dtg_prev     = dtg_arr[p]
+        _tg_cur = tg_arr[p]
+        _tg_bef_val = mlcanopy_inst.tg_bef_soil[p]
+        _dtg_prev = dtg_arr[p]
 
         # ------------------------------------------------------------------
         # Current step's deltas — pure numpy
         # Fortran lines 99-105: dtX[irk0] = X_cur - X_bef
         # ------------------------------------------------------------------
-        _dtair_new    = _tair_cur   - _tair_bef         # (n,)
-        _deair_new    = _eair_cur   - _eair_bef
-        _dh2ocan_new  = _h2ocan_cur - _h2ocan_bef
-        _dtleaf_new   = _tleaf_cur  - _tleaf_bef        # (n, nleaf+1)
-        _dlwp_new     = _lwp_cur    - _lwp_bef
-        _dtg_new      = _tg_cur     - _tg_bef_val
+        _dtair_new = _tair_cur - _tair_bef  # (n,)
+        _deair_new = _eair_cur - _eair_bef
+        _dh2ocan_new = _h2ocan_cur - _h2ocan_bef
+        _dtleaf_new = _tleaf_cur - _tleaf_bef  # (n, nleaf+1)
+        _dlwp_new = _lwp_cur - _lwp_bef
+        _dtg_new = _tg_cur - _tg_bef_val
 
         # ------------------------------------------------------------------
         # Compute updated state — pure numpy
@@ -147,95 +147,99 @@ def RungeKuttaUpdate(
         # ------------------------------------------------------------------
         if irk < nrk:
             # Coefficients: a[irk0+1, 0..irk0]
-            _a_prev = _a[irk0 + 1, :irk0]    # (irk0,) — previous steps
-            _a_curr = _a[irk0 + 1, irk0]     # scalar  — current step
+            _a_prev = _a[irk0 + 1, :irk0]  # (irk0,) — previous steps
+            _a_curr = _a[irk0 + 1, irk0]  # scalar  — current step
 
-            _tair_new   = (_tair_bef
-                           + (_dtair_prev[:, :irk0]   * _a_prev).sum(axis=1)
-                           + _a_curr * _dtair_new)
-            _eair_new   = (_eair_bef
-                           + (_deair_prev[:, :irk0]   * _a_prev).sum(axis=1)
-                           + _a_curr * _deair_new)
-            _h2ocan_new = (_h2ocan_bef
-                           + (_dh2ocan_prev[:, :irk0] * _a_prev).sum(axis=1)
-                           + _a_curr * _dh2ocan_new)
+            _tair_new = (
+                _tair_bef + (_dtair_prev[:, :irk0] * _a_prev).sum(axis=1) + _a_curr * _dtair_new
+            )
+            _eair_new = (
+                _eair_bef + (_deair_prev[:, :irk0] * _a_prev).sum(axis=1) + _a_curr * _deair_new
+            )
+            _h2ocan_new = (
+                _h2ocan_bef
+                + (_dh2ocan_prev[:, :irk0] * _a_prev).sum(axis=1)
+                + _a_curr * _dh2ocan_new
+            )
             # tleaf/lwp: shape (n, nleaf+1); dt arrays shape (n, nleaf+1, nrk)
-            _tleaf_new  = (_tleaf_bef
-                           + (_dtleaf_prev[:, :, :irk0] * _a_prev).sum(axis=2)
-                           + _a_curr * _dtleaf_new)
-            _lwp_new    = (_lwp_bef
-                           + (_dlwp_prev[:, :, :irk0]   * _a_prev).sum(axis=2)
-                           + _a_curr * _dlwp_new)
-            _tg_new     = (_tg_bef_val
-                           + (_dtg_prev[:irk0] * _a_prev).sum()
-                           + _a_curr * _dtg_new)
+            _tleaf_new = (
+                _tleaf_bef
+                + (_dtleaf_prev[:, :, :irk0] * _a_prev).sum(axis=2)
+                + _a_curr * _dtleaf_new
+            )
+            _lwp_new = (
+                _lwp_bef + (_dlwp_prev[:, :, :irk0] * _a_prev).sum(axis=2) + _a_curr * _dlwp_new
+            )
+            _tg_new = _tg_bef_val + (_dtg_prev[:irk0] * _a_prev).sum() + _a_curr * _dtg_new
 
         elif irk == nrk:
             # Final weighted update: j0 = 0..nrk-1
-            _b_prev = _b[:irk0]     # (irk0,) — previous steps
-            _b_curr = _b[irk0]      # scalar  — current step
+            _b_prev = _b[:irk0]  # (irk0,) — previous steps
+            _b_curr = _b[irk0]  # scalar  — current step
 
-            _tair_new   = (_tair_bef
-                           + (_dtair_prev[:, :irk0]   * _b_prev).sum(axis=1)
-                           + _b_curr * _dtair_new)
-            _eair_new   = (_eair_bef
-                           + (_deair_prev[:, :irk0]   * _b_prev).sum(axis=1)
-                           + _b_curr * _deair_new)
-            _h2ocan_new = (_h2ocan_bef
-                           + (_dh2ocan_prev[:, :irk0] * _b_prev).sum(axis=1)
-                           + _b_curr * _dh2ocan_new)
-            _tleaf_new  = (_tleaf_bef
-                           + (_dtleaf_prev[:, :, :irk0] * _b_prev).sum(axis=2)
-                           + _b_curr * _dtleaf_new)
-            _lwp_new    = (_lwp_bef
-                           + (_dlwp_prev[:, :, :irk0]   * _b_prev).sum(axis=2)
-                           + _b_curr * _dlwp_new)
-            _tg_new     = (_tg_bef_val
-                           + (_dtg_prev[:irk0] * _b_prev).sum()
-                           + _b_curr * _dtg_new)
+            _tair_new = (
+                _tair_bef + (_dtair_prev[:, :irk0] * _b_prev).sum(axis=1) + _b_curr * _dtair_new
+            )
+            _eair_new = (
+                _eair_bef + (_deair_prev[:, :irk0] * _b_prev).sum(axis=1) + _b_curr * _deair_new
+            )
+            _h2ocan_new = (
+                _h2ocan_bef
+                + (_dh2ocan_prev[:, :irk0] * _b_prev).sum(axis=1)
+                + _b_curr * _dh2ocan_new
+            )
+            _tleaf_new = (
+                _tleaf_bef
+                + (_dtleaf_prev[:, :, :irk0] * _b_prev).sum(axis=2)
+                + _b_curr * _dtleaf_new
+            )
+            _lwp_new = (
+                _lwp_bef + (_dlwp_prev[:, :, :irk0] * _b_prev).sum(axis=2) + _b_curr * _dlwp_new
+            )
+            _tg_new = _tg_bef_val + (_dtg_prev[:irk0] * _b_prev).sum() + _b_curr * _dtg_new
         else:
             # Should not occur; keep state unchanged
-            _tair_new   = _tair_cur
-            _eair_new   = _eair_cur
+            _tair_new = _tair_cur
+            _eair_new = _eair_cur
             _h2ocan_new = _h2ocan_cur
-            _tleaf_new  = _tleaf_cur
-            _lwp_new    = _lwp_cur
-            _tg_new     = _tg_cur
+            _tleaf_new = _tleaf_cur
+            _lwp_new = _lwp_cur
+            _tg_new = _tg_cur
 
         # ------------------------------------------------------------------
         # Write back to JAX arrays — bulk slice updates (few JAX ops total)
         # Data is always JAX so no jnp.array() conversion needed
         # ------------------------------------------------------------------
-        dtair_arr   = dtair_arr.at[p, :n, irk0].set(_dtair_new)
-        deair_arr   = deair_arr.at[p, :n, irk0].set(_deair_new)
+        dtair_arr = dtair_arr.at[p, :n, irk0].set(_dtair_new)
+        deair_arr = deair_arr.at[p, :n, irk0].set(_deair_new)
         dh2ocan_arr = dh2ocan_arr.at[p, :n, irk0].set(_dh2ocan_new)
-        dtleaf_arr  = dtleaf_arr.at[p, :n, :, irk0].set(_dtleaf_new)
-        dlwp_arr    = dlwp_arr.at[p, :n, :, irk0].set(_dlwp_new)
-        dtg_arr     = dtg_arr.at[p, irk0].set(_dtg_new)
+        dtleaf_arr = dtleaf_arr.at[p, :n, :, irk0].set(_dtleaf_new)
+        dlwp_arr = dlwp_arr.at[p, :n, :, irk0].set(_dlwp_new)
+        dtg_arr = dtg_arr.at[p, irk0].set(_dtg_new)
 
-        tair_arr    = tair_arr.at[p, :n].set(_tair_new)
-        eair_arr    = eair_arr.at[p, :n].set(_eair_new)
-        h2ocan_arr  = h2ocan_arr.at[p, :n].set(_h2ocan_new)
-        tleaf_arr   = tleaf_arr.at[p, :n, :].set(_tleaf_new)
-        lwp_arr     = lwp_arr.at[p, :n, :].set(_lwp_new)
-        tg_arr      = tg_arr.at[p].set(_tg_new)
+        tair_arr = tair_arr.at[p, :n].set(_tair_new)
+        eair_arr = eair_arr.at[p, :n].set(_eair_new)
+        h2ocan_arr = h2ocan_arr.at[p, :n].set(_h2ocan_new)
+        tleaf_arr = tleaf_arr.at[p, :n, :].set(_tleaf_new)
+        lwp_arr = lwp_arr.at[p, :n, :].set(_lwp_new)
+        tg_arr = tg_arr.at[p].set(_tg_new)
 
     # ------------------------------------------------------------------
     # Write all updated arrays back into the immutable state container
     # ------------------------------------------------------------------
     mlcanopy_inst = mlcanopy_inst._replace(
-        dtair_profile    = dtair_arr,
-        deair_profile    = deair_arr,
-        dh2ocan_profile  = dh2ocan_arr,
-        dtleaf_leaf      = dtleaf_arr,
-        dlwp_leaf        = dlwp_arr,
-        dtg_soil         = dtg_arr,
-        tair_profile     = tair_arr,
-        eair_profile     = eair_arr,
-        h2ocan_profile   = h2ocan_arr,
-        tleaf_leaf       = tleaf_arr,
-        lwp_leaf         = lwp_arr,
-        tg_soil          = tg_arr,
+        dtair_profile=dtair_arr,
+        deair_profile=deair_arr,
+        dh2ocan_profile=dh2ocan_arr,
+        dtleaf_leaf=dtleaf_arr,
+        dlwp_leaf=dlwp_arr,
+        dtg_soil=dtg_arr,
+        tair_profile=tair_arr,
+        eair_profile=eair_arr,
+        h2ocan_profile=h2ocan_arr,
+        tleaf_leaf=tleaf_arr,
+        lwp_leaf=lwp_arr,
+        tg_soil=tg_arr,
     )
 
     return mlcanopy_inst
@@ -244,6 +248,7 @@ def RungeKuttaUpdate(
 # ---------------------------------------------------------------------------
 # Public: Butcher tableau initialisation
 # ---------------------------------------------------------------------------
+
 
 def RungeKuttaIni() -> Tuple[Array, Array, Array]:
     """
@@ -278,8 +283,8 @@ def RungeKuttaIni() -> Tuple[Array, Array, Array]:
     """
     # Initialise with spval; specific entries overwritten below
     a = jnp.full((nrk, nrk), spval, dtype=jnp.float64)
-    b = jnp.zeros(nrk,              dtype=jnp.float64)
-    c = jnp.zeros(nrk,              dtype=jnp.float64)
+    b = jnp.zeros(nrk, dtype=jnp.float64)
+    c = jnp.zeros(nrk, dtype=jnp.float64)
 
     if runge_kutta_type == 21:
         # 2nd-order trapezoidal rule (Butcher 1996) — Fortran lines 176-184

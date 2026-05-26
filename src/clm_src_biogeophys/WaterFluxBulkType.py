@@ -14,13 +14,13 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.clm_varcon import ispval, spval as nan    # noqa: F401
-from clm_src_main.decompMod import bounds_type              # noqa: F401
-
+from clm_src_main.clm_varcon import ispval, spval as nan  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
+
 
 class waterfluxbulk_type(NamedTuple):
     """
@@ -38,12 +38,14 @@ class waterfluxbulk_type(NamedTuple):
             Shape ``(endp - begp + 1,)``.
             Fortran: ``qflx_evap_tot_patch(begp:endp)``.
     """
-    qflx_evap_tot_patch: Array   # (n_patch,)
+
+    qflx_evap_tot_patch: Array  # (n_patch,)
 
 
 # ---------------------------------------------------------------------------
 # Initialization helpers (mirror Init / InitAllocate)
 # ---------------------------------------------------------------------------
+
 
 def InitAllocate(bounds: bounds_type) -> waterfluxbulk_type:
     """
@@ -61,7 +63,8 @@ def InitAllocate(bounds: bounds_type) -> waterfluxbulk_type:
         A fully initialised :class:`waterfluxbulk_type` with every
         element set to ``nan`` (``spval``).
     """
-    begp = bounds.begp;  endp = bounds.endp    # Fortran line 52
+    begp = bounds.begp
+    endp = bounds.endp  # Fortran line 52
 
     n_patch = endp - begp + 1
 

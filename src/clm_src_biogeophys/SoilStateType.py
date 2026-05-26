@@ -13,10 +13,10 @@ from clm_src_main.clm_varpar import nlevgrnd, nlevsno, nlevsoi
 from clm_src_main.clm_varcon import spval as nan
 from clm_src_main.decompMod import bounds_type
 
-
 # ---------------------------------------------------------------------------
 # soilstate_type
 # ---------------------------------------------------------------------------
+
 
 class soilstate_type(NamedTuple):
     """
@@ -73,34 +73,36 @@ class soilstate_type(NamedTuple):
         rootfr_patch:   Effective fraction of roots in each soil layer,
                         shape ``(endp+1, nlevgrnd+1)``.
     """
+
     # sand / clay / organic matter
-    cellorg_col:   jnp.ndarray   # (endc+1, nlevsoi+1)
-    cellsand_col:  jnp.ndarray   # (endc+1, nlevsoi+1)
-    cellclay_col:  jnp.ndarray   # (endc+1, nlevsoi+1)
+    cellorg_col: jnp.ndarray  # (endc+1, nlevsoi+1)
+    cellsand_col: jnp.ndarray  # (endc+1, nlevsoi+1)
+    cellclay_col: jnp.ndarray  # (endc+1, nlevsoi+1)
 
     # hydraulic properties
-    hksat_col:     jnp.ndarray   # (endc+1, nlevgrnd+1)
-    hk_l_col:      jnp.ndarray   # (endc+1, nlevgrnd+1)
-    smp_l_col:     jnp.ndarray   # (endc+1, nlevgrnd+1)
-    bsw_col:       jnp.ndarray   # (endc+1, nlevgrnd+1)
-    watsat_col:    jnp.ndarray   # (endc+1, nlevgrnd+1)
-    sucsat_col:    jnp.ndarray   # (endc+1, nlevgrnd+1)
-    dsl_col:       jnp.ndarray   # (endc+1,)
-    soilresis_col: jnp.ndarray   # (endc+1,)
+    hksat_col: jnp.ndarray  # (endc+1, nlevgrnd+1)
+    hk_l_col: jnp.ndarray  # (endc+1, nlevgrnd+1)
+    smp_l_col: jnp.ndarray  # (endc+1, nlevgrnd+1)
+    bsw_col: jnp.ndarray  # (endc+1, nlevgrnd+1)
+    watsat_col: jnp.ndarray  # (endc+1, nlevgrnd+1)
+    sucsat_col: jnp.ndarray  # (endc+1, nlevgrnd+1)
+    dsl_col: jnp.ndarray  # (endc+1,)
+    soilresis_col: jnp.ndarray  # (endc+1,)
 
     # thermal conductivity / heat capacity
-    thk_col:       jnp.ndarray   # (endc+1, nlevsno+nlevgrnd+1)
-    tkmg_col:      jnp.ndarray   # (endc+1, nlevgrnd+1)
-    tkdry_col:     jnp.ndarray   # (endc+1, nlevgrnd+1)
-    csol_col:      jnp.ndarray   # (endc+1, nlevgrnd+1)
+    thk_col: jnp.ndarray  # (endc+1, nlevsno+nlevgrnd+1)
+    tkmg_col: jnp.ndarray  # (endc+1, nlevgrnd+1)
+    tkdry_col: jnp.ndarray  # (endc+1, nlevgrnd+1)
+    csol_col: jnp.ndarray  # (endc+1, nlevgrnd+1)
 
     # roots
-    rootfr_patch:  jnp.ndarray   # (endp+1, nlevgrnd+1)
+    rootfr_patch: jnp.ndarray  # (endp+1, nlevgrnd+1)
 
 
 # ---------------------------------------------------------------------------
 # create_soilstate  (replaces Fortran Init + InitAllocate)
 # ---------------------------------------------------------------------------
+
 
 def create_soilstate(bounds: bounds_type) -> soilstate_type:
     """
@@ -139,31 +141,31 @@ def create_soilstate(bounds: bounds_type) -> soilstate_type:
     def _rc(*shape: int) -> jnp.ndarray:
         return jnp.full(shape, nan, dtype=jnp.float64)
 
-    nc  = endc + 1                    # column dimension
-    ng  = nlevgrnd + 1                # 1:nlevgrnd → index 0 unused
-    ns  = nlevsoi  + 1                # 1:nlevsoi  → index 0 unused
-    nth = nlevsno  + nlevgrnd + 1     # -nlevsno+1:nlevgrnd
-    np_ = endp + 1                    # patch dimension
+    nc = endc + 1  # column dimension
+    ng = nlevgrnd + 1  # 1:nlevgrnd → index 0 unused
+    ns = nlevsoi + 1  # 1:nlevsoi  → index 0 unused
+    nth = nlevsno + nlevgrnd + 1  # -nlevsno+1:nlevgrnd
+    np_ = endp + 1  # patch dimension
 
     return soilstate_type(
         # sand / clay / organic matter
-        cellorg_col   = _rc(nc, ns),
-        cellsand_col  = _rc(nc, ns),
-        cellclay_col  = _rc(nc, ns),
+        cellorg_col=_rc(nc, ns),
+        cellsand_col=_rc(nc, ns),
+        cellclay_col=_rc(nc, ns),
         # hydraulic properties
-        hksat_col     = _rc(nc, ng),
-        hk_l_col      = _rc(nc, ng),
-        smp_l_col     = _rc(nc, ng),
-        bsw_col       = _rc(nc, ng),
-        watsat_col    = _rc(nc, ng),
-        sucsat_col    = _rc(nc, ng),
-        dsl_col       = _rc(nc),
-        soilresis_col = _rc(nc),
+        hksat_col=_rc(nc, ng),
+        hk_l_col=_rc(nc, ng),
+        smp_l_col=_rc(nc, ng),
+        bsw_col=_rc(nc, ng),
+        watsat_col=_rc(nc, ng),
+        sucsat_col=_rc(nc, ng),
+        dsl_col=_rc(nc),
+        soilresis_col=_rc(nc),
         # thermal conductivity / heat capacity
-        thk_col       = _rc(nc, nth),
-        tkmg_col      = _rc(nc, ng),
-        tkdry_col     = _rc(nc, ng),
-        csol_col      = _rc(nc, ng),
+        thk_col=_rc(nc, nth),
+        tkmg_col=_rc(nc, ng),
+        tkdry_col=_rc(nc, ng),
+        csol_col=_rc(nc, ng),
         # roots
-        rootfr_patch  = _rc(np_, ng),
+        rootfr_patch=_rc(np_, ng),
     )

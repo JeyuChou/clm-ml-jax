@@ -32,33 +32,34 @@ import jax.numpy as jnp
 def _tridiag_py(a, b, c, r, n):
     """Thomas algorithm using pure Python lists — no JAX, no numpy."""
     gam = [0.0] * (n + 1)
-    u   = [0.0] * (n + 1)
+    u = [0.0] * (n + 1)
     bet = b[1]
     u[1] = r[1] / bet
     for j in range(2, n + 1):
         gam[j] = c[j - 1] / bet
-        bet     = b[j] - a[j] * gam[j]
-        u[j]    = (r[j] - a[j] * u[j - 1]) / bet
+        bet = b[j] - a[j] * gam[j]
+        u[j] = (r[j] - a[j] * u[j - 1]) / bet
     for j in range(n - 1, 0, -1):
         u[j] = u[j] - gam[j + 1] * u[j + 1]
     return u
 
-from clm_src_main.abortutils import endrun                           # noqa: F401
-from clm_src_main.clm_varctl import iulog                           # noqa: F401
-from clm_src_main.decompMod import bounds_type                      # noqa: F401
-from clm_src_main.clm_varcon import sb                              # noqa: F401
-from clm_src_main.PatchType import patch                            # noqa: F401
-from multilayer_canopy.MLclm_varcon import emg                           # noqa: F401
-from multilayer_canopy.MLclm_varctl import longwave_type, GridInfo       # noqa: F401
-from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan         # noqa: F401
-from multilayer_canopy.MLMathToolsMod import tridiag                     # noqa: F401
-from multilayer_canopy.MLpftconMod import MLpftcon                       # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type           # noqa: F401
 
+from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varctl import iulog  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
+from clm_src_main.clm_varcon import sb  # noqa: F401
+from clm_src_main.PatchType import patch  # noqa: F401
+from multilayer_canopy.MLclm_varcon import emg  # noqa: F401
+from multilayer_canopy.MLclm_varctl import longwave_type, GridInfo  # noqa: F401
+from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan  # noqa: F401
+from multilayer_canopy.MLMathToolsMod import tridiag  # noqa: F401
+from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Public driver
 # ---------------------------------------------------------------------------
+
 
 def LongwaveRadiation(
     bounds: bounds_type,
@@ -88,13 +89,14 @@ def LongwaveRadiation(
     if longwave_type == 1:
         return _Norman(bounds, num_filter, filter_patch, mlcanopy_inst, grid=grid)
     else:
-        endrun(msg=' ERROR: LongwaveRadiation: longwave_type not valid')
-        return mlcanopy_inst    # Unreachable; satisfies type checker
+        endrun(msg=" ERROR: LongwaveRadiation: longwave_type not valid")
+        return mlcanopy_inst  # Unreachable; satisfies type checker
 
 
 # ---------------------------------------------------------------------------
 # Private: Norman (1979) longwave radiative transfer
 # ---------------------------------------------------------------------------
+
 
 @partial(jax.jit, static_argnums=(0, 1, 2))
 def _Norman_patch(
@@ -113,25 +115,25 @@ def _Norman_patch(
     neq: int = (nlevmlcan + 1) * 2
     emleaf = MLpftcon.emleaf
 
-    pft     = patch.itype[p]              # dynamic gather — valid in JIT
+    pft = patch.itype[p]  # dynamic gather — valid in JIT
     em_leaf = emleaf[pft]
-    rho     = 1.0 - em_leaf
-    tau     = 0.0
+    rho = 1.0 - em_leaf
+    tau = 0.0
 
     _tleaf_sun = mlcanopy_inst.tleaf_leaf[p, :, isun]
     _tleaf_sha = mlcanopy_inst.tleaf_leaf[p, :, isha]
-    _fracsun   = mlcanopy_inst.fracsun_profile[p]
-    _td        = mlcanopy_inst.td_profile[p]
-    _dpai      = mlcanopy_inst.dpai_profile[p]
-    _lwsky_p   = mlcanopy_inst.lwsky_forcing[p]
-    _tg_p      = mlcanopy_inst.tg_soil[p]
+    _fracsun = mlcanopy_inst.fracsun_profile[p]
+    _td = mlcanopy_inst.td_profile[p]
+    _dpai = mlcanopy_inst.dpai_profile[p]
+    _lwsky_p = mlcanopy_inst.lwsky_forcing[p]
+    _tg_p = mlcanopy_inst.tg_soil[p]
 
     # Layer emission — JAX vectorised
-    ics = jnp.arange(nbot, ntop + 1)          # static size: ntop-nbot+1
+    ics = jnp.arange(nbot, ntop + 1)  # static size: ntop-nbot+1
     lw_source = jnp.zeros(nlevmlcan + 2)
-    lw_sun    = em_leaf * sb * _tleaf_sun[ics] ** 4
-    lw_sha    = em_leaf * sb * _tleaf_sha[ics] ** 4
-    fs_arr    = _fracsun[ics]
+    lw_sun = em_leaf * sb * _tleaf_sun[ics] ** 4
+    lw_sha = em_leaf * sb * _tleaf_sha[ics] ** 4
+    fs_arr = _fracsun[ics]
     lw_source = lw_source.at[ics].set(
         (lw_sun * fs_arr + lw_sha * (1.0 - fs_arr)) * (1.0 - _td[ics])
     )
@@ -147,74 +149,85 @@ def _Norman_patch(
     atri[m] = jnp.zeros(())
     btri[m] = jnp.ones(())
     ctri[m] = -(1.0 - emg)
-    dtri[m] = emg * sb * _tg_p ** 4
+    dtri[m] = emg * sb * _tg_p**4
 
     td_nb = _td[nbot]
     refld = (1.0 - td_nb) * rho
     trand = (1.0 - td_nb) * tau + td_nb
-    aic   = refld - trand * trand / refld
-    bic   = trand / refld
+    aic = refld - trand * trand / refld
+    bic = trand / refld
     m += 1
     atri[m] = -aic
     btri[m] = jnp.ones(())
     ctri[m] = -bic
     dtri[m] = (1.0 - bic) * lw_source[nbot]
 
-    for ic in range(nbot, ntop):           # static loop — unrolled at trace time
+    for ic in range(nbot, ntop):  # static loop — unrolled at trace time
         td_ic = _td[ic]
         refld = (1.0 - td_ic) * rho
         trand = (1.0 - td_ic) * tau + td_ic
-        fic   = refld - trand * trand / refld
-        eic   = trand / refld
+        fic = refld - trand * trand / refld
+        eic = trand / refld
         m += 1
-        atri[m] = -eic;  btri[m] = jnp.ones(())
-        ctri[m] = -fic;  dtri[m] = (1.0 - eic) * lw_source[ic]
+        atri[m] = -eic
+        btri[m] = jnp.ones(())
+        ctri[m] = -fic
+        dtri[m] = (1.0 - eic) * lw_source[ic]
 
-        ic1    = ic + 1
+        ic1 = ic + 1
         td_ic1 = _td[ic1]
-        refld  = (1.0 - td_ic1) * rho
-        trand  = (1.0 - td_ic1) * tau + td_ic1
-        aic    = refld - trand * trand / refld
-        bic    = trand / refld
+        refld = (1.0 - td_ic1) * rho
+        trand = (1.0 - td_ic1) * tau + td_ic1
+        aic = refld - trand * trand / refld
+        bic = trand / refld
         m += 1
-        atri[m] = -aic;  btri[m] = jnp.ones(())
-        ctri[m] = -bic;  dtri[m] = (1.0 - bic) * lw_source[ic1]
+        atri[m] = -aic
+        btri[m] = jnp.ones(())
+        ctri[m] = -bic
+        dtri[m] = (1.0 - bic) * lw_source[ic1]
 
-    ic    = ntop
+    ic = ntop
     td_ic = _td[ic]
     refld = (1.0 - td_ic) * rho
     trand = (1.0 - td_ic) * tau + td_ic
-    fic   = refld - trand * trand / refld
-    eic   = trand / refld
+    fic = refld - trand * trand / refld
+    eic = trand / refld
     m += 1
-    atri[m] = -eic;  btri[m] = jnp.ones(())
-    ctri[m] = -fic;  dtri[m] = (1.0 - eic) * lw_source[ic]
+    atri[m] = -eic
+    btri[m] = jnp.ones(())
+    ctri[m] = -fic
+    dtri[m] = (1.0 - eic) * lw_source[ic]
 
     m += 1
-    atri[m] = jnp.zeros(());  btri[m] = jnp.ones(())
-    ctri[m] = jnp.zeros(());  dtri[m] = _lwsky_p
+    atri[m] = jnp.zeros(())
+    btri[m] = jnp.ones(())
+    ctri[m] = jnp.zeros(())
+    dtri[m] = _lwsky_p
 
     utri = _tridiag_py(atri, btri, ctri, dtri, m)
 
     lwupw_new = jnp.zeros(nlevmlcan + 2)
     lwdwn_new = jnp.zeros(nlevmlcan + 2)
     k = 0
-    k += 1;  lwupw_new = lwupw_new.at[0].set(utri[k])
-    k += 1;  lwdwn_new = lwdwn_new.at[0].set(utri[k])
-    for ic in range(nbot, ntop + 1):       # static loop
-        k += 1;  lwupw_new = lwupw_new.at[ic].set(utri[k])
-        k += 1;  lwdwn_new = lwdwn_new.at[ic].set(utri[k])
+    k += 1
+    lwupw_new = lwupw_new.at[0].set(utri[k])
+    k += 1
+    lwdwn_new = lwdwn_new.at[0].set(utri[k])
+    for ic in range(nbot, ntop + 1):  # static loop
+        k += 1
+        lwupw_new = lwupw_new.at[ic].set(utri[k])
+        k += 1
+        lwdwn_new = lwdwn_new.at[ic].set(utri[k])
 
     _lwsoi_p = lwdwn_new[0] - lwupw_new[0]
 
-    icm1s     = jnp.where(ics == nbot, 0, ics - 1)
-    lwabs_arr = (em_leaf
-                 * (lwdwn_new[ics] + lwupw_new[icm1s])
-                 * (1.0 - _td[ics])
-                 - 2.0 * lw_source[ics])
-    dpai_ics   = _dpai[ics]
+    icm1s = jnp.where(ics == nbot, 0, ics - 1)
+    lwabs_arr = (
+        em_leaf * (lwdwn_new[ics] + lwupw_new[icm1s]) * (1.0 - _td[ics]) - 2.0 * lw_source[ics]
+    )
+    dpai_ics = _dpai[ics]
     lwleaf_arr = lwabs_arr / dpai_ics
-    _lwveg_p   = jnp.sum(lwabs_arr)
+    _lwveg_p = jnp.sum(lwabs_arr)
 
     lwleaf_new = jnp.zeros(nlevmlcan + 2)
     lwleaf_new = lwleaf_new.at[ics].set(lwleaf_arr)
@@ -224,21 +237,27 @@ def _Norman_patch(
     # Conservation check — JIT-compatible via debug.callback
     err = (_lwsky_p - _lwup_p) - (_lwveg_p + _lwsoi_p)
     jax.debug.callback(
-        lambda e: endrun(msg='ERROR: Norman: total longwave conservation error')
-        if abs(float(e)) > 1.0e-3 else None,
+        lambda e: (
+            endrun(msg="ERROR: Norman: total longwave conservation error")
+            if abs(float(e)) > 1.0e-3
+            else None
+        ),
         err,
     )
 
     _sl = slice(0, ntop + 1)
     return mlcanopy_inst._replace(
-        lwup_canopy   = mlcanopy_inst.lwup_canopy.at[p].set(_lwup_p),
-        lwveg_canopy  = mlcanopy_inst.lwveg_canopy.at[p].set(_lwveg_p),
-        lwsoi_soil    = mlcanopy_inst.lwsoi_soil.at[p].set(_lwsoi_p),
-        lwleaf_leaf   = (mlcanopy_inst.lwleaf_leaf
-                         .at[p, _sl, isun].set(lwleaf_new[_sl])
-                         .at[p, _sl, isha].set(lwleaf_new[_sl])),
-        lwupw_profile = mlcanopy_inst.lwupw_profile.at[p, _sl].set(lwupw_new[_sl]),
-        lwdwn_profile = mlcanopy_inst.lwdwn_profile.at[p, _sl].set(lwdwn_new[_sl]),
+        lwup_canopy=mlcanopy_inst.lwup_canopy.at[p].set(_lwup_p),
+        lwveg_canopy=mlcanopy_inst.lwveg_canopy.at[p].set(_lwveg_p),
+        lwsoi_soil=mlcanopy_inst.lwsoi_soil.at[p].set(_lwsoi_p),
+        lwleaf_leaf=(
+            mlcanopy_inst.lwleaf_leaf.at[p, _sl, isun]
+            .set(lwleaf_new[_sl])
+            .at[p, _sl, isha]
+            .set(lwleaf_new[_sl])
+        ),
+        lwupw_profile=mlcanopy_inst.lwupw_profile.at[p, _sl].set(lwupw_new[_sl]),
+        lwdwn_profile=mlcanopy_inst.lwdwn_profile.at[p, _sl].set(lwdwn_new[_sl]),
     )
 
 
@@ -313,7 +332,7 @@ def _Norman(
     bounds and ``jnp.arange(nbot, ntop+1)`` inside the kernel.
     """
     for fp in range(num_filter):
-        p    = grid.p if grid is not None else filter_patch[fp]
+        p = grid.p if grid is not None else filter_patch[fp]
         ntop = grid.ntop if grid is not None else int(mlcanopy_inst.ntop_canopy[p])
         nbot = grid.nbot if grid is not None else int(mlcanopy_inst.nbot_canopy[p])
         mlcanopy_inst = _Norman_patch(p, ntop, nbot, mlcanopy_inst)

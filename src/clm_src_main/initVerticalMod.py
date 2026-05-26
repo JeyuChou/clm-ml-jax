@@ -12,24 +12,24 @@ Fortran lines 1-115
 
 import jax.numpy as jnp
 
-from clm_src_main.decompMod import bounds_type                          # noqa: F401
-from clm_src_main.abortutils import endrun                              # noqa: F401
-from clm_src_main.clm_varpar import nlevsoi, nlevgrnd                   # noqa: F401
-from clm_src_main.clm_varcon import zmin_bedrock                        # noqa: F401
-from offline_driver.clmSoilOptionMod import clm_phys                      # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
+from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varpar import nlevsoi, nlevgrnd  # noqa: F401
+from clm_src_main.clm_varcon import zmin_bedrock  # noqa: F401
+from offline_driver.clmSoilOptionMod import clm_phys  # noqa: F401
 import offline_driver.TowerDataMod as TowerDataMod
-
 
 # ---------------------------------------------------------------------------
 # Module-level constant (Fortran line 38)
 # ---------------------------------------------------------------------------
 
-scalez: float = 0.025    # Soil layer thickness discretization (m)
+scalez: float = 0.025  # Soil layer thickness discretization (m)
 
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
 
 def initVertical(bounds: bounds_type) -> None:
     """
@@ -72,44 +72,41 @@ def initVertical(bounds: bounds_type) -> None:
     global_col = column_module.col
 
     # Unpack mutable column arrays (Fortran associate block, lines 44-49)
-    dz       = global_col.dz          # Soil layer thickness (m)
-    z        = global_col.z           # Soil layer depth (m)
-    zi       = global_col.zi          # Soil layer depth at layer interface (m)
-    nbedrock = global_col.nbedrock    # Depth to bedrock index
+    dz = global_col.dz  # Soil layer thickness (m)
+    z = global_col.z  # Soil layer depth (m)
+    zi = global_col.zi  # Soil layer depth at layer interface (m)
+    nbedrock = global_col.nbedrock  # Depth to bedrock index
 
-    begc = bounds.begc;  endc = bounds.endc    # Fortran line 51
+    begc = bounds.begc
+    endc = bounds.endc  # Fortran line 51
 
     # ------------------------------------------------------------------
     # Define CLM layer structure for soil — Fortran lines 53-98
     # ------------------------------------------------------------------
-    for c in range(begc, endc + 1):            # Fortran: do c = begc, endc
+    for c in range(begc, endc + 1):  # Fortran: do c = begc, endc
 
-        if clm_phys == 'CLM4_5':
+        if clm_phys == "CLM4_5":
             # --------------------------------------------------------
             # CLM4.5 exponential grid — Fortran lines 55-72
             # --------------------------------------------------------
 
             # Layer depths — Fortran lines 57-59
             for j in range(1, nlevgrnd + 1):
-                z = z.at[c, j].set(
-                    scalez * (jnp.exp(0.5 * (j - 0.5)) - 1.0)
-                )
+                z = z.at[c, j].set(scalez * (jnp.exp(0.5 * (j - 0.5)) - 1.0))
 
             # Layer thickness — Fortran lines 61-65
             dz = dz.at[c, 1].set(0.5 * (z[c, 1] + z[c, 2]))
-            for j in range(2, nlevgrnd):       # j = 2, nlevgrnd-1
+            for j in range(2, nlevgrnd):  # j = 2, nlevgrnd-1
                 dz = dz.at[c, j].set(0.5 * (z[c, j + 1] - z[c, j - 1]))
             dz = dz.at[c, nlevgrnd].set(z[c, nlevgrnd] - z[c, nlevgrnd - 1])
 
             # Interface depths — Fortran lines 67-71
             zi = zi.at[c, 0].set(0.0)
-            for j in range(1, nlevgrnd):       # j = 1, nlevgrnd-1
+            for j in range(1, nlevgrnd):  # j = 1, nlevgrnd-1
                 zi = zi.at[c, j].set(0.5 * (z[c, j] + z[c, j + 1]))
-            zi = zi.at[c, nlevgrnd].set(
-                z[c, nlevgrnd] + 0.5 * dz[c, nlevgrnd]
-            )
+            zi = zi.at[c, nlevgrnd].set(z[c, nlevgrnd] + 0.5 * dz[c, nlevgrnd])
 
-        elif clm_phys == 'CLM5_0':
+        elif clm_phys == "CLM5_0":
             # --------------------------------------------------------
             # CLM5.0 piecewise grid — Fortran lines 74-96
             # --------------------------------------------------------
@@ -128,35 +125,31 @@ def initVertical(bounds: bounds_type) -> None:
 
             # Layer thickness: bedrock layers — Fortran lines 88-90
             for j in range(nlevsoi + 1, nlevgrnd + 1):
-                dz = dz.at[c, j].set(
-                    dz[c, nlevsoi] + (((j - nlevsoi) * 25.0) ** 1.5) / 100.0
-                )
+                dz = dz.at[c, j].set(dz[c, nlevsoi] + (((j - nlevsoi) * 25.0) ** 1.5) / 100.0)
 
             # Interface depths: cumulative sum of thicknesses — Fortran lines 92-94
             zi = zi.at[c, 0].set(0.0)
             for j in range(1, nlevgrnd + 1):
-                zi = zi.at[c, j].set(
-                    float(jnp.sum(dz[c, 1:j + 1]))
-                )
+                zi = zi.at[c, j].set(float(jnp.sum(dz[c, 1 : j + 1])))
 
             # Layer depths: midpoint of interfaces — Fortran lines 96-98
             for j in range(1, nlevgrnd + 1):
                 z = z.at[c, j].set(0.5 * (zi[c, j - 1] + zi[c, j]))
 
         else:
-            endrun(msg=' ERROR: initVertical: clm_phys not valid')
+            endrun(msg=" ERROR: initVertical: clm_phys not valid")
 
     # ------------------------------------------------------------------
     # Set column bedrock index — Fortran lines 100-112
     # ------------------------------------------------------------------
-    for c in range(begc, endc + 1):            # Fortran: do c = begc, endc
+    for c in range(begc, endc + 1):  # Fortran: do c = begc, endc
 
         # Depth to bedrock for the tower site — Fortran line 103
         zbedrock = float(TowerDataMod.tower_zbed[TowerDataMod.tower_num])
 
         # Minimum index for minimum soil depth (jmin_bedrock) — Fortran lines 105-109
         jmin_bedrock = 3
-        for j in range(3, nlevsoi + 1):        # Fortran: do j = 3, nlevsoi
+        for j in range(3, nlevsoi + 1):  # Fortran: do j = 3, nlevsoi
             if float(zi[c, j - 1]) < zmin_bedrock <= float(zi[c, j]):
                 jmin_bedrock = j
 
@@ -172,13 +165,14 @@ def initVertical(bounds: bounds_type) -> None:
     # col.snl is set to ispval by init_column; the first real value is 0.
     # ------------------------------------------------------------------
     import jax.numpy as _jnp
+
     snl_zeros = _jnp.zeros_like(global_col.snl)
     updated_col = global_col._replace(
-        snl      = snl_zeros,
-        dz       = dz,
-        z        = z,
-        zi       = zi,
-        nbedrock = nbedrock,
+        snl=snl_zeros,
+        dz=dz,
+        z=z,
+        zi=zi,
+        nbedrock=nbedrock,
     )
 
     # Update the global col in ColumnType module

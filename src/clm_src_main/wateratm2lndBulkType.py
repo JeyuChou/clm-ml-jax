@@ -14,13 +14,13 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.clm_varpar import numrad      # noqa: F401
+from clm_src_main.clm_varpar import numrad  # noqa: F401
 from clm_src_main.decompMod import bounds_type  # noqa: F401
-
 
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
+
 
 class wateratm2lndbulk_type(NamedTuple):
     """
@@ -42,14 +42,16 @@ class wateratm2lndbulk_type(NamedTuple):
             (mm/s). Shape ``(endc - begc + 1,)``.
             Fortran: ``forc_snow_downscaled_col(begc:endc)``.
     """
-    forc_q_downscaled_col:    Array   # (n_col,)
-    forc_rain_downscaled_col: Array   # (n_col,)
-    forc_snow_downscaled_col: Array   # (n_col,)
+
+    forc_q_downscaled_col: Array  # (n_col,)
+    forc_rain_downscaled_col: Array  # (n_col,)
+    forc_snow_downscaled_col: Array  # (n_col,)
 
 
 # ---------------------------------------------------------------------------
 # Initialization helpers (mirror Init / InitAllocate)
 # ---------------------------------------------------------------------------
+
 
 def InitAllocate(bounds: bounds_type) -> wateratm2lndbulk_type:
     """
@@ -67,15 +69,17 @@ def InitAllocate(bounds: bounds_type) -> wateratm2lndbulk_type:
         A fully initialised :class:`wateratm2lndbulk_type` with every
         element set to ``0.0``.
     """
-    ival = jnp.float64(0.0)                      # Fortran line 52: ival = 0.0_r8
+    ival = jnp.float64(0.0)  # Fortran line 52: ival = 0.0_r8
 
-    begg = bounds.begg;  endg = bounds.endg      # Fortran lines 55-56
-    begc = bounds.begc;  endc = bounds.endc      # Fortran lines 55-56
+    begg = bounds.begg
+    endg = bounds.endg  # Fortran lines 55-56
+    begc = bounds.begc
+    endc = bounds.endc  # Fortran lines 55-56
 
     n_col = endc - begc + 1
 
     # Fortran: allocate(this%forc_q_downscaled_col(begc:endc)); ... = ival
-    forc_q_downscaled_col    = jnp.full((n_col,), ival, dtype=jnp.float64)
+    forc_q_downscaled_col = jnp.full((n_col,), ival, dtype=jnp.float64)
 
     # Fortran: allocate(this%forc_rain_downscaled_col(begc:endc)); ... = ival
     forc_rain_downscaled_col = jnp.full((n_col,), ival, dtype=jnp.float64)
@@ -84,9 +88,9 @@ def InitAllocate(bounds: bounds_type) -> wateratm2lndbulk_type:
     forc_snow_downscaled_col = jnp.full((n_col,), ival, dtype=jnp.float64)
 
     return wateratm2lndbulk_type(
-        forc_q_downscaled_col    = forc_q_downscaled_col,
-        forc_rain_downscaled_col = forc_rain_downscaled_col,
-        forc_snow_downscaled_col = forc_snow_downscaled_col,
+        forc_q_downscaled_col=forc_q_downscaled_col,
+        forc_rain_downscaled_col=forc_rain_downscaled_col,
+        forc_snow_downscaled_col=forc_snow_downscaled_col,
     )
 
 

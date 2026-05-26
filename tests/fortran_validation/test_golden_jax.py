@@ -39,7 +39,7 @@ import pytest
 # Paths
 # ---------------------------------------------------------------------------
 
-_HERE       = Path(__file__).resolve().parent
+_HERE = Path(__file__).resolve().parent
 _GOLDEN_DIR = _HERE / "golden_IO"
 
 # ---------------------------------------------------------------------------
@@ -53,6 +53,7 @@ ABS_TOL = 1e-15
 # Lazy imports — done at session start to ensure src/ is on sys.path
 # (conftest.py adds it before these run)
 # ---------------------------------------------------------------------------
+
 
 def _import_jax_modules():
     """Return a namespace of all needed JAX functions."""
@@ -76,7 +77,7 @@ def _import_jax_modules():
     return mods
 
 
-_M: dict = {}   # populated on first use by _get
+_M: dict = {}  # populated on first use by _get
 
 
 def _get(mod_dotted: str):
@@ -89,6 +90,7 @@ def _get(mod_dotted: str):
 # ---------------------------------------------------------------------------
 # Helper: temporary module-global override
 # ---------------------------------------------------------------------------
+
 
 @contextlib.contextmanager
 def _override(module_path: str, attr: str, value):
@@ -105,6 +107,7 @@ def _override(module_path: str, attr: str, value):
 # ---------------------------------------------------------------------------
 # Adapters — one per executable
 # ---------------------------------------------------------------------------
+
 
 def _adapt_satvap(inp: dict) -> dict:
     SatVap = _get("multilayer_canopy.MLWaterVaporMod").SatVap
@@ -148,6 +151,7 @@ def _adapt_tridiag(inp: dict) -> dict:
     """tridiag uses 1-based indexing: prepend a sentinel 0 to each array."""
     tridiag = _get("multilayer_canopy.MLMathToolsMod").tridiag
     n = int(inp["n"])
+
     # Golden arrays are 0-indexed length-n; JAX tridiag wants 1-based length-(n+1)
     def _pad(key):
         arr_raw = inp.get(key, [0.0] * n)
@@ -170,10 +174,16 @@ def _adapt_tridiag_2eq(inp: dict) -> dict:
         raw = inp.get(key, [0.0] * n)
         return jnp.array(raw[:n], dtype=jnp.float64)
 
-    a1  = _arr("a1");  b11 = _arr("b11"); b12 = _arr("b12")
-    c1  = _arr("c1");  d1  = _arr("d1")
-    a2  = _arr("a2");  b21 = _arr("b21"); b22 = _arr("b22")
-    c2  = _arr("c2");  d2  = _arr("d2")
+    a1 = _arr("a1")
+    b11 = _arr("b11")
+    b12 = _arr("b12")
+    c1 = _arr("c1")
+    d1 = _arr("d1")
+    a2 = _arr("a2")
+    b21 = _arr("b21")
+    b22 = _arr("b22")
+    c2 = _arr("c2")
+    d2 = _arr("d2")
 
     t, q = tridiag_2eq(a1, b11, b12, c1, d1, a2, b21, b22, c2, d2, n)
     out = {}
@@ -243,6 +253,7 @@ def _adapt_get_prsc(inp: dict) -> dict:
 def _adapt_get_psi_rsl(inp: dict) -> dict:
     """_GetPsiRSL_scalar uses RSL lookup tables (initialized in conftest)."""
     from tests.fortran_validation.conftest import RSL_AVAILABLE
+
     if not RSL_AVAILABLE:
         pytest.skip("RSL psihat lookup tables unavailable (netCDF4 load failed)")
     turb = _get("multilayer_canopy.MLCanopyTurbulenceMod")
@@ -250,9 +261,9 @@ def _adapt_get_psi_rsl(inp: dict) -> dict:
         inp["za"], inp["hc"], inp["disp"], inp["obu"], inp["beta"], inp["PrSc"]
     )
     return {
-        "psim":      float(psim),
-        "psic":      float(psic),
-        "psim2":     float(psim2),
+        "psim": float(psim),
+        "psic": float(psic),
+        "psim2": float(psim2),
         "psim_hat2": float(psim_hat2),
     }
 
@@ -266,15 +277,15 @@ def _adapt_wetted_fraction(inp: dict) -> dict:
     """
     varcon = _get("multilayer_canopy.MLclm_varcon")
     h2ocan = float(inp["h2ocan"])
-    dpai   = float(inp["dpai"])
-    dlai   = float(inp["dlai"])
+    dpai = float(inp["dpai"])
+    dlai = float(inp["dlai"])
 
     if dpai <= 0.0:
         return {"fwet": 0.0, "fdry": 0.0}
 
-    h2ocanmx  = varcon.dewmx * dpai
+    h2ocanmx = varcon.dewmx * dpai
     fwet_base = max(h2ocan / h2ocanmx, 1.0e-30)
-    fwet = min(fwet_base ** varcon.fwet_exponent, varcon.maximum_leaf_wetted_fraction)
+    fwet = min(fwet_base**varcon.fwet_exponent, varcon.maximum_leaf_wetted_fraction)
     fdry = (1.0 - fwet) * dlai / dpai
     return {"fwet": fwet, "fdry": fdry}
 
@@ -287,35 +298,40 @@ def _adapt_leaf_boundary_layer(inp: dict) -> dict:
     calls the per-layer kernel with gb_type set from the golden input.
     gb_type is a module-local binding in MLLeafBoundaryLayerMod.
     """
-    lbl_mod  = _get("multilayer_canopy.MLLeafBoundaryLayerMod")
-    varcon   = _get("multilayer_canopy.MLclm_varcon")
-    clm_var  = _get("clm_src_main.clm_varcon")
+    lbl_mod = _get("multilayer_canopy.MLLeafBoundaryLayerMod")
+    varcon = _get("multilayer_canopy.MLclm_varcon")
+    clm_var = _get("clm_src_main.clm_varcon")
 
-    d       = float(inp["d"])
-    u       = float(inp["u"])
-    tleaf   = float(inp["tleaf"])
-    tair    = float(inp["tair"])
-    tref    = float(inp["tref"])
-    pref    = float(inp["pref"])
-    rhomol  = float(inp["rhomol"])
-    gb_in   = int(inp["gb_type_in"])
+    d = float(inp["d"])
+    u = float(inp["u"])
+    tleaf = float(inp["tleaf"])
+    tair = float(inp["tair"])
+    tref = float(inp["tref"])
+    pref = float(inp["pref"])
+    rhomol = float(inp["rhomol"])
+    gb_in = int(inp["gb_type_in"])
 
     tfrz = clm_var.tfrz
-    fac  = 101325.0 / pref * (tref / tfrz) ** 1.81
-    visc  = varcon.visc0 * fac
-    dh    = varcon.dh0   * fac
-    dv    = varcon.dv0   * fac
-    dc    = varcon.dc0   * fac
+    fac = 101325.0 / pref * (tref / tfrz) ** 1.81
+    visc = varcon.visc0 * fac
+    dh = varcon.dh0 * fac
+    dv = varcon.dv0 * fac
+    dc = varcon.dc0 * fac
     dv_dh = dv / dh
     dc_dh = dc / dh
 
     with _override("multilayer_canopy.MLLeafBoundaryLayerMod", "gb_type", gb_in):
         gbh, gbv, gbc = lbl_mod._gb_layer(
-            jnp.asarray(1.0),     # dpai > 0 so the layer is active
+            jnp.asarray(1.0),  # dpai > 0 so the layer is active
             jnp.asarray(u),
             jnp.asarray(tair),
             jnp.asarray(tleaf),
-            visc, dh, dv_dh, dc_dh, d, rhomol,
+            visc,
+            dh,
+            dv_dh,
+            dc_dh,
+            d,
+            rhomol,
         )
 
     return {"gbh": float(gbh), "gbv": float(gbv), "gbc": float(gbc)}
@@ -340,11 +356,11 @@ def _adapt_runge_kutta_ini(inp: dict) -> dict:
     Unused upper-triangular entries in ``a`` hold spval (1e36) matching Fortran.
     """
     rk_mod = _get("multilayer_canopy.MLRungeKuttaMod")
-    a, b, c = rk_mod.RungeKuttaIni()   # returns (a, b, c) — note order
-    nrk = len(b)                        # number of stages from array length
+    a, b, c = rk_mod.RungeKuttaIni()  # returns (a, b, c) — note order
+    nrk = len(b)  # number of stages from array length
     out = {}
     for i in range(1, nrk + 1):
-        out[f"b_{i}"] = float(b[i - 1])   # 0-based access
+        out[f"b_{i}"] = float(b[i - 1])  # 0-based access
         out[f"c_{i}"] = float(c[i - 1])
     for i in range(1, nrk + 1):
         for j in range(1, nrk + 1):
@@ -374,13 +390,13 @@ def _adapt_nitrogen_scale(inp: dict) -> dict:
       leaf_optics_type == 1:
         nscale_sun = nscale_sha = fn / dpai
     """
-    kn              = float(inp["kn"])
-    pai_above       = float(inp["pai_above"])
-    dpai            = float(inp["dpai"])
-    kb              = float(inp["kb"])
-    clump_fac       = float(inp["clump_fac"])
-    fracsun         = float(inp["fracsun"])
-    tbi             = float(inp["tbi"])
+    kn = float(inp["kn"])
+    pai_above = float(inp["pai_above"])
+    dpai = float(inp["dpai"])
+    kb = float(inp["kb"])
+    clump_fac = float(inp["clump_fac"])
+    fracsun = float(inp["fracsun"])
+    tbi = float(inp["tbi"])
     leaf_optics_type = int(inp["leaf_optics_type_in"])
 
     if dpai <= 0.0:
@@ -393,12 +409,15 @@ def _adapt_nitrogen_scale(inp: dict) -> dict:
         fn = math.exp(-kn * pai_above) * (1.0 - math.exp(-kn * dpai)) / kn
 
     if leaf_optics_type == 0:
-        fn_sun = (clump_fac / (kn + kb * clump_fac)
-                  * math.exp(-kn * pai_above)
-                  * tbi
-                  * (1.0 - math.exp(-(kn + kb * clump_fac) * dpai)))
+        fn_sun = (
+            clump_fac
+            / (kn + kb * clump_fac)
+            * math.exp(-kn * pai_above)
+            * tbi
+            * (1.0 - math.exp(-(kn + kb * clump_fac) * dpai))
+        )
         fn_sha = fn - fn_sun
-        nscale_sun = fn_sun / (fracsun * dpai)       if fracsun > 0.0 else 0.0
+        nscale_sun = fn_sun / (fracsun * dpai) if fracsun > 0.0 else 0.0
         nscale_sha = fn_sha / ((1.0 - fracsun) * dpai) if fracsun < 1.0 else 0.0
     else:
         nscale_sun = nscale_sha = fn / dpai
@@ -409,13 +428,11 @@ def _adapt_nitrogen_scale(inp: dict) -> dict:
 def _adapt_shr_orb_params(inp: dict) -> dict:
     shr_orb_mod = _get("clm_share.shr_orb_mod")
     # shr_orb_params returns (eccen, obliq, mvelp, obliqr, lambm0, mvelpp)
-    eccen, obliq, mvelp, obliqr, lambm0, mvelpp = shr_orb_mod.shr_orb_params(
-        int(inp["iyear_AD"])
-    )
+    eccen, obliq, mvelp, obliqr, lambm0, mvelpp = shr_orb_mod.shr_orb_params(int(inp["iyear_AD"]))
     return {
-        "eccen":  float(eccen),
-        "obliq":  float(obliq),
-        "mvelp":  float(mvelp),
+        "eccen": float(eccen),
+        "obliq": float(obliq),
+        "mvelp": float(mvelp),
         "obliqr": float(obliqr),
         "lambm0": float(lambm0),
         "mvelpp": float(mvelpp),
@@ -432,17 +449,13 @@ def _adapt_shr_orb_decl(inp: dict) -> dict:
     shr_orb_params returns (eccen, obliq, mvelp, obliqr, lambm0, mvelpp).
     """
     shr_orb_mod = _get("clm_share.shr_orb_mod")
-    eccen, obliq, mvelp, obliqr, lambm0, mvelpp = shr_orb_mod.shr_orb_params(
-        int(inp["iyear_AD"])
-    )
-    delta, eccf = shr_orb_mod.shr_orb_decl(
-        float(inp["calday"]), eccen, mvelpp, lambm0, obliqr
-    )
+    eccen, obliq, mvelp, obliqr, lambm0, mvelpp = shr_orb_mod.shr_orb_params(int(inp["iyear_AD"]))
+    delta, eccf = shr_orb_mod.shr_orb_decl(float(inp["calday"]), eccen, mvelpp, lambm0, obliqr)
     return {
-        "eccen":  float(eccen),
+        "eccen": float(eccen),
         "obliqr": float(obliqr),
-        "delta":  float(delta),
-        "eccf":   float(eccf),
+        "delta": float(delta),
+        "eccf": float(eccf),
     }
 
 
@@ -451,31 +464,31 @@ def _adapt_shr_orb_decl(inp: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 ADAPTERS: dict[str, Callable[[dict], dict]] = {
-    "test_MLWaterVaporMod_SatVap.exe":                      _adapt_satvap,
-    "test_MLWaterVaporMod_LatVap.exe":                      _adapt_latvap,
-    "test_MLMathToolsMod_quadratic.exe":                    _adapt_quadratic,
-    "test_MLMathToolsMod_log_gamma_function.exe":           _adapt_log_gamma,
-    "test_MLMathToolsMod_beta_function.exe":                _adapt_beta_function,
-    "test_MLMathToolsMod_beta_distribution_pdf.exe":        _adapt_beta_pdf,
-    "test_MLMathToolsMod_beta_distribution_cdf.exe":        _adapt_beta_cdf,
-    "test_MLMathToolsMod_tridiag.exe":                      _adapt_tridiag,
-    "test_MLMathToolsMod_tridiag_2eq.exe":                  _adapt_tridiag_2eq,
-    "test_MLLeafPhotosynthesisMod_ft.exe":                  _adapt_ft,
-    "test_MLLeafPhotosynthesisMod_fth.exe":                 _adapt_fth,
-    "test_MLLeafPhotosynthesisMod_fth25.exe":               _adapt_fth25,
-    "test_MLLeafPhotosynthesisMod_RealizedRate.exe":        _adapt_realized_rate,
-    "test_MLCanopyTurbulenceMod_phim_monin_obukhov.exe":    _adapt_phim_monin_obukhov,
-    "test_MLCanopyTurbulenceMod_psim_monin_obukhov.exe":    _adapt_psim_monin_obukhov,
-    "test_MLCanopyTurbulenceMod_GetBeta.exe":               _adapt_get_beta,
-    "test_MLCanopyTurbulenceMod_GetPrSc.exe":               _adapt_get_prsc,
-    "test_MLCanopyTurbulenceMod_GetPsiRSL.exe":             _adapt_get_psi_rsl,
-    "test_MLCanopyWaterMod_WettedFraction.exe":             _adapt_wetted_fraction,
-    "test_MLLeafBoundaryLayerMod_LeafBoundaryLayer.exe":    _adapt_leaf_boundary_layer,
-    "test_MLLeafHeatCapacityMod_LeafHeatCapacity.exe":      _adapt_leaf_heat_capacity,
-    "test_MLRungeKuttaMod_RungeKuttaIni.exe":               _adapt_runge_kutta_ini,
-    "test_MLCanopyNitrogenProfileMod_NitrogenScale.exe":    _adapt_nitrogen_scale,
-    "test_shr_orb_mod_shr_orb_params.exe":                  _adapt_shr_orb_params,
-    "test_shr_orb_mod_shr_orb_decl.exe":                    _adapt_shr_orb_decl,
+    "test_MLWaterVaporMod_SatVap.exe": _adapt_satvap,
+    "test_MLWaterVaporMod_LatVap.exe": _adapt_latvap,
+    "test_MLMathToolsMod_quadratic.exe": _adapt_quadratic,
+    "test_MLMathToolsMod_log_gamma_function.exe": _adapt_log_gamma,
+    "test_MLMathToolsMod_beta_function.exe": _adapt_beta_function,
+    "test_MLMathToolsMod_beta_distribution_pdf.exe": _adapt_beta_pdf,
+    "test_MLMathToolsMod_beta_distribution_cdf.exe": _adapt_beta_cdf,
+    "test_MLMathToolsMod_tridiag.exe": _adapt_tridiag,
+    "test_MLMathToolsMod_tridiag_2eq.exe": _adapt_tridiag_2eq,
+    "test_MLLeafPhotosynthesisMod_ft.exe": _adapt_ft,
+    "test_MLLeafPhotosynthesisMod_fth.exe": _adapt_fth,
+    "test_MLLeafPhotosynthesisMod_fth25.exe": _adapt_fth25,
+    "test_MLLeafPhotosynthesisMod_RealizedRate.exe": _adapt_realized_rate,
+    "test_MLCanopyTurbulenceMod_phim_monin_obukhov.exe": _adapt_phim_monin_obukhov,
+    "test_MLCanopyTurbulenceMod_psim_monin_obukhov.exe": _adapt_psim_monin_obukhov,
+    "test_MLCanopyTurbulenceMod_GetBeta.exe": _adapt_get_beta,
+    "test_MLCanopyTurbulenceMod_GetPrSc.exe": _adapt_get_prsc,
+    "test_MLCanopyTurbulenceMod_GetPsiRSL.exe": _adapt_get_psi_rsl,
+    "test_MLCanopyWaterMod_WettedFraction.exe": _adapt_wetted_fraction,
+    "test_MLLeafBoundaryLayerMod_LeafBoundaryLayer.exe": _adapt_leaf_boundary_layer,
+    "test_MLLeafHeatCapacityMod_LeafHeatCapacity.exe": _adapt_leaf_heat_capacity,
+    "test_MLRungeKuttaMod_RungeKuttaIni.exe": _adapt_runge_kutta_ini,
+    "test_MLCanopyNitrogenProfileMod_NitrogenScale.exe": _adapt_nitrogen_scale,
+    "test_shr_orb_mod_shr_orb_params.exe": _adapt_shr_orb_params,
+    "test_shr_orb_mod_shr_orb_decl.exe": _adapt_shr_orb_decl,
     # test_MLCanopyNitrogenProfileMod_CanopyNitrogenProfile.exe:
     #   Requires full mlcanopy_type state initialization — covered separately.
 }
@@ -484,6 +497,7 @@ ADAPTERS: dict[str, Callable[[dict], dict]] = {
 # ---------------------------------------------------------------------------
 # Golden data loading
 # ---------------------------------------------------------------------------
+
 
 def _load_all_cases() -> list:
     if not _GOLDEN_DIR.is_dir():
@@ -526,6 +540,7 @@ if not _ALL_CASES:
 # Parametrized golden test
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("exe, inputs, expected", _ALL_CASES)
 def test_golden_jax(exe: str, inputs: dict, expected: dict):
     """
@@ -535,7 +550,7 @@ def test_golden_jax(exe: str, inputs: dict, expected: dict):
     Tolerance: REL_TOL=1e-9 relative, ABS_TOL=1e-15 absolute guard.
     """
     adapter = ADAPTERS[exe]
-    actual  = adapter(inputs)
+    actual = adapter(inputs)
 
     for key, golden_val in expected.items():
         assert key in actual, (
@@ -543,9 +558,9 @@ def test_golden_jax(exe: str, inputs: dict, expected: dict):
             f"  inputs  = {inputs}\n"
             f"  got keys = {sorted(actual.keys())}"
         )
-        got  = float(actual[key])
+        got = float(actual[key])
         diff = abs(got - golden_val)
-        tol  = REL_TOL * abs(golden_val) + ABS_TOL
+        tol = REL_TOL * abs(golden_val) + ABS_TOL
         assert diff <= tol, (
             f"{exe}: output '{key}' differs from Fortran golden value.\n"
             f"  inputs  = {inputs}\n"

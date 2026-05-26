@@ -14,14 +14,14 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.clm_varpar import nlevgrnd, nlevsno          # noqa: F401
-from clm_src_main.clm_varcon import ispval, spval as nan        # noqa: F401
-from clm_src_main.decompMod import bounds_type                  # noqa: F401
-
+from clm_src_main.clm_varpar import nlevgrnd, nlevsno  # noqa: F401
+from clm_src_main.clm_varcon import ispval, spval as nan  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
+
 
 class waterdiagnosticbulk_type(NamedTuple):
     """
@@ -46,14 +46,16 @@ class waterdiagnosticbulk_type(NamedTuple):
             Shape ``(endc - begc + 1, nlevsno)``.
             Fortran: ``bw_col(begc:endc, -nlevsno+1:0)``.
     """
-    q_ref2m_patch:    Array   # (n_patch,)
-    frac_sno_eff_col: Array   # (n_col,)
-    bw_col:           Array   # (n_col, nlevsno)
+
+    q_ref2m_patch: Array  # (n_patch,)
+    frac_sno_eff_col: Array  # (n_col,)
+    bw_col: Array  # (n_col, nlevsno)
 
 
 # ---------------------------------------------------------------------------
 # Initialization helpers  (mirror Init / InitAllocate)
 # ---------------------------------------------------------------------------
+
 
 def InitAllocate(bounds: bounds_type) -> waterdiagnosticbulk_type:
     """
@@ -71,26 +73,28 @@ def InitAllocate(bounds: bounds_type) -> waterdiagnosticbulk_type:
         A fully initialised :class:`waterdiagnosticbulk_type` with every
         element set to ``nan`` (``spval``).
     """
-    begp = bounds.begp;  endp = bounds.endp   # Fortran lines 55-56
-    begc = bounds.begc;  endc = bounds.endc   # Fortran lines 55-56
+    begp = bounds.begp
+    endp = bounds.endp  # Fortran lines 55-56
+    begc = bounds.begc
+    endc = bounds.endc  # Fortran lines 55-56
 
     n_patch = endp - begp + 1
-    n_col   = endc - begc + 1
+    n_col = endc - begc + 1
 
     # Fortran: allocate(this%q_ref2m_patch(begp:endp)); ... = nan
-    q_ref2m_patch    = jnp.full((n_patch,),          nan, dtype=jnp.float64)
+    q_ref2m_patch = jnp.full((n_patch,), nan, dtype=jnp.float64)
 
     # Fortran: allocate(this%frac_sno_eff_col(begc:endc)); ... = nan
-    frac_sno_eff_col = jnp.full((n_col,),            nan, dtype=jnp.float64)
+    frac_sno_eff_col = jnp.full((n_col,), nan, dtype=jnp.float64)
 
     # Fortran: allocate(this%bw_col(begc:endc, -nlevsno+1:0)); ... = nan
     # Second axis spans snow layers -nlevsno+1 .. 0  => nlevsno levels
-    bw_col           = jnp.full((n_col, nlevsno),    nan, dtype=jnp.float64)
+    bw_col = jnp.full((n_col, nlevsno), nan, dtype=jnp.float64)
 
     return waterdiagnosticbulk_type(
-        q_ref2m_patch    = q_ref2m_patch,
-        frac_sno_eff_col = frac_sno_eff_col,
-        bw_col           = bw_col,
+        q_ref2m_patch=q_ref2m_patch,
+        frac_sno_eff_col=frac_sno_eff_col,
+        bw_col=bw_col,
     )
 
 

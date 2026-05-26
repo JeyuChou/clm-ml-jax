@@ -17,10 +17,10 @@ import numpy as np
 from clm_src_main import clm_varpar  # Import module, not values
 from clm_src_main.clm_varcon import ispval, spval as nan
 
-
 # ---------------------------------------------------------------------------
 # column_type
 # ---------------------------------------------------------------------------
+
 
 class column_type(NamedTuple):
     """
@@ -60,16 +60,18 @@ class column_type(NamedTuple):
         nbedrock: Variable depth-to-bedrock layer index,
                   shape ``(endc+1,)``, initialised to ``ispval``.
     """
-    snl:      jnp.ndarray   # (endc+1,)                    int
-    dz:       jnp.ndarray   # (endc+1, nlevsno+nlevgrnd+1) float
-    z:        jnp.ndarray   # (endc+1, nlevsno+nlevgrnd+1) float
-    zi:       jnp.ndarray   # (endc+1, nlevsno+nlevgrnd+1) float
-    nbedrock: jnp.ndarray   # (endc+1,)                    int
+
+    snl: jnp.ndarray  # (endc+1,)                    int
+    dz: jnp.ndarray  # (endc+1, nlevsno+nlevgrnd+1) float
+    z: jnp.ndarray  # (endc+1, nlevsno+nlevgrnd+1) float
+    zi: jnp.ndarray  # (endc+1, nlevsno+nlevgrnd+1) float
+    nbedrock: jnp.ndarray  # (endc+1,)                    int
 
 
 # ---------------------------------------------------------------------------
 # init_column  (replaces Fortran Init)
 # ---------------------------------------------------------------------------
+
 
 def init_column(begc: int, endc: int) -> column_type:
     """
@@ -102,15 +104,15 @@ def init_column(begc: int, endc: int) -> column_type:
     Returns:
         Initialised :class:`column_type`.
     """
-    nc  = endc + 1                      # column dimension
-    nth = clm_varpar.nlevsno + clm_varpar.nlevgrnd + 1        # layer dimension for dz, z, zi
+    nc = endc + 1  # column dimension
+    nth = clm_varpar.nlevsno + clm_varpar.nlevgrnd + 1  # layer dimension for dz, z, zi
 
     return column_type(
-        snl      = jnp.full((nc,),      ispval, dtype=jnp.int32),
-        dz       = jnp.full((nc, nth),  nan,    dtype=jnp.float64),
-        z        = jnp.full((nc, nth),  nan,    dtype=jnp.float64),
-        zi       = jnp.full((nc, nth),  nan,    dtype=jnp.float64),
-        nbedrock = jnp.full((nc,),      ispval, dtype=jnp.int32),
+        snl=jnp.full((nc,), ispval, dtype=jnp.int32),
+        dz=jnp.full((nc, nth), nan, dtype=jnp.float64),
+        z=jnp.full((nc, nth), nan, dtype=jnp.float64),
+        zi=jnp.full((nc, nth), nan, dtype=jnp.float64),
+        nbedrock=jnp.full((nc,), ispval, dtype=jnp.int32),
     )
 
 

@@ -8,9 +8,6 @@ Note: Temporary version for testing with only abortutils imports.
 """
 
 # Import only abortutils for now to avoid complex dependency chains
-from .abortutils import (
-    endrun, handle_err
-)
-__all__ = [
-    'endrun', 'handle_err'
-]
+from .abortutils import endrun, handle_err
+
+__all__ = ["endrun", "handle_err"]

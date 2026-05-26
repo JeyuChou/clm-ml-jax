@@ -14,13 +14,13 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.clm_varcon import ispval, spval as nan    # noqa: F401
-from clm_src_main.decompMod import bounds_type              # noqa: F401
-
+from clm_src_main.clm_varcon import ispval, spval as nan  # noqa: F401
+from clm_src_main.decompMod import bounds_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
+
 
 class water_type(NamedTuple):
     """
@@ -35,12 +35,14 @@ class water_type(NamedTuple):
             Shape ``(endc - begc + 1,)``.
             Fortran: ``h2osno_col(begc:endc)``.
     """
-    h2osno_col: Array   # (n_col,)
+
+    h2osno_col: Array  # (n_col,)
 
 
 # ---------------------------------------------------------------------------
 # Initialization helpers (mirror Init / InitAllocate)
 # ---------------------------------------------------------------------------
+
 
 def InitAllocate(bounds: bounds_type) -> water_type:
     """
@@ -58,7 +60,8 @@ def InitAllocate(bounds: bounds_type) -> water_type:
         A fully initialised :class:`water_type` with every element
         set to ``nan`` (``spval``).
     """
-    begc = bounds.begc;  endc = bounds.endc    # Fortran lines 53-54
+    begc = bounds.begc
+    endc = bounds.endc  # Fortran lines 53-54
 
     n_col = endc - begc + 1
 

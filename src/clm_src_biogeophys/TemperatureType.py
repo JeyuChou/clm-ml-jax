@@ -14,14 +14,14 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
-from clm_src_main.clm_varpar import nlevgrnd, nlevsno       # col: nlevgrnd, nlevsno
-from clm_src_main.clm_varcon import ispval, spval as nan    # nan => spval
+from clm_src_main.clm_varpar import nlevgrnd, nlevsno  # col: nlevgrnd, nlevsno
+from clm_src_main.clm_varcon import ispval, spval as nan  # nan => spval
 from clm_src_main.decompMod import bounds_type
-
 
 # ---------------------------------------------------------------------------
 # Public data type
 # ---------------------------------------------------------------------------
+
 
 class temperature_type(NamedTuple):
     """
@@ -42,14 +42,16 @@ class temperature_type(NamedTuple):
                        shape ``(endp-begp+1,)``.
                        Fortran: ``real(r8), pointer :: t_ref2m_patch(:)`` (lines 24-24)
     """
-    t_soisno_col:  Array   # (n_col, nlevsno + nlevgrnd)  -- float64, init NaN
-    t_a10_patch:   Array   # (n_patch,)                   -- float64, init NaN
-    t_ref2m_patch: Array   # (n_patch,)                   -- float64, init NaN
+
+    t_soisno_col: Array  # (n_col, nlevsno + nlevgrnd)  -- float64, init NaN
+    t_a10_patch: Array  # (n_patch,)                   -- float64, init NaN
+    t_ref2m_patch: Array  # (n_patch,)                   -- float64, init NaN
 
 
 # ---------------------------------------------------------------------------
 # Initialization helpers  (mirrors Init -> InitAllocate call chain)
 # ---------------------------------------------------------------------------
+
 
 def InitAllocate(bounds: bounds_type) -> temperature_type:
     """
@@ -73,18 +75,18 @@ def InitAllocate(bounds: bounds_type) -> temperature_type:
     begc, endc = bounds.begc, bounds.endc
 
     n_patch = endp - begp + 1
-    n_col   = endc - begc + 1
-    n_lev   = nlevsno + nlevgrnd   # covers index range -nlevsno+1 : nlevgrnd
+    n_col = endc - begc + 1
+    n_lev = nlevsno + nlevgrnd  # covers index range -nlevsno+1 : nlevgrnd
 
     # Fortran lines 60-62: allocate + initialise to nan
-    t_soisno_col  = jnp.full((n_col,  n_lev),  nan, dtype=jnp.float64)
-    t_a10_patch   = jnp.full((n_patch,),        nan, dtype=jnp.float64)
-    t_ref2m_patch = jnp.full((n_patch,),        nan, dtype=jnp.float64)
+    t_soisno_col = jnp.full((n_col, n_lev), nan, dtype=jnp.float64)
+    t_a10_patch = jnp.full((n_patch,), nan, dtype=jnp.float64)
+    t_ref2m_patch = jnp.full((n_patch,), nan, dtype=jnp.float64)
 
     return temperature_type(
-        t_soisno_col  = t_soisno_col,
-        t_a10_patch   = t_a10_patch,
-        t_ref2m_patch = t_ref2m_patch,
+        t_soisno_col=t_soisno_col,
+        t_a10_patch=t_a10_patch,
+        t_ref2m_patch=t_ref2m_patch,
     )
 
 

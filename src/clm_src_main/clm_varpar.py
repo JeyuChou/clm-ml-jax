@@ -13,23 +13,24 @@ from offline_driver.clmSoilOptionMod import clm_phys
 # Mutable layer-count parameters (set by clm_varpar_init)
 # ---------------------------------------------------------------------------
 
-nlevsno:  int = -1   # Maximum number of snow layers
-nlevsoi:  int = -1   # Number of hydrologically active soil layers
-nlevgrnd: int = -1   # Number of ground layers (including hydrologically inactive)
+nlevsno: int = -1  # Maximum number of snow layers
+nlevsoi: int = -1  # Number of hydrologically active soil layers
+nlevgrnd: int = -1  # Number of ground layers (including hydrologically inactive)
 
 # ---------------------------------------------------------------------------
 # Fixed parameters
 # ---------------------------------------------------------------------------
 
-numrad: int = 2   # Number of radiation wavebands
-ivis:   int = 1   # Visible waveband index
-inir:   int = 2   # Near-infrared waveband index
-mxpft:  int = 78  # Maximum number of plant functional types
+numrad: int = 2  # Number of radiation wavebands
+ivis: int = 1  # Visible waveband index
+inir: int = 2  # Near-infrared waveband index
+mxpft: int = 78  # Maximum number of plant functional types
 
 
 # ---------------------------------------------------------------------------
 # clm_varpar_init
 # ---------------------------------------------------------------------------
+
 
 def clm_varpar_init() -> None:
     """
@@ -55,11 +56,11 @@ def clm_varpar_init() -> None:
     """
     global nlevsno, nlevsoi, nlevgrnd
 
-    if clm_phys == 'CLM5_0':
-        nlevsno  = 12
-        nlevsoi  = 20
-        nlevgrnd = nlevsoi + 5       # 25
-    elif clm_phys == 'CLM4_5':
-        nlevsno  = 5
-        nlevsoi  = 10
+    if clm_phys == "CLM5_0":
+        nlevsno = 12
+        nlevsoi = 20
+        nlevgrnd = nlevsoi + 5  # 25
+    elif clm_phys == "CLM4_5":
+        nlevsno = 5
+        nlevsoi = 10
         nlevgrnd = 15

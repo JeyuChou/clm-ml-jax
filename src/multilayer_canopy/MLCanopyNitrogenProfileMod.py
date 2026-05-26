@@ -25,18 +25,21 @@ from typing import Sequence
 import jax
 import jax.numpy as jnp
 
-from clm_src_main.abortutils import endrun                           # noqa: F401
-from clm_src_main.clm_varcon import tfrz                            # noqa: F401
-from clm_src_main.PatchType import patch                            # noqa: F401
-from clm_src_main.pftconMod import pftcon                           # noqa: F401
-from multilayer_canopy.MLclm_varcon import (                             # noqa: F401
-    jmax25_to_vcmax25_noacclim, jmax25_to_vcmax25_acclim,
-    rd25_to_vcmax25_c3, rd25_to_vcmax25_c4, kp25_to_vcmax25_c4,
+from clm_src_main.abortutils import endrun  # noqa: F401
+from clm_src_main.clm_varcon import tfrz  # noqa: F401
+from clm_src_main.PatchType import patch  # noqa: F401
+from clm_src_main.pftconMod import pftcon  # noqa: F401
+from multilayer_canopy.MLclm_varcon import (  # noqa: F401
+    jmax25_to_vcmax25_noacclim,
+    jmax25_to_vcmax25_acclim,
+    rd25_to_vcmax25_c3,
+    rd25_to_vcmax25_c4,
+    kp25_to_vcmax25_c4,
 )
 from multilayer_canopy.MLclm_varctl import acclim_type, kn_val, leaf_optics_type  # noqa: F401
-from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan         # noqa: F401
-from multilayer_canopy.MLpftconMod import MLpftcon                       # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type           # noqa: F401
+from multilayer_canopy.MLclm_varpar import isun, isha, nlevmlcan  # noqa: F401
+from multilayer_canopy.MLpftconMod import MLpftcon  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 
 
 @partial(jax.jit, static_argnums=(0, 1))
@@ -135,41 +138,39 @@ def CanopyNitrogenProfile(
     # Use explicit JAX arg when provided (differentiable path); else module global.
     _vcmaxpft = MLpftcon.vcmaxpft if vcmaxpft_jax is None else vcmaxpft_jax
 
-    vcmax25_leaf    = mlcanopy_inst.vcmax25_leaf
-    jmax25_leaf     = mlcanopy_inst.jmax25_leaf
-    rd25_leaf       = mlcanopy_inst.rd25_leaf
-    kp25_leaf       = mlcanopy_inst.kp25_leaf
+    vcmax25_leaf = mlcanopy_inst.vcmax25_leaf
+    jmax25_leaf = mlcanopy_inst.jmax25_leaf
+    rd25_leaf = mlcanopy_inst.rd25_leaf
+    kp25_leaf = mlcanopy_inst.kp25_leaf
     vcmax25_profile = mlcanopy_inst.vcmax25_profile
-    jmax25_profile  = mlcanopy_inst.jmax25_profile
-    rd25_profile    = mlcanopy_inst.rd25_profile
-    kp25_profile    = mlcanopy_inst.kp25_profile
+    jmax25_profile = mlcanopy_inst.jmax25_profile
+    rd25_profile = mlcanopy_inst.rd25_profile
+    kp25_profile = mlcanopy_inst.kp25_profile
 
-    for fp in range(num_filter):                   # Fortran: do fp = 1, num_filter
-        p   = filter_patch[fp]
-        pft = patch.itype[p]                       # JAX int — dynamic index
+    for fp in range(num_filter):  # Fortran: do fp = 1, num_filter
+        p = filter_patch[fp]
+        pft = patch.itype[p]  # JAX int — dynamic index
 
         # is_c3: JAX boolean scalar; used with jnp.where for differentiable branching
-        is_c3 = jnp.round(c3psn[pft]) == 1        # Fortran implicit round of 0/1 flag
+        is_c3 = jnp.round(c3psn[pft]) == 1  # Fortran implicit round of 0/1 flag
 
         # Canopy-top photosynthetic parameters — Fortran lines 80-96
-        vcmax25top = _vcmaxpft[pft]        # JAX scalar via dynamic gather
+        vcmax25top = _vcmaxpft[pft]  # JAX scalar via dynamic gather
 
-        if acclim_type == 0:                       # static branch — evaluated at trace time
+        if acclim_type == 0:  # static branch — evaluated at trace time
             j2v = jmax25_to_vcmax25_noacclim
         elif acclim_type == 1:
             ta_c = jnp.clip(mlcanopy_inst.tacclim_forcing[p] - tfrz, 11.0, 35.0)
-            j2v  = 2.59 - 0.035 * ta_c            # Fortran line 87
+            j2v = 2.59 - 0.035 * ta_c  # Fortran line 87
         else:
-            endrun(msg=' ERROR: CanopyNitrogenProfile: acclim_type not valid')
-            j2v = 0.0    # Unreachable
+            endrun(msg=" ERROR: CanopyNitrogenProfile: acclim_type not valid")
+            j2v = 0.0  # Unreachable
 
         # C3/C4 parameter selection — Fortran lines 90-97
         # jnp.where avoids Python if on traced is_c3
         jmax25top = jnp.where(is_c3, j2v * vcmax25top, 0.0)
-        rd25top   = jnp.where(is_c3,
-                              rd25_to_vcmax25_c3 * vcmax25top,
-                              rd25_to_vcmax25_c4 * vcmax25top)
-        kp25top   = jnp.where(is_c3, 0.0, kp25_to_vcmax25_c4 * vcmax25top)
+        rd25top = jnp.where(is_c3, rd25_to_vcmax25_c3 * vcmax25top, rd25_to_vcmax25_c4 * vcmax25top)
+        kp25top = jnp.where(is_c3, 0.0, kp25_to_vcmax25_c4 * vcmax25top)
 
         # Nitrogen decay coefficient — Fortran lines 102-108
         # kn_val is a static Python float; the if/elif branches are trace-time only
@@ -178,37 +179,39 @@ def CanopyNitrogenProfile(
         elif kn_val > 0.0:
             kn = jnp.asarray(kn_val)
         else:
-            endrun(msg='ERROR: CanopyNitrogenProfile: incorrect Kn')
-            kn = jnp.zeros(())    # Unreachable
+            endrun(msg="ERROR: CanopyNitrogenProfile: incorrect Kn")
+            kn = jnp.zeros(())  # Unreachable
 
-        clump = MLpftcon.clump_fac[pft]            # JAX scalar
+        clump = MLpftcon.clump_fac[pft]  # JAX scalar
         lai_p = mlcanopy_inst.lai_canopy[p]
         sai_p = mlcanopy_inst.sai_canopy[p]
 
         # Per-layer arrays — use JAX arrays directly (no np.asarray sync)
-        _dpai    = mlcanopy_inst.dpai_profile[p]   # shape (nlevmlcan+1,)
-        _kb      = mlcanopy_inst.kb_profile[p]
-        _tbi     = mlcanopy_inst.tbi_profile[p]
+        _dpai = mlcanopy_inst.dpai_profile[p]  # shape (nlevmlcan+1,)
+        _kb = mlcanopy_inst.kb_profile[p]
+        _tbi = mlcanopy_inst.tbi_profile[p]
         _fracsun = mlcanopy_inst.fracsun_profile[p]
 
         # ncan is the number of active canopy layers for patch p.
         # We work over the full layer axis (1..nlevmlcan) and rely on
         # dpai==0 masking for inactive layers.  The iteration order
         # top→bottom maps to reversed indices ic=ncan..1.
-        ncan_p = mlcanopy_inst.ncan_canopy[p]      # JAX int scalar
+        ncan_p = mlcanopy_inst.ncan_canopy[p]  # JAX int scalar
 
         # Build top-to-bottom index order: [ncan, ncan-1, ..., 1]
         # Use static nlevmlcan as the upper bound; mask by dpai later.
-        ics = jnp.arange(nlevmlcan, 0, -1)         # [nlevmlcan, ..., 1]
-        active = ics <= ncan_p                      # mask for actual canopy layers
+        ics = jnp.arange(nlevmlcan, 0, -1)  # [nlevmlcan, ..., 1]
+        active = ics <= ncan_p  # mask for actual canopy layers
 
-        dpai_v   = _dpai[ics]
-        kb_v     = _kb[ics]
-        tbi_v    = _tbi[ics]
-        fs_v     = _fracsun[ics]
+        dpai_v = _dpai[ics]
+        kb_v = _kb[ics]
+        tbi_v = _tbi[ics]
+        fs_v = _fracsun[ics]
 
-        has_pai   = active & (dpai_v > 0.0)
-        dpai_safe = jnp.maximum(dpai_v, 1.0e-30)         # avoid /0; jnp.maximum avoids select_divide_fusion XLA bug
+        has_pai = active & (dpai_v > 0.0)
+        dpai_safe = jnp.maximum(
+            dpai_v, 1.0e-30
+        )  # avoid /0; jnp.maximum avoids select_divide_fusion XLA bug
 
         # pai_above[j] = cumulative dpai of layers above layer ics[j]
         # = sum(dpai_v[0:j])  →  shifted cumsum — Fortran line 148
@@ -223,21 +226,22 @@ def CanopyNitrogenProfile(
         fn = exp_kn_above * (1.0 - jnp.exp(-kn * dpai_v)) / kn
         fn = jnp.where(has_pai, fn, 0.0)
 
-        if leaf_optics_type == 0:                  # static branch — Fortran lines 132-139
-            denom      = kn + kb_v * clump
+        if leaf_optics_type == 0:  # static branch — Fortran lines 132-139
+            denom = kn + kb_v * clump
             # jnp.maximum avoids select op → prevents XLA select_divide_fusion bug
             denom_safe = jnp.maximum(denom, 1.0e-30)
-            fn_sun     = (clump / denom_safe * exp_kn_above * tbi_v
-                          * (1.0 - jnp.exp(-denom_safe * dpai_v)))
-            fn_sun     = jnp.where(has_pai, fn_sun, 0.0)
-            fn_sha     = fn - fn_sun
-            fs_safe    = jnp.maximum(fs_v, 1.0e-30)
-            fsha_safe  = jnp.maximum(1.0 - fs_v, 1.0e-30)
-            nscale_sun = jnp.where(has_pai, fn_sun / (fs_safe   * dpai_safe), 0.0)
+            fn_sun = (
+                clump / denom_safe * exp_kn_above * tbi_v * (1.0 - jnp.exp(-denom_safe * dpai_v))
+            )
+            fn_sun = jnp.where(has_pai, fn_sun, 0.0)
+            fn_sha = fn - fn_sun
+            fs_safe = jnp.maximum(fs_v, 1.0e-30)
+            fsha_safe = jnp.maximum(1.0 - fs_v, 1.0e-30)
+            nscale_sun = jnp.where(has_pai, fn_sun / (fs_safe * dpai_safe), 0.0)
             nscale_sha = jnp.where(has_pai, fn_sha / (fsha_safe * dpai_safe), 0.0)
 
-        elif leaf_optics_type == 1:                # static branch — Fortran lines 140-141
-            nscale     = jnp.where(has_pai, fn / dpai_safe, 0.0)
+        elif leaf_optics_type == 1:  # static branch — Fortran lines 140-141
+            nscale = jnp.where(has_pai, fn / dpai_safe, 0.0)
             nscale_sun = nscale
             nscale_sha = nscale
 
@@ -248,12 +252,12 @@ def CanopyNitrogenProfile(
         # Scale leaf parameters — Fortran lines 143-146
         vcmax25_sun_v = jnp.where(has_pai, vcmax25top * nscale_sun, 0.0)
         vcmax25_sha_v = jnp.where(has_pai, vcmax25top * nscale_sha, 0.0)
-        jmax25_sun_v  = jnp.where(has_pai, jmax25top  * nscale_sun, 0.0)
-        jmax25_sha_v  = jnp.where(has_pai, jmax25top  * nscale_sha, 0.0)
-        rd25_sun_v    = jnp.where(has_pai, rd25top    * nscale_sun, 0.0)
-        rd25_sha_v    = jnp.where(has_pai, rd25top    * nscale_sha, 0.0)
-        kp25_sun_v    = jnp.where(has_pai, kp25top    * nscale_sun, 0.0)
-        kp25_sha_v    = jnp.where(has_pai, kp25top    * nscale_sha, 0.0)
+        jmax25_sun_v = jnp.where(has_pai, jmax25top * nscale_sun, 0.0)
+        jmax25_sha_v = jnp.where(has_pai, jmax25top * nscale_sha, 0.0)
+        rd25_sun_v = jnp.where(has_pai, rd25top * nscale_sun, 0.0)
+        rd25_sha_v = jnp.where(has_pai, rd25top * nscale_sha, 0.0)
+        kp25_sun_v = jnp.where(has_pai, kp25top * nscale_sun, 0.0)
+        kp25_sha_v = jnp.where(has_pai, kp25top * nscale_sha, 0.0)
 
         # Layer weighted mean — Fortran lines 150-154
         # Direct form vcmax25top * fn / dpai is algebraically equivalent to
@@ -262,55 +266,59 @@ def CanopyNitrogenProfile(
         # would cause the safe-denominator substitutions to drop a term and
         # break the conservation check below.
         vcmax25_profile_v = jnp.where(has_pai, vcmax25top * fn / dpai_safe, 0.0)
-        jmax25_profile_v  = jnp.where(has_pai, jmax25top  * fn / dpai_safe, 0.0)
-        rd25_profile_v    = jnp.where(has_pai, rd25top    * fn / dpai_safe, 0.0)
-        kp25_profile_v    = jnp.where(has_pai, kp25top    * fn / dpai_safe, 0.0)
+        jmax25_profile_v = jnp.where(has_pai, jmax25top * fn / dpai_safe, 0.0)
+        rd25_profile_v = jnp.where(has_pai, rd25top * fn / dpai_safe, 0.0)
+        kp25_profile_v = jnp.where(has_pai, kp25top * fn / dpai_safe, 0.0)
 
         # Reorder from top→bottom (ics order) back to ic=1..nlevmlcan order
         # ics = [nlevmlcan, ..., 1] reversed → [ic=1, ..., ic=nlevmlcan]
-        vcmax25_sun_ord  = vcmax25_sun_v[::-1]
-        vcmax25_sha_ord  = vcmax25_sha_v[::-1]
-        jmax25_sun_ord   = jmax25_sun_v[::-1]
-        jmax25_sha_ord   = jmax25_sha_v[::-1]
-        rd25_sun_ord     = rd25_sun_v[::-1]
-        rd25_sha_ord     = rd25_sha_v[::-1]
-        kp25_sun_ord     = kp25_sun_v[::-1]
-        kp25_sha_ord     = kp25_sha_v[::-1]
+        vcmax25_sun_ord = vcmax25_sun_v[::-1]
+        vcmax25_sha_ord = vcmax25_sha_v[::-1]
+        jmax25_sun_ord = jmax25_sun_v[::-1]
+        jmax25_sha_ord = jmax25_sha_v[::-1]
+        rd25_sun_ord = rd25_sun_v[::-1]
+        rd25_sha_ord = rd25_sha_v[::-1]
+        kp25_sun_ord = kp25_sun_v[::-1]
+        kp25_sha_ord = kp25_sha_v[::-1]
         vcmax25_prof_ord = vcmax25_profile_v[::-1]
-        jmax25_prof_ord  = jmax25_profile_v[::-1]
-        rd25_prof_ord    = rd25_profile_v[::-1]
-        kp25_prof_ord    = kp25_profile_v[::-1]
+        jmax25_prof_ord = jmax25_profile_v[::-1]
+        rd25_prof_ord = rd25_profile_v[::-1]
+        kp25_prof_ord = kp25_profile_v[::-1]
 
         # Bulk JAX write-back — 12 scatter operations
-        vcmax25_leaf    = vcmax25_leaf.at[p, 1:, isun].set(vcmax25_sun_ord)
-        vcmax25_leaf    = vcmax25_leaf.at[p, 1:, isha].set(vcmax25_sha_ord)
-        jmax25_leaf     = jmax25_leaf.at[p, 1:, isun].set(jmax25_sun_ord)
-        jmax25_leaf     = jmax25_leaf.at[p, 1:, isha].set(jmax25_sha_ord)
-        rd25_leaf       = rd25_leaf.at[p, 1:, isun].set(rd25_sun_ord)
-        rd25_leaf       = rd25_leaf.at[p, 1:, isha].set(rd25_sha_ord)
-        kp25_leaf       = kp25_leaf.at[p, 1:, isun].set(kp25_sun_ord)
-        kp25_leaf       = kp25_leaf.at[p, 1:, isha].set(kp25_sha_ord)
+        vcmax25_leaf = vcmax25_leaf.at[p, 1:, isun].set(vcmax25_sun_ord)
+        vcmax25_leaf = vcmax25_leaf.at[p, 1:, isha].set(vcmax25_sha_ord)
+        jmax25_leaf = jmax25_leaf.at[p, 1:, isun].set(jmax25_sun_ord)
+        jmax25_leaf = jmax25_leaf.at[p, 1:, isha].set(jmax25_sha_ord)
+        rd25_leaf = rd25_leaf.at[p, 1:, isun].set(rd25_sun_ord)
+        rd25_leaf = rd25_leaf.at[p, 1:, isha].set(rd25_sha_ord)
+        kp25_leaf = kp25_leaf.at[p, 1:, isun].set(kp25_sun_ord)
+        kp25_leaf = kp25_leaf.at[p, 1:, isha].set(kp25_sha_ord)
         vcmax25_profile = vcmax25_profile.at[p, 1:].set(vcmax25_prof_ord)
-        jmax25_profile  = jmax25_profile.at[p, 1:].set(jmax25_prof_ord)
-        rd25_profile    = rd25_profile.at[p, 1:].set(rd25_prof_ord)
-        kp25_profile    = kp25_profile.at[p, 1:].set(kp25_prof_ord)
+        jmax25_profile = jmax25_profile.at[p, 1:].set(jmax25_prof_ord)
+        rd25_profile = rd25_profile.at[p, 1:].set(rd25_prof_ord)
+        kp25_profile = kp25_profile.at[p, 1:].set(kp25_prof_ord)
 
         # Conservation check — JIT-compatible via debug.callback
-        numerical  = jnp.sum(vcmax25_prof_ord * _dpai[1:])
+        numerical = jnp.sum(vcmax25_prof_ord * _dpai[1:])
         analytical = vcmax25top * (1.0 - jnp.exp(-kn * (lai_p + sai_p))) / kn
         jax.debug.callback(
-            lambda n, a: endrun(msg='ERROR: CanopyNitrogenProfile: canopy integration error')
-            if abs(float(n) - float(a)) > 1.0e-6 else None,
-            numerical, analytical,
+            lambda n, a: (
+                endrun(msg="ERROR: CanopyNitrogenProfile: canopy integration error")
+                if abs(float(n) - float(a)) > 1.0e-6
+                else None
+            ),
+            numerical,
+            analytical,
         )
 
     return mlcanopy_inst._replace(
-        vcmax25_leaf    = vcmax25_leaf,
-        jmax25_leaf     = jmax25_leaf,
-        rd25_leaf       = rd25_leaf,
-        kp25_leaf       = kp25_leaf,
-        vcmax25_profile = vcmax25_profile,
-        jmax25_profile  = jmax25_profile,
-        rd25_profile    = rd25_profile,
-        kp25_profile    = kp25_profile,
+        vcmax25_leaf=vcmax25_leaf,
+        jmax25_leaf=jmax25_leaf,
+        rd25_leaf=rd25_leaf,
+        kp25_leaf=kp25_leaf,
+        vcmax25_profile=vcmax25_profile,
+        jmax25_profile=jmax25_profile,
+        rd25_profile=rd25_profile,
+        kp25_profile=kp25_profile,
     )

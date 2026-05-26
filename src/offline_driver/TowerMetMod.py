@@ -18,21 +18,20 @@ import atexit
 import jax.numpy as jnp
 from jax import Array
 
-import netCDF4 as nc                                                   # noqa: F401
+import netCDF4 as nc  # noqa: F401
 
-from clm_src_main.abortutils import endrun, handle_err                              # noqa: F401
-from clm_src_main.PatchType import patch                                            # noqa: F401
-from clm_src_main import GridcellType                                               # noqa: F401
-from clm_src_main.atm2lndType import atm2lnd_type                                   # noqa: F401
-from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type                 # noqa: F401
-from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type                       # noqa: F401
-from clm_src_main.clm_varcon import sb                                              # noqa: F401
-from clm_src_main.clm_varpar import ivis, inir                                      # noqa: F401
-from multilayer_canopy.MLclm_varcon import mmh2o, mmdry                                  # noqa: F401
-from multilayer_canopy.MLWaterVaporMod import SatVap                                     # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type                           # noqa: F401
-from offline_driver.TowerDataMod import tower_ht, tower_lat, tower_lon                # noqa: F401
-
+from clm_src_main.abortutils import endrun, handle_err  # noqa: F401
+from clm_src_main.PatchType import patch  # noqa: F401
+from clm_src_main import GridcellType  # noqa: F401
+from clm_src_main.atm2lndType import atm2lnd_type  # noqa: F401
+from clm_src_main.wateratm2lndBulkType import wateratm2lndbulk_type  # noqa: F401
+from clm_src_biogeophys.FrictionVelocityMod import frictionvel_type  # noqa: F401
+from clm_src_main.clm_varcon import sb  # noqa: F401
+from clm_src_main.clm_varpar import ivis, inir  # noqa: F401
+from multilayer_canopy.MLclm_varcon import mmh2o, mmdry  # noqa: F401
+from multilayer_canopy.MLWaterVaporMod import SatVap  # noqa: F401
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
+from offline_driver.TowerDataMod import tower_ht, tower_lat, tower_lon  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # NetCDF dataset cache
@@ -45,7 +44,7 @@ def _get_cached_dataset(ncfilename: str) -> nc.Dataset:
     """Return an open netCDF dataset handle, opening it once per file path."""
     ds = _NC_DATASET_CACHE.get(ncfilename)
     if ds is None:
-        ds = nc.Dataset(ncfilename, 'r')
+        ds = nc.Dataset(ncfilename, "r")
         _NC_DATASET_CACHE[ncfilename] = ds
     return ds
 
@@ -67,6 +66,7 @@ atexit.register(close_cached_datasets)
 # Private: atmospheric CO2 concentration
 # ---------------------------------------------------------------------------
 
+
 def TowerMetCO2() -> float:
     """
     Return the atmospheric CO2 concentration (ppm).
@@ -77,13 +77,14 @@ def TowerMetCO2() -> float:
     Returns:
         Atmospheric CO2 concentration in ppm (umol/mol).
     """
-#   return 367.0    # Fortran line 44 (commented out)
-    return 383.0    # Fortran line 45
+    #   return 367.0    # Fortran line 44 (commented out)
+    return 383.0  # Fortran line 45
 
 
 # ---------------------------------------------------------------------------
 # Private: solar radiation partitioning
 # ---------------------------------------------------------------------------
+
 
 def TowerMetSolarRad(
     fsds: float,
@@ -117,8 +118,14 @@ def TowerMetSolarRad(
         forc_solai_nir)`` in W/m2.
     """
     # Polynomial coefficients — Fortran lines 68-76
-    a0 =  0.17639;    a1 =  0.00380;    a2 = -9.0039e-6;  a3 =  8.1351e-9
-    b0 =  0.29548;    b1 =  0.00504;    b2 = -1.4957e-5;  b3 =  1.4881e-8
+    a0 = 0.17639
+    a1 = 0.00380
+    a2 = -9.0039e-6
+    a3 = 8.1351e-9
+    b0 = 0.29548
+    b1 = 0.00504
+    b2 = -1.4957e-5
+    b3 = 1.4881e-8
 
     # Visible waveband — Fortran lines 82-86
     fsds_vis = 0.5 * fsds
@@ -142,6 +149,7 @@ def TowerMetSolarRad(
 # ---------------------------------------------------------------------------
 # Private: atmospheric emissivity
 # ---------------------------------------------------------------------------
+
 
 def TowerMetEmiss(eair: float, tair: float) -> float:
     """
@@ -167,6 +175,7 @@ def TowerMetEmiss(eair: float, tair: float) -> float:
 # ---------------------------------------------------------------------------
 # Public: read forcing for the current CLM time step
 # ---------------------------------------------------------------------------
+
 
 def TowerMetCurr(
     ncfilename: str,
@@ -231,25 +240,24 @@ def TowerMetCurr(
         frictionvel_inst)``.
     """
     # Unpack output arrays (Fortran associate block, lines 160-173)
-    forc_u: Array     = atm2lnd_inst.forc_u_grc
-    forc_v: Array     = atm2lnd_inst.forc_v_grc
+    forc_u: Array = atm2lnd_inst.forc_u_grc
+    forc_v: Array = atm2lnd_inst.forc_v_grc
     forc_solad: Array = atm2lnd_inst.forc_solad_downscaled_col
     forc_solai: Array = atm2lnd_inst.forc_solai_grc
-    forc_pco2: Array  = atm2lnd_inst.forc_pco2_grc
-    forc_po2: Array   = atm2lnd_inst.forc_po2_grc
-    forc_t: Array     = atm2lnd_inst.forc_t_downscaled_col
-    forc_pbot: Array  = atm2lnd_inst.forc_pbot_downscaled_col
+    forc_pco2: Array = atm2lnd_inst.forc_pco2_grc
+    forc_po2: Array = atm2lnd_inst.forc_po2_grc
+    forc_t: Array = atm2lnd_inst.forc_t_downscaled_col
+    forc_pbot: Array = atm2lnd_inst.forc_pbot_downscaled_col
     forc_lwrad: Array = atm2lnd_inst.forc_lwrad_downscaled_col
-    forc_q: Array     = wateratm2lndbulk_inst.forc_q_downscaled_col
-    forc_rain: Array  = wateratm2lndbulk_inst.forc_rain_downscaled_col
-    forc_snow: Array  = wateratm2lndbulk_inst.forc_snow_downscaled_col
+    forc_q: Array = wateratm2lndbulk_inst.forc_q_downscaled_col
+    forc_rain: Array = wateratm2lndbulk_inst.forc_rain_downscaled_col
+    forc_snow: Array = wateratm2lndbulk_inst.forc_snow_downscaled_col
     forc_hgt_u: Array = frictionvel_inst.forc_hgt_u_patch
 
     # Read raw tower meteorology — Fortran line 176
-    (zref, tref, rhref, qref, uref,
-     fsds_raw, flds, pref, prect) = readTowerMet(ncfilename, strt)
+    zref, tref, rhref, qref, uref, fsds_raw, flds, pref, prect = readTowerMet(ncfilename, strt)
 
-    for p in range(begp, endp + 1):                   # Fortran: do p = begp, endp
+    for p in range(begp, endp + 1):  # Fortran: do p = begp, endp
         c = int(patch.column[p])
         g = int(patch.gridcell[p])
         ci = c  # column arrays indexed directly by c in Fortran
@@ -273,18 +281,18 @@ def TowerMetCurr(
         # ----------------------------------------------------------------
         # Column level — Fortran lines 195-203
         # ----------------------------------------------------------------
-        forc_t     = forc_t.at[ci].set(tref)
-        forc_q     = forc_q.at[ci].set(qref)
-        forc_pbot  = forc_pbot.at[ci].set(pref)
+        forc_t = forc_t.at[ci].set(tref)
+        forc_q = forc_q.at[ci].set(qref)
+        forc_pbot = forc_pbot.at[ci].set(pref)
         forc_lwrad = forc_lwrad.at[ci].set(flds)
-        forc_rain  = forc_rain.at[ci].set(prect)
-        forc_snow  = forc_snow.at[ci].set(0.0)
+        forc_rain = forc_rain.at[ci].set(prect)
+        forc_snow = forc_snow.at[ci].set(0.0)
 
         # ----------------------------------------------------------------
         # Patch level: forcing height — Fortran lines 205-211
         # ----------------------------------------------------------------
         forc_hgt_u = forc_hgt_u.at[p].set(zref)
-        forc_hgt_u = forc_hgt_u.at[p].set(float(tower_ht[it]))   # override with tower data
+        forc_hgt_u = forc_hgt_u.at[p].set(float(tower_ht[it]))  # override with tower data
 
         # Default to 30 m if missing — Fortran line 211
         if round(float(forc_hgt_u[p])) == -999:
@@ -303,27 +311,25 @@ def TowerMetCurr(
         if round(forc_rh) != -999:
             esat, _ = SatVap(float(forc_t[ci]))
             eair = (forc_rh / 100.0) * esat
-            q_val = (mmh2o / mmdry * eair
-                     / (float(forc_pbot[ci]) - (1.0 - mmh2o / mmdry) * eair))
+            q_val = mmh2o / mmdry * eair / (float(forc_pbot[ci]) - (1.0 - mmh2o / mmdry) * eair)
             forc_q = forc_q.at[ci].set(q_val)
         elif round(float(forc_q[ci])) != -999:
-            eair = (float(forc_q[ci]) * float(forc_pbot[ci])
-                    / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * float(forc_q[ci])))
+            eair = (
+                float(forc_q[ci])
+                * float(forc_pbot[ci])
+                / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * float(forc_q[ci]))
+            )
         else:
-            endrun(msg=' TowerMet error: rhref and qref not valid')
-            eair = 0.0   # Unreachable; satisfies type checker
+            endrun(msg=" TowerMet error: rhref and qref not valid")
+            eair = 0.0  # Unreachable; satisfies type checker
 
         # Longwave radiation from emissivity if missing — Fortran lines 229-233
         if round(float(forc_lwrad[ci])) == -999:
             emiss = TowerMetEmiss(eair, float(forc_t[ci]))
-            forc_lwrad = forc_lwrad.at[ci].set(
-                emiss * sb * float(forc_t[ci]) ** 4
-            )
+            forc_lwrad = forc_lwrad.at[ci].set(emiss * sb * float(forc_t[ci]) ** 4)
 
         # CO2 and O2 partial pressures — Fortran lines 235-236
-        forc_pco2 = forc_pco2.at[g].set(
-            (TowerMetCO2() / 1.0e6) * float(forc_pbot[ci])
-        )
+        forc_pco2 = forc_pco2.at[g].set((TowerMetCO2() / 1.0e6) * float(forc_pbot[ci]))
         forc_po2 = forc_po2.at[g].set(0.209 * float(forc_pbot[ci]))
 
         # ----------------------------------------------------------------
@@ -337,28 +343,28 @@ def TowerMetCurr(
         londeg_jax = jnp.asarray(GridcellType.grc.londeg)
         GridcellType.grc = GridcellType.grc._replace(
             latdeg=latdeg_jax.at[g].set(float(tower_lat[it])),
-            londeg=londeg_jax.at[g].set(float(tower_lon[it]))
+            londeg=londeg_jax.at[g].set(float(tower_lon[it])),
         )
 
     return (
         atm2lnd_inst._replace(
-            forc_u_grc                = forc_u,
-            forc_v_grc                = forc_v,
-            forc_solad_downscaled_col = forc_solad,
-            forc_solai_grc            = forc_solai,
-            forc_pco2_grc             = forc_pco2,
-            forc_po2_grc              = forc_po2,
-            forc_t_downscaled_col     = forc_t,
-            forc_pbot_downscaled_col  = forc_pbot,
-            forc_lwrad_downscaled_col = forc_lwrad,
+            forc_u_grc=forc_u,
+            forc_v_grc=forc_v,
+            forc_solad_downscaled_col=forc_solad,
+            forc_solai_grc=forc_solai,
+            forc_pco2_grc=forc_pco2,
+            forc_po2_grc=forc_po2,
+            forc_t_downscaled_col=forc_t,
+            forc_pbot_downscaled_col=forc_pbot,
+            forc_lwrad_downscaled_col=forc_lwrad,
         ),
         wateratm2lndbulk_inst._replace(
-            forc_q_downscaled_col    = forc_q,
-            forc_rain_downscaled_col = forc_rain,
-            forc_snow_downscaled_col = forc_snow,
+            forc_q_downscaled_col=forc_q,
+            forc_rain_downscaled_col=forc_rain,
+            forc_snow_downscaled_col=forc_snow,
         ),
         frictionvel_inst._replace(
-            forc_hgt_u_patch = forc_hgt_u,
+            forc_hgt_u_patch=forc_hgt_u,
         ),
     )
 
@@ -366,6 +372,7 @@ def TowerMetCurr(
 # ---------------------------------------------------------------------------
 # Private: read raw meteorology from tower netCDF file
 # ---------------------------------------------------------------------------
+
 
 def readTowerMet(
     ncfilename: str,
@@ -398,7 +405,7 @@ def readTowerMet(
         ``(zbot, tbot, rhbot, qbot, ubot, fsdsbot, fldsbot, pbot,
         prect)`` matching the Fortran ``intent(out)`` arguments.
     """
-    t = strt - 1    # Convert 1-based Fortran index to 0-based Python
+    t = strt - 1  # Convert 1-based Fortran index to 0-based Python
 
     def _read_optional(ds: nc.Dataset, varname: str) -> float:
         """Return variable value or -999.0 if absent."""
@@ -409,28 +416,28 @@ def readTowerMet(
     ds = _get_cached_dataset(ncfilename)
 
     # Optional variables — Fortran lines 238-262
-    fldsbot = _read_optional(ds, 'FLDS')     # Longwave radiation (W/m2)
-    pbot    = _read_optional(ds, 'PSRF')     # Atmospheric pressure (Pa)
-    rhbot   = _read_optional(ds, 'RH')       # Relative humidity (%)
-    qbot    = _read_optional(ds, 'QBOT')     # Specific humidity (kg/kg)
-    zbot    = _read_optional(ds, 'ZBOT')     # Observational height (m)
+    fldsbot = _read_optional(ds, "FLDS")  # Longwave radiation (W/m2)
+    pbot = _read_optional(ds, "PSRF")  # Atmospheric pressure (Pa)
+    rhbot = _read_optional(ds, "RH")  # Relative humidity (%)
+    qbot = _read_optional(ds, "QBOT")  # Specific humidity (kg/kg)
+    zbot = _read_optional(ds, "ZBOT")  # Observational height (m)
 
     # Required variables — Fortran lines 248-278
-    if 'FSDS' not in ds.variables:
-        handle_err(-1, 'FSDS')
-    fsdsbot = float(ds.variables['FSDS'][t, 0, 0])        # Solar radiation (W/m2)
+    if "FSDS" not in ds.variables:
+        handle_err(-1, "FSDS")
+    fsdsbot = float(ds.variables["FSDS"][t, 0, 0])  # Solar radiation (W/m2)
 
-    if 'PRECTmms' not in ds.variables:
-        handle_err(-1, 'PRECTmms')
-    prect   = float(ds.variables['PRECTmms'][t, 0, 0])    # Precipitation (mm/s)
+    if "PRECTmms" not in ds.variables:
+        handle_err(-1, "PRECTmms")
+    prect = float(ds.variables["PRECTmms"][t, 0, 0])  # Precipitation (mm/s)
 
-    if 'TBOT' not in ds.variables:
-        handle_err(-1, 'TBOT')
-    tbot    = float(ds.variables['TBOT'][t, 0, 0])        # Air temperature (K)
+    if "TBOT" not in ds.variables:
+        handle_err(-1, "TBOT")
+    tbot = float(ds.variables["TBOT"][t, 0, 0])  # Air temperature (K)
 
-    if 'WIND' not in ds.variables:
-        handle_err(-1, 'WIND')
-    ubot    = float(ds.variables['WIND'][t, 0, 0])        # Wind speed (m/s)
+    if "WIND" not in ds.variables:
+        handle_err(-1, "WIND")
+    ubot = float(ds.variables["WIND"][t, 0, 0])  # Wind speed (m/s)
 
     return zbot, tbot, rhbot, qbot, ubot, fsdsbot, fldsbot, pbot, prect
 
@@ -438,6 +445,7 @@ def readTowerMet(
 # ---------------------------------------------------------------------------
 # Public: read forcing for the next CLM time step (CLMml 3-point interp)
 # ---------------------------------------------------------------------------
+
 
 def TowerMetNext(
     ncfilename: str,
@@ -476,26 +484,25 @@ def TowerMetNext(
         Updated :class:`mlcanopy_type`.
     """
     # Unpack next-timestep forcing arrays (Fortran associate block, lines 247-256)
-    tref_next: Array   = mlcanopy_inst.tref_next_forcing     # Air temperature (K)
-    qref_next: Array   = mlcanopy_inst.qref_next_forcing     # Specific humidity (kg/kg)
-    uref_next: Array   = mlcanopy_inst.uref_next_forcing     # Wind speed (m/s)
-    pref_next: Array   = mlcanopy_inst.pref_next_forcing     # Air pressure (Pa)
-    co2ref_next: Array = mlcanopy_inst.co2ref_next_forcing   # CO2 (umol/mol = ppm)
-    swskyb_next: Array = mlcanopy_inst.swskyb_next_forcing   # Direct beam solar (W/m2)
-    swskyd_next: Array = mlcanopy_inst.swskyd_next_forcing   # Diffuse solar (W/m2)
-    lwsky_next: Array  = mlcanopy_inst.lwsky_next_forcing    # Longwave radiation (W/m2)
+    tref_next: Array = mlcanopy_inst.tref_next_forcing  # Air temperature (K)
+    qref_next: Array = mlcanopy_inst.qref_next_forcing  # Specific humidity (kg/kg)
+    uref_next: Array = mlcanopy_inst.uref_next_forcing  # Wind speed (m/s)
+    pref_next: Array = mlcanopy_inst.pref_next_forcing  # Air pressure (Pa)
+    co2ref_next: Array = mlcanopy_inst.co2ref_next_forcing  # CO2 (umol/mol = ppm)
+    swskyb_next: Array = mlcanopy_inst.swskyb_next_forcing  # Direct beam solar (W/m2)
+    swskyd_next: Array = mlcanopy_inst.swskyd_next_forcing  # Diffuse solar (W/m2)
+    lwsky_next: Array = mlcanopy_inst.lwsky_next_forcing  # Longwave radiation (W/m2)
 
     # Read raw tower meteorology — Fortran line 259
-    (zref, tref, rhref, qref, uref,
-     fsds_raw, flds, pref, prect) = readTowerMet(ncfilename, strt)
+    zref, tref, rhref, qref, uref, fsds_raw, flds, pref, prect = readTowerMet(ncfilename, strt)
 
-    for p in range(begp, endp + 1):                   # Fortran: do p = begp, endp
+    for p in range(begp, endp + 1):  # Fortran: do p = begp, endp
 
         # Direct assignments — Fortran lines 263-267
-        uref_next  = uref_next.at[p].set(uref)
-        tref_next  = tref_next.at[p].set(tref)
-        qref_next  = qref_next.at[p].set(qref)
-        pref_next  = pref_next.at[p].set(pref)
+        uref_next = uref_next.at[p].set(uref)
+        tref_next = tref_next.at[p].set(tref)
+        qref_next = qref_next.at[p].set(qref)
+        pref_next = pref_next.at[p].set(pref)
         lwsky_next = lwsky_next.at[p].set(flds)
 
         # Solar radiation partition — Fortran lines 269-270
@@ -514,32 +521,32 @@ def TowerMetNext(
         if round(forc_rh) != -999:
             esat, _ = SatVap(float(tref_next[p]))
             eair = (forc_rh / 100.0) * esat
-            q_val = (mmh2o / mmdry * eair
-                     / (float(pref_next[p]) - (1.0 - mmh2o / mmdry) * eair))
+            q_val = mmh2o / mmdry * eair / (float(pref_next[p]) - (1.0 - mmh2o / mmdry) * eair)
             qref_next = qref_next.at[p].set(q_val)
         elif round(float(qref_next[p])) != -999:
-            eair = (float(qref_next[p]) * float(pref_next[p])
-                    / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * float(qref_next[p])))
+            eair = (
+                float(qref_next[p])
+                * float(pref_next[p])
+                / (mmh2o / mmdry + (1.0 - mmh2o / mmdry) * float(qref_next[p]))
+            )
         else:
-            endrun(msg=' TowerMetNext error: rhref and qref not valid')
-            eair = 0.0   # Unreachable; satisfies type checker
+            endrun(msg=" TowerMetNext error: rhref and qref not valid")
+            eair = 0.0  # Unreachable; satisfies type checker
 
         if round(float(lwsky_next[p])) == -999:
             emiss = TowerMetEmiss(eair, float(tref_next[p]))
-            lwsky_next = lwsky_next.at[p].set(
-                emiss * sb * float(tref_next[p]) ** 4
-            )
+            lwsky_next = lwsky_next.at[p].set(emiss * sb * float(tref_next[p]) ** 4)
 
         # CO2 in ppm for multilayer canopy — Fortran line 280
         co2ref_next = co2ref_next.at[p].set(TowerMetCO2())
 
     return mlcanopy_inst._replace(
-        tref_next_forcing   = tref_next,
-        qref_next_forcing   = qref_next,
-        uref_next_forcing   = uref_next,
-        pref_next_forcing   = pref_next,
-        co2ref_next_forcing = co2ref_next,
-        swskyb_next_forcing = swskyb_next,
-        swskyd_next_forcing = swskyd_next,
-        lwsky_next_forcing  = lwsky_next,
+        tref_next_forcing=tref_next,
+        qref_next_forcing=qref_next,
+        uref_next_forcing=uref_next,
+        pref_next_forcing=pref_next,
+        co2ref_next_forcing=co2ref_next,
+        swskyb_next_forcing=swskyb_next,
+        swskyd_next_forcing=swskyd_next,
+        lwsky_next_forcing=lwsky_next,
     )

@@ -21,16 +21,16 @@ from typing import Sequence
 import jax
 import jax.numpy as jnp
 
-from clm_src_main.clm_varcon import cpliq                    # noqa: F401
-from clm_src_main.PatchType import patch                     # noqa: F401
-from clm_src_main.pftconMod import pftcon                    # noqa: F401
+from clm_src_main.clm_varcon import cpliq  # noqa: F401
+from clm_src_main.PatchType import patch  # noqa: F401
+from clm_src_main.pftconMod import pftcon  # noqa: F401
 from multilayer_canopy.MLclm_varcon import cpbio, fcarbon, fwater  # noqa: F401
-from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type    # noqa: F401
-
+from multilayer_canopy.MLCanopyFluxesType import mlcanopy_type  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Per-layer kernel — vmapped over the layer axis
 # ---------------------------------------------------------------------------
+
 
 def _cpleaf_layer(dpai_ic, slatop_pft):
     """Leaf heat capacity for one canopy layer (differentiable).
@@ -43,15 +43,15 @@ def _cpleaf_layer(dpai_ic, slatop_pft):
         Heat capacity (J/K/m2 leaf); 0 when dpai_ic == 0.
     """
     # Leaf carbon mass per area: m2/gC → kg C/m2 — Fortran line 57
-    lma          = 1.0 / slatop_pft * 0.001
+    lma = 1.0 / slatop_pft * 0.001
     # Leaf dry mass per area — Fortran line 58
-    dry_weight   = lma / fcarbon
+    dry_weight = lma / fcarbon
     # Leaf fresh mass per area — Fortran line 59
     fresh_weight = dry_weight / (1.0 - fwater)
     # Leaf water content — Fortran line 60
-    leaf_water   = fwater * fresh_weight
+    leaf_water = fwater * fresh_weight
     # Heat capacity — Fortran line 61
-    cpleaf_val   = cpbio * dry_weight + cpliq * leaf_water
+    cpleaf_val = cpbio * dry_weight + cpliq * leaf_water
     # Zero-out empty layers without Python if — Fortran lines 62-64
     return jnp.where(dpai_ic > 0.0, cpleaf_val, 0.0)
 
@@ -63,6 +63,7 @@ _cpleaf_layers = jax.vmap(_cpleaf_layer, in_axes=(0, None))
 # ---------------------------------------------------------------------------
 # Public driver
 # ---------------------------------------------------------------------------
+
 
 def LeafHeatCapacity(
     num_filter: int,
@@ -100,12 +101,12 @@ def LeafHeatCapacity(
         Updated :class:`mlcanopy_type`.
     """
     slatop = pftcon.slatop
-    dpai   = mlcanopy_inst.dpai_profile    # shape (num_patch, nlevmlcan+1)
+    dpai = mlcanopy_inst.dpai_profile  # shape (num_patch, nlevmlcan+1)
     cpleaf = mlcanopy_inst.cpleaf_profile  # shape (num_patch, nlevmlcan+1)
 
-    for fp in range(num_filter):           # Fortran: do fp = 1, num_filter
-        p   = filter_patch[fp]
-        pft = patch.itype[p]              # JAX int — dynamic index, differentiable
+    for fp in range(num_filter):  # Fortran: do fp = 1, num_filter
+        p = filter_patch[fp]
+        pft = patch.itype[p]  # JAX int — dynamic index, differentiable
 
         # vmap over all layers (index 1..nlevmlcan); dpai==0 layers yield 0
         layers = _cpleaf_layers(dpai[p, 1:], slatop[pft])  # shape (nlevmlcan,)

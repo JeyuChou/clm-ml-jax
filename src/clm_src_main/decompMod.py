@@ -15,10 +15,10 @@ Original Fortran module: decompMod
 from __future__ import annotations
 from typing import NamedTuple
 
-
 # ---------------------------------------------------------------------------
 # bounds_type
 # ---------------------------------------------------------------------------
+
 
 class bounds_type(NamedTuple):
     """
@@ -40,6 +40,7 @@ class bounds_type(NamedTuple):
         begp: Beginning patch index.
         endp: Ending patch index.
     """
+
     begg: int
     endg: int
     begl: int
@@ -53,6 +54,7 @@ class bounds_type(NamedTuple):
 # ---------------------------------------------------------------------------
 # get_clump_bounds
 # ---------------------------------------------------------------------------
+
 
 def get_clump_bounds(n: int) -> bounds_type:
     """
@@ -71,12 +73,12 @@ def get_clump_bounds(n: int) -> bounds_type:
         :class:`bounds_type` with all bounds set to 1.
     """
     return bounds_type(
-        begg = 1,
-        endg = 1,
-        begl = 1,
-        endl = 1,
-        begc = 1,
-        endc = 1,
-        begp = 1,
-        endp = 1,
+        begg=1,
+        endg=1,
+        begl=1,
+        endl=1,
+        begc=1,
+        endc=1,
+        begp=1,
+        endp=1,
     )
