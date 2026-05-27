@@ -10,6 +10,8 @@ Original Fortran module: MLpftconMod
 Fortran lines 1-260
 """
 
+from __future__ import annotations
+
 from typing import NamedTuple
 
 import jax.numpy as jnp

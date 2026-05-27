@@ -17,6 +17,8 @@ Note:
     NamedTuple instances rather than modifying in place.
 """
 
+from __future__ import annotations
+
 from typing import NamedTuple
 
 import jax.numpy as jnp

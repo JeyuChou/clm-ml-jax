@@ -15,6 +15,8 @@ Original Fortran dependencies:
 - decompMod: bounds_type
 """
 
+from __future__ import annotations
+
 from typing import NamedTuple
 
 import jax.numpy as jnp
