@@ -45,14 +45,12 @@ This installs the `clm-ml-offline` command and all physics modules (`clm_share`,
 Execute a 1-day tower-site simulation with the CHATS7 site:
 
 ```bash
-# Using the installed command 
-clm-ml-offline < nl.CHATS7.1day
 
 # Or with explicit namelist argument  
-clm-ml-offline input_files/nl.CHATS7.1day
+clm-ml-offline src/offline_executable/nl.CHATS7.1day
 
 # Or run directly with Python
-python -m offline_executable.main input_files/nl.CHATS7.1day
+python -m src.offline_executable.main input_files/nl.CHATS7.1day
 ```
 
 Output files are written to the `output_files/` directory.
