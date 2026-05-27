@@ -14,6 +14,7 @@ dependencies = [
     "numpy>=1.20.0",
     "matplotlib>=3.7.0",
     "f90nml>=1.4.0",
+    "netCDF4>=1.6.0",
 ]
 
 [project.optional-dependencies]
@@ -22,14 +23,13 @@ dev = [
     "pytest-cov>=4.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
-    "netCDF4>=1.6.0",
 ]
 
 [project.scripts]
 clm-ml-offline = "offline_executable.main:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = [
     "clm_share*",
     "clm_src_biogeophys*",
