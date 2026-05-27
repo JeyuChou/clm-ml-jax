@@ -45,7 +45,7 @@ This installs the `clm-ml-offline` command and all physics modules (`clm_share`,
 Execute a 1-day tower-site simulation with the CHATS7 site:
 
 ```bash
-# Using the installed command (recommended)
+# Using the installed command 
 clm-ml-offline < nl.CHATS7.1day
 
 # Or with explicit namelist argument  
@@ -76,17 +76,9 @@ Golden JSON files live in `tests/fortran_validation/golden_IO/`.
 ### Adding a New Physics Module
 
 1. Create `multilayer_canopy/MyPhysicsMod.py` mirroring Fortran module structure
-2. Include Fortran source reference in docstring:
-   ```python
-   """
-   JAX translation of Fortran module MyPhysics.
-
-   Mirrors Fortran subroutine ``my_physics_sub`` (lines 45-120).
-   """
-   ```
+2. Include Fortran source reference in docstring (if applicable).
 3. Use module-level globals from `MLclm_varctl.py` for configuration
 4. Add tests in `tests/multilayer_canopy/test_my_physics.py`
-5. Register output variables in `clm_src_main/histFileMod.py`
 
 ### Adding a New Tower Site
 
@@ -103,7 +95,7 @@ tower_elev[16] = 500.0
 # ... (add other fields)
 ```
 
-Then create a namelist file: `src/offline_executable/nl.MYNEWSITE.1day`
+Then create a namelist file: `src/offline_executable/nl.MYNEWSITE.date`
 
 ### Configuration & Switches
 
