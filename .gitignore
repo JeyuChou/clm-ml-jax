@@ -138,6 +138,7 @@ comparison_plots/
 *.o[0-9]*
 *.out
 .gitignore
+src/output_files/CHATS7_2007-05_profile.out
 
 
 Paper/jaxes_paper/
