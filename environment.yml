@@ -1,4 +1,4 @@
-name: clm-ml-jax
+name: clm-ml-jax-v2
 channels:
   - conda-forge
   - defaults
