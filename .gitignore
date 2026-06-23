@@ -136,6 +136,8 @@ comparison_plots/
 # Ignore standard object files and numbered output files
 *.o
 *.o[0-9]*
+*.out
+.gitignore
 
 
 Paper/jaxes_paper/
