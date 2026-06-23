@@ -1,0 +1,13 @@
+#!/bin/bash
+#PBS -N clm_ml_jax
+#PBS -A CESM0029
+#PBS -q main
+#PBS -l walltime=01:00:00
+#PBS -l select=1:ncpus=1:mem=16GB
+#PBS -j oe
+
+module load conda
+conda activate clm-ml-jax
+
+cd /glade/u/home/lchou/clm-ml-jax
+clm-ml-offline src/offline_executable/nl.CHATS7.05.2007

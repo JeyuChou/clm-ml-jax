@@ -1,0 +1,35 @@
+#!/bin/bash
+#PBS -N clm_ml_1cpu
+#PBS -A CESM0029
+#PBS -q main
+#PBS -l walltime=06:30:00
+#PBS -l select=1:ncpus=1:mem=16GB
+#PBS -j oe
+
+set -euo pipefail
+
+module load conda/latest
+
+conda activate clm-ml-jax
+
+cd /glade/u/home/lchou/clm-ml-jax
+
+# Abort if there are uncommitted changes
+if [ -n "$(git status --porcelain)" ]; then
+    echo "ERROR: Git working directory is not clean. Commit or stash changes before running."
+    git status --short
+    exit 1
+fi
+
+HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "nohash")
+DATETIME=$(date +"%Y%m%d_%H%M%S")
+LOGFILE="run.${HASH}.${DATETIME}_1cpu.log"
+
+echo "Running clm-ml-jax (1 CPU thread), logging to ${LOGFILE}..."
+
+# Force JAX/Eigen to a single thread
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"
+
+stdbuf -oL -eL clm-ml-offline src/offline_executable/nl.CHATS7.05.2007 > "${LOGFILE}" 2>&1

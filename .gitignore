@@ -133,5 +133,9 @@ Thumbs.db
 #plots
 comparison_plots/
 
+# Ignore standard object files and numbered output files
+*.o
+*.o[0-9]*
+
 
 Paper/jaxes_paper/
