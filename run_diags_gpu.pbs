@@ -8,7 +8,7 @@
 
 set -euo pipefail
 module load conda/latest
-module load cuda12.8/toolkit/12.8.61
+#module load cuda12.8/toolkit/12.8.61
 #-l select=1:ncpus=128:mem=128GB:ngpus=1
 
 conda activate clm-ml-jax-v2
