@@ -3,7 +3,7 @@
 #PBS -A CESM0029
 #PBS -q develop
 #PBS -l walltime=00:30:00
-#PBS -l select=1:ncpus=32:ngpus=1:mem=128GB
+#PBS -l select=1:ncpus=32:mem=128GB
 #PBS -j oe
 
 set -euo pipefail
@@ -42,16 +42,16 @@ echo "JAX devices:"
 python -c "import jax; print(jax.devices())"
 
 {
-    echo "=============================="
-    echo "benchmark_gpu.py"
-    echo "=============================="
-    stdbuf -oL -eL python diags/benchmark_gpu.py
+    # echo "=============================="
+    # echo "benchmark_gpu.py"
+    # echo "=============================="
+    # stdbuf -oL -eL python diags/benchmark_gpu.py
 
-    # echo ""
-    # echo "=============================="
-    # echo "benchmark_ensemble.py"
-    # echo "=============================="
-    # stdbuf -oL -eL python diags/benchmark_ensemble.py
+    echo ""
+    echo "=============================="
+    echo "benchmark_ensemble.py"
+    echo "=============================="
+    stdbuf -oL -eL python diags/benchmark_ensemble.py
 } 2>&1 | tee "${LOGFILE}"
 
 echo ""
