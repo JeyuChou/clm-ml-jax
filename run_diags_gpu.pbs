@@ -1,14 +1,15 @@
 #!/bin/bash
 #PBS -N clm_ml_diags_bench
 #PBS -A CESM0029
-#PBS -q main
-#PBS -l walltime=03:00:00
-#PBS -l select=1:ncpus=128:ngpus=1:mem=128GB
+#PBS -q develop
+#PBS -l walltime=00:30:00
+#PBS -l select=1:ncpus=32:mem=128GB
 #PBS -j oe
 
 set -euo pipefail
 module load conda/latest
 module load cuda12.8/toolkit/12.8.61
+#-l select=1:ncpus=128:mem=128GB:ngpus=1
 
 conda activate clm-ml-jax-v2
 
@@ -41,10 +42,10 @@ echo "JAX devices:"
 python -c "import jax; print(jax.devices())"
 
 {
-    echo "=============================="
-    echo "benchmark_gpu.py"
-    echo "=============================="
-    stdbuf -oL -eL python diags/benchmark_gpu.py
+    # echo "=============================="
+    # echo "benchmark_gpu.py"
+    # echo "=============================="
+    # stdbuf -oL -eL python diags/benchmark_gpu.py
 
     echo ""
     echo "=============================="
