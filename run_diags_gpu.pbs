@@ -1,0 +1,57 @@
+#!/bin/bash
+#PBS -N clm_ml_diags_bench
+#PBS -A CESM0029
+#PBS -q main
+#PBS -l walltime=03:00:00
+#PBS -l select=1:ncpus=128:ngpus=1:mem=128GB
+#PBS -j oe
+
+set -euo pipefail
+module load conda/latest
+module load cuda12.8/toolkit/12.8.61
+
+conda activate clm-ml-jax-v2
+
+cd /glade/u/home/lchou/clm-ml-jax
+
+# Expose JAX's bundled CUDA libraries so jax.devices("gpu") works
+SITE_PKGS=$(python -c "import site; print(site.getsitepackages()[0])")
+export LD_LIBRARY_PATH=$(find "$SITE_PKGS/nvidia" -name "*.so*" \
+    -exec dirname {} \; | sort -u | tr '\n' ':')${LD_LIBRARY_PATH:-}
+
+# Abort if there are uncommitted changes
+if [ -n "$(git status --porcelain)" ]; then
+    echo "ERROR: Git working directory is not clean. Commit or stash changes before running."
+    git status --short
+    exit 1
+fi
+
+HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "nohash")
+DATETIME=$(date +"%Y%m%d_%H%M%S")
+LOGFILE="diags.${HASH}.${DATETIME}_bench.log"
+
+# Let JAX CPU backend use all allocated cores
+NCPUS=$(nproc)
+export OMP_NUM_THREADS=${NCPUS}
+export CUDA_VISIBLE_DEVICES=0
+
+echo "Running CLM-ML-JAX benchmarks (1x A100 GPU + ${NCPUS} CPU cores), logging to ${LOGFILE}..."
+echo "Git commit: ${HASH}"
+echo "JAX devices:"
+python -c "import jax; print(jax.devices())"
+
+{
+    echo "=============================="
+    echo "benchmark_gpu.py"
+    echo "=============================="
+    stdbuf -oL -eL python diags/benchmark_gpu.py
+
+    echo ""
+    echo "=============================="
+    echo "benchmark_ensemble.py"
+    echo "=============================="
+    stdbuf -oL -eL python diags/benchmark_ensemble.py
+} 2>&1 | tee "${LOGFILE}"
+
+echo ""
+echo "Done. Results in diags/figures/. Log: ${LOGFILE}"
