@@ -1,0 +1,49 @@
+#!/bin/bash
+#PBS -N clm_bench_gpu
+#PBS -A CESM0029
+#PBS -q develop
+#PBS -l walltime=00:30:00
+#PBS -l select=1:ncpus=16:ngpus=1:mem=64GB
+#PBS -j oe
+
+set -euo pipefail
+module load conda/latest
+
+conda activate clm-ml-jax-v2
+
+cd /glade/u/home/lchou/clm-ml-jax
+
+# Expose JAX's bundled CUDA libraries
+SITE_PKGS=$(python -c "import site; print(site.getsitepackages()[0])")
+export LD_LIBRARY_PATH=$(find "$SITE_PKGS/nvidia" -name "*.so*" \
+    -exec dirname {} \; | sort -u | tr '\n' ':')${LD_LIBRARY_PATH:-}
+export CUDA_VISIBLE_DEVICES=0
+
+# Sanity-check: confirm JAX sees the GPU before spending walltime
+python -c "
+import jax
+gpus = jax.devices('gpu')
+if not gpus:
+    raise RuntimeError('No GPU found — check CUDA setup')
+print('GPU device:', gpus[0])
+"
+
+if [ -n "$(git status --porcelain)" ]; then
+    echo "ERROR: uncommitted changes — commit or stash first"
+    git status --short; exit 1
+fi
+
+HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "nohash")
+DATETIME=$(date +"%Y%m%d_%H%M%S")
+LOGFILE="bench_gpu.${HASH}.${DATETIME}_GPU.log"
+
+export OMP_NUM_THREADS=16
+
+echo "=== GPU ensemble benchmark ==="
+echo "Git: ${HASH}  |  $(date)"
+python -c "import jax; print('JAX devices:', jax.devices())"
+
+stdbuf -oL -eL python diags/benchmark_ensemble.py --backend gpu 2>&1 | tee "${LOGFILE}"
+
+echo ""
+echo "Done. CSV: diags/figures/ensemble_benchmark.csv  Log: ${LOGFILE}"
