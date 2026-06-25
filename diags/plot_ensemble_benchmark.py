@@ -41,20 +41,27 @@ C_FORT_PAR  = "#92400E"   # brown  (Fortran parallel)
 ALPHA       = 0.85
 
 
-def _load(path: Path):
+def _load_single(path: Path):
     gpu, cpu = [], []
     with open(path) as f:
         for row in csv.DictReader(f):
             d = {
-                "N":            int(row["N"]),
+                "N":             int(row["N"]),
                 "ms_per_sample": float(row["ms_per_sample"]) if row["ms_per_sample"] else np.nan,
-                "vmap_ss_ms":   float(row["vmap_ss_ms"])   if row["vmap_ss_ms"]   else np.nan,
-                "seq_ss_ms":    float(row["seq_ss_ms"])    if row["seq_ss_ms"]    else np.nan,
             }
             if row["backend"] == "gpu":
                 gpu.append(d)
             else:
                 cpu.append(d)
+    return gpu, cpu
+
+
+def _load(paths: list[str]):
+    gpu, cpu = [], []
+    for path in paths:
+        g, c = _load_single(Path(path))
+        gpu += g
+        cpu += c
     return sorted(gpu, key=lambda r: r["N"]), sorted(cpu, key=lambda r: r["N"])
 
 
@@ -98,8 +105,9 @@ def _load_fortran_ensemble(path: Path | None) -> dict[str, list[dict]]:
 
 def main():
     parser = argparse.ArgumentParser(description="Plot CLM-ML-JAX ensemble benchmark results")
-    parser.add_argument("--csv",      default=str(_FIGURES_DIR / "ensemble_benchmark.csv"),
-                        help="JAX ensemble benchmark CSV (default: diags/figures/ensemble_benchmark.csv)")
+    parser.add_argument("--csv", nargs="+",
+                        default=[str(_FIGURES_DIR / "ensemble_benchmark.csv")],
+                        help="JAX benchmark CSV(s) — pass one combined file or separate GPU/CPU files")
     parser.add_argument("--out",      default=str(_FIGURES_DIR / "ensemble_benchmark.png"),
                         help="Output PNG path")
     parser.add_argument(
@@ -113,10 +121,9 @@ def main():
     )
     args = parser.parse_args()
 
-    csv_path = Path(args.csv)
     out_path = Path(args.out)
 
-    gpu, cpu = _load(csv_path)
+    gpu, cpu = _load(args.csv)
     fortran = _load_fortran_ensemble(Path(args.fortran) if args.fortran else None)
 
     gpu_Ns  = [r["N"] for r in gpu]

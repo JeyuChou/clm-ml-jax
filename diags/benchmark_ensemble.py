@@ -16,18 +16,26 @@ Outputs per sample: [GPP, H, LE]
 N values tested: 1, 8, 32, 128, 512, 1024, 2048
 
 Metrics:
-  - vmap_first_s  : first call time (includes JIT compile for this N)
-  - vmap_ss_s     : mean of `repeats` subsequent calls (pure throughput)
-  - seq_ss_s      : N sequential calls to jit(forward_multi), mean of repeats
-  - speedup       : seq_ss_s / vmap_ss_s
-  - ms_per_sample : vmap_ss_s / N * 1000
+  - vmap_first_s     : first call time (includes JIT compile for this N)
+  - vmap_ss_s        : mean of `repeats` subsequent calls (pure throughput)
+  - vmap_ss_std_s    : std dev of the `repeats` subsequent calls
+  - seq_ss_s         : N sequential calls to jit(forward_multi), mean of repeats
+  - speedup          : seq_ss_s / vmap_ss_s
+  - ms_per_sample    : vmap_ss_s / N * 1000
 
-Output:
-  diags/figures/ensemble_benchmark.csv
-  diags/figures/ensemble_benchmark.png
+Usage:
+  python diags/benchmark_ensemble.py                  # run both GPU and CPU
+  python diags/benchmark_ensemble.py --backend gpu    # GPU section only
+  python diags/benchmark_ensemble.py --backend cpu    # CPU section only
+
+Output (separate files per backend — combine with plot_ensemble_benchmark.py --csv):
+  diags/figures/ensemble_benchmark_gpu.csv   (--backend gpu)
+  diags/figures/ensemble_benchmark_cpu.csv   (--backend cpu)
+  diags/figures/ensemble_benchmark.csv       (--backend both)
 """
 from __future__ import annotations
 
+import argparse
 import sys
 import csv
 import time
@@ -36,6 +44,13 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--backend", choices=["gpu", "cpu", "both"], default="both",
+                 help="Which backend section to run (default: both)")
+_ARGS = _ap.parse_args()
+RUN_GPU = _ARGS.backend in ("gpu", "both")
+RUN_CPU = _ARGS.backend in ("cpu", "both")
 
 import numpy as np
 import matplotlib
@@ -120,20 +135,22 @@ rng = np.random.default_rng(seed=42)
 MAX_N = 2048
 all_thetas_np = rng.uniform(0.8, 1.2, size=(MAX_N, 5)).astype(np.float64)
 
-# ── Compile single-sample JIT first ──────────────────────────────────────────
-_forward_jit = jax.jit(forward_multi)
-print("Compiling single-sample JIT...", flush=True)
-t0 = time.perf_counter()
-_ = _forward_jit(jnp.ones(5, dtype=jnp.float64))
-jax.effects_barrier()
-print(f"  JIT compile: {time.perf_counter()-t0:.1f}s", flush=True)
+single_fwd_s = float("nan")
+if RUN_GPU:
+    # ── Compile single-sample JIT first ──────────────────────────────────────
+    _forward_jit = jax.jit(forward_multi)
+    print("Compiling single-sample JIT...", flush=True)
+    t0 = time.perf_counter()
+    _ = _forward_jit(jnp.ones(5, dtype=jnp.float64))
+    jax.effects_barrier()
+    print(f"  JIT compile: {time.perf_counter()-t0:.1f}s", flush=True)
 
-# Warm up again to get pure inference time
-t0 = time.perf_counter()
-_ = _forward_jit(jnp.ones(5, dtype=jnp.float64))
-jax.effects_barrier()
-single_fwd_s = time.perf_counter() - t0
-print(f"  Single forward (post-JIT): {single_fwd_s*1000:.1f}ms", flush=True)
+    # Warm up again to get pure inference time
+    t0 = time.perf_counter()
+    _ = _forward_jit(jnp.ones(5, dtype=jnp.float64))
+    jax.effects_barrier()
+    single_fwd_s = time.perf_counter() - t0
+    print(f"  Single forward (post-JIT): {single_fwd_s*1000:.1f}ms", flush=True)
 
 
 # ── Benchmark helpers ─────────────────────────────────────────────────────────
@@ -146,20 +163,19 @@ SEQ_CPU_CAP = 64    # CPU sequential capped (32ms * 64 = ~2s; >128 would be hour
 
 
 def run_vmap_benchmark(batched_fn, thetas, repeats=REPEATS):
-    """First call (JIT) + timed repeats. Returns (first_s, ss_s)."""
+    """First call (JIT) + timed repeats. Returns (first_s, ss_mean_s, ss_std_s, out)."""
     t0 = time.perf_counter()
     out = batched_fn(thetas)
-    jax.effects_barrier()
+    jax.block_until_ready(out)
     first_s = time.perf_counter() - t0
 
     times = []
     for _ in range(repeats):
         t0 = time.perf_counter()
         out = batched_fn(thetas)
-        jax.effects_barrier()
+        jax.block_until_ready(out)
         times.append(time.perf_counter() - t0)
-    ss_s = float(np.mean(times))
-    return first_s, ss_s, out
+    return first_s, float(np.mean(times)), float(np.std(times)), out
 
 
 def run_seq_benchmark(forward_jit_fn, thetas, repeats=REPEATS):
@@ -168,8 +184,8 @@ def run_seq_benchmark(forward_jit_fn, thetas, repeats=REPEATS):
 
     def run_n():
         for i in range(N):
-            _ = forward_jit_fn(thetas[i])
-        jax.effects_barrier()
+            out = forward_jit_fn(thetas[i])
+            jax.block_until_ready(out)
 
     # Warm-up pass
     run_n()
@@ -185,168 +201,176 @@ def run_seq_benchmark(forward_jit_fn, thetas, repeats=REPEATS):
 # ─────────────────────────────────────────────────────────────────────────────
 # GPU benchmark
 # ─────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60, flush=True)
-print("GPU BENCHMARK", flush=True)
-print("="*60, flush=True)
-
-gpu_dev = jax.devices("gpu")[0] if jax.devices("gpu") else None
-if gpu_dev is None:
-    print("WARNING: No GPU device found — running GPU section on default device.", flush=True)
-
-all_thetas_gpu = jnp.array(all_thetas_np)  # place on default (GPU) device
 
 gpu_rows = []  # list of dicts
+if RUN_GPU:
+    print("\n" + "="*60, flush=True)
+    print("GPU BENCHMARK", flush=True)
+    print("="*60, flush=True)
 
-for N in N_VALS:
-    thetas_n = all_thetas_gpu[:N]
-    batched_fn = jax.jit(jax.vmap(forward_multi))
+    gpu_dev = jax.devices("gpu")[0] if jax.devices("gpu") else None
+    if gpu_dev is None:
+        print("WARNING: No GPU device found — running GPU section on default device.", flush=True)
 
-    print(f"\n[GPU] N={N} vmap ...", flush=True)
-    vmap_first_s, vmap_ss_s, _ = run_vmap_benchmark(batched_fn, thetas_n)
-    ms_per_sample = vmap_ss_s / N * 1000.0
-    print(f"  vmap first={vmap_first_s:.2f}s  steady={vmap_ss_s*1000:.1f}ms  "
-          f"ms/sample={ms_per_sample:.2f}", flush=True)
+    all_thetas_gpu = jnp.array(all_thetas_np)  # place on default (GPU) device
 
-    # Sequential: only for N <= SEQ_GPU_CAP
-    if N <= SEQ_GPU_CAP:
-        print(f"[GPU] N={N} sequential ...", flush=True)
-        # Re-JIT forward on GPU device
-        fwd_gpu = jax.jit(forward_multi)
-        # Ensure warmup
-        _ = fwd_gpu(thetas_n[0])
-        jax.effects_barrier()
-        seq_ss_s = run_seq_benchmark(fwd_gpu, thetas_n)
-        speedup = seq_ss_s / vmap_ss_s if vmap_ss_s > 0 else float("nan")
-        print(f"  sequential steady={seq_ss_s*1000:.1f}ms  speedup(seq/vmap)={speedup:.2f}x",
-              flush=True)
-    else:
-        seq_ss_s = float("nan")
-        speedup = float("nan")
-        print(f"  [GPU] N={N} sequential skipped (N > {SEQ_GPU_CAP})", flush=True)
+    for N in N_VALS:
+        thetas_n = all_thetas_gpu[:N]
+        batched_fn = jax.jit(jax.vmap(forward_multi))
 
-    gpu_rows.append(dict(
-        backend="gpu",
-        N=N,
-        vmap_first_s=vmap_first_s,
-        vmap_ss_s=vmap_ss_s,
-        seq_ss_s=seq_ss_s,
-        speedup_vs_seq_same=speedup,
-        speedup_vs_cpu_seq=float("nan"),  # filled in later
-        ms_per_sample=ms_per_sample,
-    ))
+        print(f"\n[GPU] N={N} vmap ...", flush=True)
+        vmap_first_s, vmap_ss_s, vmap_ss_std_s, _ = run_vmap_benchmark(batched_fn, thetas_n)
+        ms_per_sample = vmap_ss_s / N * 1000.0
+        print(f"  vmap first={vmap_first_s:.2f}s  steady={vmap_ss_s*1000:.1f}±{vmap_ss_std_s*1000:.1f}ms  "
+            f"ms/sample={ms_per_sample:.2f}", flush=True)
+
+        # Sequential: only for N <= SEQ_GPU_CAP
+        if N <= SEQ_GPU_CAP:
+            print(f"[GPU] N={N} sequential ...", flush=True)
+            # Re-JIT forward on GPU device
+            fwd_gpu = jax.jit(forward_multi)
+            # Ensure warmup
+            _ = fwd_gpu(thetas_n[0])
+            jax.effects_barrier()
+            seq_ss_s = run_seq_benchmark(fwd_gpu, thetas_n)
+            speedup = seq_ss_s / vmap_ss_s if vmap_ss_s > 0 else float("nan")
+            print(f"  sequential steady={seq_ss_s*1000:.1f}ms  speedup(seq/vmap)={speedup:.2f}x",
+                flush=True)
+        else:
+            seq_ss_s = float("nan")
+            speedup = float("nan")
+            print(f"  [GPU] N={N} sequential skipped (N > {SEQ_GPU_CAP})", flush=True)
+
+        gpu_rows.append(dict(
+            backend="gpu",
+            N=N,
+            vmap_first_s=vmap_first_s,
+            vmap_ss_s=vmap_ss_s,
+            vmap_ss_std_s=vmap_ss_std_s,
+            seq_ss_s=seq_ss_s,
+            speedup_vs_seq_same=speedup,
+            speedup_vs_cpu_seq=float("nan"),  # filled in later
+            ms_per_sample=ms_per_sample,
+        ))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CPU benchmark
 # ─────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60, flush=True)
-print("CPU BENCHMARK", flush=True)
-print("="*60, flush=True)
 
-cpu_dev = jax.devices("cpu")[0]
+cpu_single_fwd_s = float("nan")
 
-# Move all closed-over arrays to CPU
-atm2lnd_inst_cpu        = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu_dev), atm2lnd_inst)
-wateratm2lndbulk_cpu    = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu_dev), wateratm2lndbulk_inst)
-mlcanopy_inst_cpu       = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu_dev), mlcanopy_inst)
-canopystate_inst_cpu    = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu_dev), _canopystate_inst)
-orig_vcmaxpft_cpu       = jax.device_put(_orig_pftcon.vcmaxpft, cpu_dev)
+cpu_rows = []  # list of dicts
+if RUN_CPU:
+    print("\n" + "="*60, flush=True)
+    print("CPU BENCHMARK", flush=True)
+    print("="*60, flush=True)
 
-# Also move the static kwargs that contain JAX arrays
-_mlcf_kwargs_base_cpu = {}
-for k, v in _mlcf_kwargs_base.items():
-    try:
-        _mlcf_kwargs_base_cpu[k] = jax.tree_util.tree_map(
-            lambda x: jax.device_put(x, cpu_dev) if hasattr(x, 'shape') else x, v
+    cpu_dev = jax.devices("cpu")[0]
+
+    # Move all closed-over arrays to CPU
+    atm2lnd_inst_cpu        = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu_dev), atm2lnd_inst)
+    wateratm2lndbulk_cpu    = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu_dev), wateratm2lndbulk_inst)
+    mlcanopy_inst_cpu       = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu_dev), mlcanopy_inst)
+    canopystate_inst_cpu    = jax.tree_util.tree_map(lambda x: jax.device_put(x, cpu_dev), _canopystate_inst)
+    orig_vcmaxpft_cpu       = jax.device_put(_orig_pftcon.vcmaxpft, cpu_dev)
+
+    # Also move the static kwargs that contain JAX arrays
+    _mlcf_kwargs_base_cpu = {}
+    for k, v in _mlcf_kwargs_base.items():
+        try:
+            _mlcf_kwargs_base_cpu[k] = jax.tree_util.tree_map(
+                lambda x: jax.device_put(x, cpu_dev) if hasattr(x, 'shape') else x, v
+            )
+        except Exception:
+            _mlcf_kwargs_base_cpu[k] = v
+
+    all_thetas_cpu = jax.device_put(jnp.array(all_thetas_np), cpu_dev)
+
+
+    def forward_multi_cpu(scales: jnp.ndarray) -> jnp.ndarray:
+        """CPU version of forward_multi — all arrays on CPU device."""
+        vcmaxpft_jax = scales[0] * orig_vcmaxpft_cpu
+
+        modified_canopy = canopystate_inst_cpu._replace(
+            elai_patch = scales[4] * jnp.asarray(canopystate_inst_cpu.elai_patch, dtype=jnp.float64),
+            esai_patch = scales[4] * jnp.asarray(canopystate_inst_cpu.esai_patch, dtype=jnp.float64),
         )
-    except Exception:
-        _mlcf_kwargs_base_cpu[k] = v
+        modified_atm = atm2lnd_inst_cpu._replace(
+            forc_t_downscaled_col     = scales[1] * atm2lnd_inst_cpu.forc_t_downscaled_col,
+            forc_solad_downscaled_col = scales[2] * atm2lnd_inst_cpu.forc_solad_downscaled_col,
+            forc_solai_grc            = scales[2] * atm2lnd_inst_cpu.forc_solai_grc,
+        )
+        modified_watm = wateratm2lndbulk_cpu._replace(
+            forc_q_downscaled_col = scales[3] * wateratm2lndbulk_cpu.forc_q_downscaled_col,
+        )
 
-all_thetas_cpu = jax.device_put(jnp.array(all_thetas_np), cpu_dev)
+        inst = MLCanopyFluxes(
+            mlcanopy_inst=mlcanopy_inst_cpu,
+            atm2lnd_inst=modified_atm,
+            wateratm2lndbulk_inst=modified_watm,
+            canopystate_inst=modified_canopy,
+            vcmaxpft_jax=vcmaxpft_jax,
+            **_mlcf_kwargs_base_cpu,
+        )
 
+        GPP = compute_gpp(inst, _p, _n)
+        H   = compute_h(inst, _p, _n)
+        LE  = compute_le(inst, _p, _n)
 
-def forward_multi_cpu(scales: jnp.ndarray) -> jnp.ndarray:
-    """CPU version of forward_multi — all arrays on CPU device."""
-    vcmaxpft_jax = scales[0] * orig_vcmaxpft_cpu
-
-    modified_canopy = canopystate_inst_cpu._replace(
-        elai_patch = scales[4] * jnp.asarray(canopystate_inst_cpu.elai_patch, dtype=jnp.float64),
-        esai_patch = scales[4] * jnp.asarray(canopystate_inst_cpu.esai_patch, dtype=jnp.float64),
-    )
-    modified_atm = atm2lnd_inst_cpu._replace(
-        forc_t_downscaled_col     = scales[1] * atm2lnd_inst_cpu.forc_t_downscaled_col,
-        forc_solad_downscaled_col = scales[2] * atm2lnd_inst_cpu.forc_solad_downscaled_col,
-        forc_solai_grc            = scales[2] * atm2lnd_inst_cpu.forc_solai_grc,
-    )
-    modified_watm = wateratm2lndbulk_cpu._replace(
-        forc_q_downscaled_col = scales[3] * wateratm2lndbulk_cpu.forc_q_downscaled_col,
-    )
-
-    inst = MLCanopyFluxes(
-        mlcanopy_inst=mlcanopy_inst_cpu,
-        atm2lnd_inst=modified_atm,
-        wateratm2lndbulk_inst=modified_watm,
-        canopystate_inst=modified_canopy,
-        vcmaxpft_jax=vcmaxpft_jax,
-        **_mlcf_kwargs_base_cpu,
-    )
-
-    GPP = compute_gpp(inst, _p, _n)
-    H   = compute_h(inst, _p, _n)
-    LE  = compute_le(inst, _p, _n)
-
-    return jnp.array([GPP, H, LE])
+        return jnp.array([GPP, H, LE])
 
 
-# Compile CPU JIT
-print("Compiling CPU single-sample JIT...", flush=True)
-_fwd_cpu_jit = jax.jit(forward_multi_cpu)
-t0 = time.perf_counter()
-_ = _fwd_cpu_jit(jax.device_put(jnp.ones(5, dtype=jnp.float64), cpu_dev))
-jax.effects_barrier()
-print(f"  CPU JIT compile: {time.perf_counter()-t0:.1f}s", flush=True)
+    # Compile CPU JIT
+    print("Compiling CPU single-sample JIT...", flush=True)
+    _fwd_cpu_jit = jax.jit(forward_multi_cpu)
+    t0 = time.perf_counter()
+    _ = _fwd_cpu_jit(jax.device_put(jnp.ones(5, dtype=jnp.float64), cpu_dev))
+    jax.effects_barrier()
+    print(f"  CPU JIT compile: {time.perf_counter()-t0:.1f}s", flush=True)
 
-t0 = time.perf_counter()
-_ = _fwd_cpu_jit(jax.device_put(jnp.ones(5, dtype=jnp.float64), cpu_dev))
-jax.effects_barrier()
-cpu_single_fwd_s = time.perf_counter() - t0
-print(f"  CPU single forward (post-JIT): {cpu_single_fwd_s*1000:.1f}ms", flush=True)
+    t0 = time.perf_counter()
+    _ = _fwd_cpu_jit(jax.device_put(jnp.ones(5, dtype=jnp.float64), cpu_dev))
+    jax.effects_barrier()
+    cpu_single_fwd_s = time.perf_counter() - t0
+    print(f"  CPU single forward (post-JIT): {cpu_single_fwd_s*1000:.1f}ms", flush=True)
 
-cpu_rows = []
+    #How cpu_rows = []
 
-for N in N_VALS:
-    thetas_n_cpu = all_thetas_cpu[:N]
-    batched_fn_cpu = jax.jit(jax.vmap(forward_multi_cpu))
+    for N in N_VALS:
+        thetas_n_cpu = all_thetas_cpu[:N]
+        batched_fn_cpu = jax.jit(jax.vmap(forward_multi_cpu))
 
-    print(f"\n[CPU] N={N} vmap ...", flush=True)
-    vmap_first_s, vmap_ss_s, _ = run_vmap_benchmark(batched_fn_cpu, thetas_n_cpu)
-    ms_per_sample = vmap_ss_s / N * 1000.0
-    print(f"  vmap first={vmap_first_s:.2f}s  steady={vmap_ss_s*1000:.1f}ms  "
-          f"ms/sample={ms_per_sample:.2f}", flush=True)
+        print(f"\n[CPU] N={N} vmap ...", flush=True)
+        vmap_first_s, vmap_ss_s, vmap_ss_std_s, _ = run_vmap_benchmark(batched_fn_cpu, thetas_n_cpu)
+        ms_per_sample = vmap_ss_s / N * 1000.0
+        print(f"  vmap first={vmap_first_s:.2f}s  steady={vmap_ss_s*1000:.1f}±{vmap_ss_std_s*1000:.1f}ms  "
+            f"ms/sample={ms_per_sample:.2f}", flush=True)
 
-    if N <= SEQ_CPU_CAP:
-        print(f"[CPU] N={N} sequential ...", flush=True)
-        _ = _fwd_cpu_jit(thetas_n_cpu[0])
-        jax.effects_barrier()
-        seq_ss_s = run_seq_benchmark(_fwd_cpu_jit, thetas_n_cpu)
-        speedup = seq_ss_s / vmap_ss_s if vmap_ss_s > 0 else float("nan")
-        print(f"  sequential steady={seq_ss_s*1000:.1f}ms  speedup(seq/vmap)={speedup:.2f}x",
-              flush=True)
-    else:
-        seq_ss_s = float("nan")
-        speedup = float("nan")
-        print(f"  [CPU] N={N} sequential skipped (N > {SEQ_CPU_CAP})", flush=True)
+        if N <= SEQ_CPU_CAP:
+            print(f"[CPU] N={N} sequential ...", flush=True)
+            _ = _fwd_cpu_jit(thetas_n_cpu[0])
+            jax.effects_barrier()
+            seq_ss_s = run_seq_benchmark(_fwd_cpu_jit, thetas_n_cpu)
+            speedup = seq_ss_s / vmap_ss_s if vmap_ss_s > 0 else float("nan")
+            print(f"  sequential steady={seq_ss_s*1000:.1f}ms  speedup(seq/vmap)={speedup:.2f}x",
+                flush=True)
+        else:
+            seq_ss_s = float("nan")
+            speedup = float("nan")
+            print(f"  [CPU] N={N} sequential skipped (N > {SEQ_CPU_CAP})", flush=True)
 
-    cpu_rows.append(dict(
-        backend="cpu",
-        N=N,
-        vmap_first_s=vmap_first_s,
-        vmap_ss_s=vmap_ss_s,
-        seq_ss_s=seq_ss_s,
-        speedup_vs_seq_same=speedup,
-        speedup_vs_cpu_seq=float("nan"),
-        ms_per_sample=ms_per_sample,
-    ))
+        cpu_rows.append(dict(
+            backend="cpu",
+            N=N,
+            vmap_first_s=vmap_first_s,
+            vmap_ss_s=vmap_ss_s,
+            vmap_ss_std_s=vmap_ss_std_s,
+            seq_ss_s=seq_ss_s,
+            speedup_vs_seq_same=speedup,
+            speedup_vs_cpu_seq=float("nan"),
+            ms_per_sample=ms_per_sample,
+        ))
 
 
 # ── Compute GPU speedup vs CPU seq ────────────────────────────────────────────
@@ -359,8 +383,13 @@ for row in gpu_rows:
 
 # ── Save CSV ──────────────────────────────────────────────────────────────────
 all_rows = gpu_rows + cpu_rows
-csv_path = FIGURES_DIR / "ensemble_benchmark.csv"
-fieldnames = ["backend", "N", "vmap_first_s", "vmap_ss_s", "seq_ss_s",
+if _ARGS.backend == "gpu":
+    csv_path = FIGURES_DIR / "ensemble_benchmark_gpu.csv"
+elif _ARGS.backend == "cpu":
+    csv_path = FIGURES_DIR / "ensemble_benchmark_cpu.csv"
+else:
+    csv_path = FIGURES_DIR / "ensemble_benchmark.csv"
+fieldnames = ["backend", "N", "vmap_first_s", "vmap_ss_s", "vmap_ss_std_s", "seq_ss_s",
               "speedup_vs_seq_same", "speedup_vs_cpu_seq", "ms_per_sample"]
 with open(csv_path, "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=fieldnames)
