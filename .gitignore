@@ -71,6 +71,7 @@ local_settings.py
 db.sqlite3
 *.csv
 *.png
+diags/figures/
 
 # Flask stuff:
 instance/
