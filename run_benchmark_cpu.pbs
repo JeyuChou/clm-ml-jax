@@ -3,7 +3,7 @@
 #PBS -A CESM0029
 #PBS -q main
 #PBS -l walltime=06:30:00
-#PBS -l select=1:ncpus=128:mem=256GB
+#PBS -l select=1:ncpus=128
 #PBS -j oe
 
 # CPU-only ensemble benchmark.  Large-N vmap compilation (N=512,1024,2048)
