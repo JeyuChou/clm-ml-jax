@@ -130,6 +130,21 @@ def forward_multi(scales: jnp.ndarray) -> jnp.ndarray:
     return jnp.array([GPP, H, LE])
 
 
+# ── CSV: open upfront so results survive an OOM crash mid-run ────────────────
+if _ARGS.backend == "gpu":
+    csv_path = FIGURES_DIR / "ensemble_benchmark_gpu.csv"
+elif _ARGS.backend == "cpu":
+    csv_path = FIGURES_DIR / "ensemble_benchmark_cpu.csv"
+else:
+    csv_path = FIGURES_DIR / "ensemble_benchmark.csv"
+_csv_fieldnames = ["backend", "N", "vmap_first_s", "vmap_ss_s", "vmap_ss_std_s", "seq_ss_s",
+                   "speedup_vs_seq_same", "speedup_vs_cpu_seq", "ms_per_sample"]
+_csv_file   = open(csv_path, "w", newline="")
+_csv_writer = csv.DictWriter(_csv_file, fieldnames=_csv_fieldnames)
+_csv_writer.writeheader()
+_csv_file.flush()
+
+
 # ── Parameter sampling ────────────────────────────────────────────────────────
 rng = np.random.default_rng(seed=42)
 MAX_N = 2048
@@ -241,7 +256,7 @@ if RUN_GPU:
             speedup = float("nan")
             print(f"  [GPU] N={N} sequential skipped (N > {SEQ_GPU_CAP})", flush=True)
 
-        gpu_rows.append(dict(
+        row = dict(
             backend="gpu",
             N=N,
             vmap_first_s=vmap_first_s,
@@ -249,9 +264,12 @@ if RUN_GPU:
             vmap_ss_std_s=vmap_ss_std_s,
             seq_ss_s=seq_ss_s,
             speedup_vs_seq_same=speedup,
-            speedup_vs_cpu_seq=float("nan"),  # filled in later
+            speedup_vs_cpu_seq=float("nan"),  # filled in later (in-memory only)
             ms_per_sample=ms_per_sample,
-        ))
+        )
+        gpu_rows.append(row)
+        _csv_writer.writerow(row)
+        _csv_file.flush()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -360,7 +378,7 @@ if RUN_CPU:
             speedup = float("nan")
             print(f"  [CPU] N={N} sequential skipped (N > {SEQ_CPU_CAP})", flush=True)
 
-        cpu_rows.append(dict(
+        row = dict(
             backend="cpu",
             N=N,
             vmap_first_s=vmap_first_s,
@@ -370,7 +388,10 @@ if RUN_CPU:
             speedup_vs_seq_same=speedup,
             speedup_vs_cpu_seq=float("nan"),
             ms_per_sample=ms_per_sample,
-        ))
+        )
+        cpu_rows.append(row)
+        _csv_writer.writerow(row)
+        _csv_file.flush()
 
 
 # ── Compute GPU speedup vs CPU seq ────────────────────────────────────────────
@@ -381,20 +402,9 @@ for row in gpu_rows:
         row["speedup_vs_cpu_seq"] = cpu_seq_map[N] / row["vmap_ss_s"]
 
 
-# ── Save CSV ──────────────────────────────────────────────────────────────────
+# ── Close CSV (rows were written incrementally) ───────────────────────────────
 all_rows = gpu_rows + cpu_rows
-if _ARGS.backend == "gpu":
-    csv_path = FIGURES_DIR / "ensemble_benchmark_gpu.csv"
-elif _ARGS.backend == "cpu":
-    csv_path = FIGURES_DIR / "ensemble_benchmark_cpu.csv"
-else:
-    csv_path = FIGURES_DIR / "ensemble_benchmark.csv"
-fieldnames = ["backend", "N", "vmap_first_s", "vmap_ss_s", "vmap_ss_std_s", "seq_ss_s",
-              "speedup_vs_seq_same", "speedup_vs_cpu_seq", "ms_per_sample"]
-with open(csv_path, "w", newline="") as f:
-    writer = csv.DictWriter(f, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(all_rows)
+_csv_file.close()
 print(f"\nCSV saved: {csv_path}", flush=True)
 
 
